@@ -106,6 +106,47 @@ def chart(title, subtitle, panels, builds, theme, path):
     path.write_text("\n".join(out) + "\n")
 
 
+def hero(tiles, builds, theme, path):
+    """The README's headline image: one tile per metric, Pi-Bolt's figure large, the ratio to Bun, and bars for every build.
+    tiles: [(title, unit, {build: value}, better)] where better is "faster" or "less"."""
+    t = THEME[theme]
+    width, pad, gap = 880, 20, 16
+    tile_w = (width - 2 * pad - gap * (len(tiles) - 1)) / len(tiles)
+    height = 248
+    card = "#f6f8fa" if theme == "light" else "#161b22"
+    edge = "#d0d7de" if theme == "light" else "#30363d"
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" '
+           f'aria-label="Pi-Bolt compared with Bun and Node">',
+           f'<style>text{{font-family:{FONT};font-variant-numeric:tabular-nums}}</style>']
+    for i, (title, unit, values, better) in enumerate(tiles):
+        x = pad + i * (tile_w + gap)
+        y = 12
+        out.append(f'<rect x="{x}" y="{y}" width="{tile_w}" height="{height - 24}" rx="10" fill="{card}" stroke="{edge}"/>')
+        out.append(f'<text x="{x + 16}" y="{y + 30}" font-size="13" font-weight="600" fill="{t["muted"]}">{title}</text>')
+        mine, base = values.get(builds[0]), values.get(builds[1])
+        blue = color_of(builds[0], 0, theme)
+        out.append(f'<text x="{x + 16}" y="{y + 72}" font-size="34" font-weight="700" fill="{blue}">{fmt(mine, unit).replace(" ", "<tspan font-size=\"18\" font-weight=\"600\" dx=\"4\">")}</tspan></text>')
+        if mine and base:
+            ratio = base / mine
+            word = better if ratio >= 1 else ("slower" if better == "faster" else "more")
+            r = ratio if ratio >= 1 else 1 / ratio
+            label = f"{r:.1f}× {word} than {LABELS.get(builds[1], builds[1]).split()[0]}"
+            out.append(f'<text x="{x + 16}" y="{y + 96}" font-size="12.5" font-weight="600" fill="{t["text"]}">{label}</text>')
+        top = max(v for v in values.values() if v)
+        bar_x, bar_w = x + 16, tile_w - 32
+        for j, b in enumerate(builds):
+            v = values.get(b)
+            yy = y + 126 + j * 34
+            out.append(f'<text x="{bar_x}" y="{yy}" font-size="11.5" fill="{t["muted"]}">{LABELS.get(b, b).split()[0]}</text>')
+            if not v:
+                continue
+            out.append(f'<text x="{bar_x + bar_w}" y="{yy}" font-size="11.5" text-anchor="end" fill="{t["text"]}">{fmt(v, unit)}</text>')
+            out.append(f'<rect x="{bar_x}" y="{yy + 6}" width="{bar_w}" height="8" rx="4" fill="{edge}" opacity="0.5"/>')
+            out.append(f'<rect x="{bar_x}" y="{yy + 6}" width="{max(8, bar_w * v / top):.1f}" height="8" rx="4" fill="{color_of(b, j, theme)}"/>')
+    out.append("</svg>")
+    path.write_text("\n".join(out) + "\n")
+
+
 def table(header, rows):
     lines = ["| " + " | ".join(header) + " |", "|" + "|".join(["---"] + ["---:"] * (len(header) - 1)) + "|"]
     lines += ["| " + " | ".join(r) + " |" for r in rows]
@@ -172,6 +213,15 @@ def main():
     ]:
         for theme in ("light", "dark"):
             chart(title, subtitle, panels, builds, theme, a.images / f"bench-{name}-{theme}.svg")
+
+    tiles = [
+        ("Ready to type", "ms", vals(lambda x: b(x, "interactive", "tti_ms")), "faster"),
+        ("CPU per session", "ms", vals(lambda x: b(x, "interactive", "cpu_ms")), "less"),
+        ("CPU while streaming", "ms", vals(lambda x: tm(x, "prompt_cpu_ms")), "less"),
+        ("Memory, long session", "MB", vals(lambda x: lg(x, "own_mb")), "less"),
+    ]
+    for theme in ("light", "dark"):
+        hero(tiles, builds, theme, a.images / f"bench-hero-{theme}.svg")
 
     plugins = defaultdict(list)
     for r in load(a.results / "plugins.jsonl"):
