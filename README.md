@@ -81,10 +81,13 @@ against `SHA256SUMS`, unpack it, and run `./pi` in the unpacked folder:
 
 | Download | For |
 |---|---|
-| `pi-bolt-linux-x64.tar.gz` | **Recommended.** CPUs with AVX2: Intel Haswell (2013) and later, AMD Zen and later |
-| `pi-bolt-linux-x64-baseline.tar.gz` | Any x86-64 CPU |
-| `pi-bolt-linux-x64-jit.tar.gz` | Also JIT-compiles code loaded at run time, for heavy use of run-time plugins |
+| `pi-bolt-linux-x64.tar.xz` | **Recommended.** CPUs with AVX2: Intel Haswell (2013) and later, AMD Zen and later |
+| `pi-bolt-linux-x64-baseline.tar.xz` | Any x86-64 CPU |
+| `pi-bolt-linux-x64-jit.tar.xz` | Also JIT-compiles code loaded at run time, for heavy use of run-time plugins |
 | `pi-bolt-runtime-linux-x64.tar.gz` | The Pi-Bolt Bun runtime, to [compile plugins in](docs/PLUGINS.md) without building it |
+
+Each Pi-Bolt build is also there as a `.tar.gz`, about 60% bigger, for systems without `xz`. `pi-bolt --version` prints the Pi
+version and, in brackets, the Pi-Bolt version and build; `pi-bolt update` installs the latest release.
 
 ### Requirements
 
@@ -179,6 +182,7 @@ For Pi itself, see [earendil-works/pi](https://github.com/earendil-works/pi) and
 | [Benchmarks](docs/BENCHMARKS.md) | Method, results, raw data, and questions |
 | [Plugins](docs/PLUGINS.md) | Porting Pi extensions, compatibility, writing them for AOT |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Diagnostics, environment variables, known limitations |
+| [Releasing](docs/RELEASING.md) | The release pipeline, the self-hosted runner, signing, following Pi's releases |
 
 ## Development
 

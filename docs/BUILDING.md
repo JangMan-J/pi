@@ -123,7 +123,9 @@ scripts/package-release.sh [--pi DIR] [--no-build]
 ```
 
 This builds the three Pi targets (`linux-x64`, `linux-x64-baseline`, `linux-x64-jit`) and checks that each uses its compiled code.
-It writes them, the runtime and `SHA256SUMS` to `dist/<VERSION>/`. Each archive includes the license notices.
+It writes them as `.tar.xz` and `.tar.gz`, the runtime and `SHA256SUMS` to `dist/<VERSION>/`. Each archive includes the license
+notices and a `pi-bolt.txt` naming the build. Publishing a release, by the release workflow or by hand, is described in
+[RELEASING.md](RELEASING.md).
 
 ## Tests
 

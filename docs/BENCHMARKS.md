@@ -56,7 +56,7 @@ after the last prompt, so it depends on when the garbage collector last ran. Acr
 |---|---|
 | Pi | 1.0.0 (`v1.0.0`, a13d35a7) |
 | Machine | AMD EPYC 7B13 (Zen 3), Linux 7.0, every run pinned to the same 8 cores |
-| **Pi-Bolt** 0.2.0 | `scripts/build-pi.sh`: compiled ahead of time, JIT off, CPU `native` |
+| **Pi-Bolt** 0.2.0 (0.3.0 measures the same, within noise) | `scripts/build-pi.sh`: compiled ahead of time, JIT off, CPU `native` |
 | **Bun 1.4.2** | Pi built with Pi's own `bun build --compile` command, plus `--bytecode` (which makes stock Bun start faster) |
 | **Node 22.23.3** | Pi's npm package (`dist/bundle/cli.js`, with Node's compile cache) |
 
