@@ -24,13 +24,14 @@ are mapped from the executable, and Pi is ready to run.
 
 |  | Pi-Bolt | Pi on Bun 1.4.2 | Pi on Node 22 |
 |---|---:|---:|---:|
-| Interactive launch, ready to type | **77 ms** | 123 ms | 305 ms |
-| CPU for a 5-prompt session (25 model turns) | **378 ms** | 827 ms | 1,235 ms |
-| `pi -p` one prompt, 5 model turns | **112 ms** | 164 ms | 406 ms |
-| Per prompt late in a 2.7M-token session | **154 ms** | 232 ms | 249 ms |
-| Memory of its own in a tmux session | **35 MB** | 94 MB | 130 MB |
+| Interactive launch, ready to type | **83 ms** | 123 ms | 296 ms |
+| CPU for a 5-prompt session (25 model turns) | **395 ms** | 831 ms | 1,237 ms |
+| `pi -p` one prompt, 5 model turns | **113 ms** | 167 ms | 405 ms |
+| Per prompt late in a 2.7M-token session | **146 ms** | 188 ms | 247 ms |
+| CPU while replies stream (tmux) | **482 ms** | 531 ms | 618 ms |
+| Own memory after a 2.7M-token session | **126 MB** | 289 MB | 474 MB |
 
-<sub>Pi 1.0.0 on an AMD EPYC 7B13, 8 pinned cores, a local model server, medians. Methodology and every figure:
+<sub>Pi 1.0.0 on an AMD EPYC 7B13, 8 pinned cores, a local model server, medians. Methodology, raw data and every figure:
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md).</sub>
 
 ## Highlights
@@ -101,29 +102,36 @@ To use it as your `pi`, add `alias pi=pi-bolt` to your shell profile.
 
 ## Benchmarks
 
-Each scenario runs as fresh processes, interleaved round-robin across builds, against a local model server that streams a
-scripted conversation. That way the figures measure Pi and its runtime, not the network or a model. Pi 1.0.0. Bun 1.4.2 runs Pi
-built with Pi's own `bun build --compile` command, plus `--bytecode`, which makes stock Bun faster. Node 22.23 runs Pi's npm
-package.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-speed-dark.svg">
+  <img alt="Time: launch to interactive, pi --version, one prompt, and time per prompt in a long session, for Pi-Bolt, Bun and Node" src="docs/images/bench-speed-light.svg">
+</picture>
 
-| Scenario | Metric | Pi-Bolt | Bun 1.4.2 | Node 22 |
-|---|---|---:|---:|---:|
-| `pi --version` | wall / CPU | **47 / 50 ms** | 79 / 142 ms | 222 / 280 ms |
-| `pi -p` (one prompt, 4 tool calls) | wall / CPU | **112 / 128 ms** | 164 / 312 ms | 406 / 575 ms |
-| Interactive: launch, 5 prompts, quit | time to interactive | **77 ms** | 123 ms | 305 ms |
-| | CPU | **378 ms** | 827 ms | 1,235 ms |
-| | peak memory | **155 MB** | 202 MB | 210 MB |
-| Long session: 75 prompts, 300 tool calls, 2.7M tokens | time per prompt, last 25 | **154 ms** | 232 ms | 249 ms |
-| | CPU per prompt, last 25 | **96 ms** | 179 ms | 213 ms |
-| | own memory at the end | **179 MB** | 214 MB | 444 MB |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-cpu-dark.svg">
+  <img alt="CPU time of an interactive session, one prompt, pi --version, and per prompt in a long session" src="docs/images/bench-cpu-light.svg">
+</picture>
 
-In a real tmux pane against a model streaming at human pace:
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-memory-dark.svg">
+  <img alt="Peak memory, own memory in tmux and after a long session, and CPU while replies stream" src="docs/images/bench-memory-light.svg">
+</picture>
 
-- keystroke latency is the same for all three (5 ms);
-- Pi-Bolt holds a third of stable Bun's memory (35 MB vs 94 MB);
-- while a reply streams, Pi-Bolt uses 5–15% more CPU than Bun's fully warmed-up JIT.
+Every scenario runs fresh processes, interleaved round-robin across runtimes, against a local model server that streams a
+scripted conversation. The figures therefore measure Pi and its runtime, not the network or a model.
 
-All of it is reproducible with the tools in [`bench/`](bench). See [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+- **Pi 1.0.0.** Bun 1.4.2 runs Pi built with Pi's own `bun build --compile` command plus `--bytecode`, which makes stock Bun
+  faster. Node 22.23 runs Pi's npm package.
+- **In a real tmux pane**, keystroke latency is the same on all three (5 ms). Pi-Bolt keeps 2.5× less memory of its own than
+  Bun, and uses 9% less CPU while replies stream than Bun's fully warmed-up JIT.
+
+The raw results, the method, and answers to the obvious questions are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md):
+
+- [why a plugin loaded at run time is slow on the default build](docs/BENCHMARKS.md#why-is-a-run-time-plugins-loop-1080-ms-on-pi-bolt-and-38-ms-on-bun);
+- [whether the production build got slower](docs/BENCHMARKS.md#did-pi-bolt-get-slower-when-it-was-made-production-ready);
+- [how the streaming gap was closed](docs/BENCHMARKS.md#how-was-the-streaming-gap-closed).
+
+Everything is reproducible with [`bench/run-suite.sh`](bench/run-suite.sh).
 
 ## Plugins
 
@@ -134,10 +142,20 @@ the plugins you use every day, compile them into the executable:
 scripts/build-pi.sh --plugins my-plugins/plugins.ts --out out/pi-bolt-plugins
 ```
 
-A compiled-in plugin adds nothing to startup, where loading it at run time costs 30 to 60 ms. It also runs as machine code: in
-the example plugin's hot loop, 50 ms compiled in vs 1,080 ms in the interpreter on the JIT-off build. A warmed-up JIT runs it in
-38 ms. [docs/PLUGINS.md](docs/PLUGINS.md) covers porting, compatibility rules and how to write plugin code the AOT compiler
-handles well.
+A compiled-in plugin adds about 7 ms to startup, where loading it at run time costs 35 ms on Pi-Bolt and 67 ms on Bun, and it
+runs as machine code.
+
+On the default build the JIT is off, so a plugin loaded at run time can only be interpreted. Compiling the plugin in, or
+using the `-jit` build, avoids that. In the example plugin's hot loop:
+
+| How the plugin runs | Hot loop |
+|---|---:|
+| Compiled in | **54 ms** |
+| Loaded at run time, interpreted (JIT-off build) | 1,087 ms |
+| Loaded at run time, JIT-compiled (`-jit` build) | 41 ms (Bun: 38 ms) |
+
+[docs/PLUGINS.md](docs/PLUGINS.md) covers porting, compatibility rules and how to write plugin code the AOT compiler handles
+well.
 
 ## How it works
 

@@ -40,7 +40,7 @@ Both appended sections are page-aligned, so that they can be mapped directly fro
 | `BUN_AOT=1` | Compile every function ahead of time into the code image. |
 | `BUN_AOT_JIT=0` | Mark the code as running with the JIT off. This is the default build; `--jit on` leaves it out. |
 | `BUN_JSC_omitBytecodeFromStaticHeap=1` | Leave bytecode out of the heap. Functions run from machine code only. This saves memory and enables program-wide numbering of identifiers and constants, which cross-function inlining needs. |
-| `BUN_JSC_useAOTLoopSplitting=1` | Give loops a fast copy (see below). |
+| `BUN_JSC_useAOTLoopSplitting=1`, `BUN_JSC_aotLoopSplittingPolicy=5` | Give loops a fast copy (see below). |
 | `--bytecode-order=profiles/.../bytecode.order` | Lay out code and heap in the order the training session first used them. |
 | `BUN_JSC_aotRegExpsPath=profiles/.../regexps.txt` | Compile regular expressions that Pi builds from strings at run time, as well as its literals. |
 
@@ -78,8 +78,12 @@ it can prove:
 - **Inline caches** for property access, filled in at run time, with a polymorphic inline check where it pays off.
 - **Intrinsics** for hot built-ins: `Math.*`, `charCodeAt`, `push`/`pop`, and `Map`/`Set` `get`/`has`/`set`/`add`.
 - **Inlining** of known small functions across the program.
-- **Loop splitting**: a loop that makes no real calls gets a fast copy without slow paths. The fast copy falls back to a generic
-  copy at the first failed check. String scanning and number crunching run several times faster this way.
+- **Loop splitting**: a loop gets a fast copy without slow paths, which falls back to a generic copy at the first failed check.
+  This applies to loops without real calls, and to loops whose calls are to built-ins or known module functions, or that
+  index arrays. String scanning and number crunching run several times faster this way.
+- **Number encoding**: a number the compiler holds as a double is boxed as an int32 whenever it is one, as JavaScriptCore's
+  `jsNumber()` does. Every fast path downstream (indexing, `charCodeAt`, compares, inline caches) is for int32s, so a counter
+  boxed as a double would miss them all.
 - **Regular expressions**: compiled by Yarr, JavaScriptCore's regular-expression compiler, into the same image. This covers
   literals, plus patterns the training profile recorded being built at run time.
 
@@ -132,6 +136,7 @@ executable format.
 - Regular expressions with the `u` or `v` flag: the surrogate-pair slow path is generated into the image, so Unicode patterns
   run as machine code too.
 - Truncation of doubles to int32 with a short inline sequence, instead of a C call.
+- `charAt`/`charCodeAt` resolve a substring in place, as `codePointAt` already did, so the compiled fast paths read it directly.
 
 **Runtime**
 
@@ -153,9 +158,8 @@ executable format.
   yet.
 - **Code loaded at run time is not compiled ahead of time.** With the JIT off it is interpreted. Compile plugins in
   ([PLUGINS.md](PLUGINS.md)) or use the JIT-on build.
-- **Long hot paths.** A fully warmed-up JIT specializes on the types it actually observes. In long streaming phases, Pi-Bolt uses
-  about 5–15% more CPU than stock Bun's JIT (see [BENCHMARKS.md](BENCHMARKS.md)), while still using less CPU over a whole
-  session.
-- **Loops with calls** get only the generic copy of the loop. Splitting those too is disabled, because it miscompiles a spread
-  call in JavaScriptCore's test suite.
+- **No type feedback.** A warmed-up JIT specializes on the types it actually observes, and the AOT compiler can only use what
+  it proves. Code written so that types are predictable gets the fast paths ([PLUGINS.md](PLUGINS.md#performance-guide)).
+  Pi itself, including the long streaming phases, now uses less CPU than stock Bun's warmed-up JIT
+  ([BENCHMARKS.md](BENCHMARKS.md)).
 - Each executable is built for one Pi version and one engine. The executable checks the engine stamp at launch.

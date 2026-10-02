@@ -54,9 +54,10 @@ packages/agent/docs/extensions/pi-server-artifact/index.md
 # Staged by scripts/build-pi.sh --plugins inside a Pi checkout
 .pibolt-plugins/
 
-# Benchmark and test output
+# Benchmark and test output (the published results in bench/results/ are kept)
 *.jsonl
-results/
+!bench/results/**/*.jsonl
+/results/
 tmux-*.out
 *.order.tmp
 

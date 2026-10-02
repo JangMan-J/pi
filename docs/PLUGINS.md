@@ -20,22 +20,24 @@ and how to write plugin code that the ahead-of-time compiler handles well.
 of Pi.
 
 Measured with the example plugin in [`examples/plugins`](../examples/plugins): a `/words` command that scans a 16.8 MB file
-character by character. Pi 1.0.0, x86-64, median of 5 sessions.
+character by character. Pi 1.0.0, x86-64, medians of 7 sessions ([raw data](../bench/results/2026-10-02-pi-1.0.0)).
 
 | How the plugin is loaded | Launch to ready | `/words` (hot loop) |
 |---|---:|---:|
-| **Compiled in**, Pi-Bolt (JIT off, the default) | **74 ms** | **50 ms** |
-| Compiled in, Pi-Bolt JIT on | 80 ms | 53 ms |
-| Loaded at run time (jiti), Pi-Bolt JIT off | 109 ms | 1,080 ms |
-| Loaded at run time (jiti), Pi-Bolt JIT on | 115 ms | 38 ms (57 ms first run) |
-| Loaded at run time (jiti), stable Bun 1.4 | 188 ms | 38 ms (40 ms first run) |
-| *No plugin: Pi-Bolt / stable Bun* | *78 ms / 128 ms* | |
+| **Compiled in**, Pi-Bolt (JIT off, the default) | **86 ms** | **54 ms** |
+| Compiled in, Pi-Bolt JIT on | 83 ms | 53 ms |
+| Loaded at run time (jiti), Pi-Bolt JIT off | 114 ms | 1,087 ms |
+| Loaded at run time (jiti), Pi-Bolt JIT on | 122 ms | 41 ms |
+| Loaded at run time (jiti), Bun 1.4.2 | 194 ms | 38 ms |
+| *No plugin: Pi-Bolt / Bun* | *79 ms / 127 ms* | |
 
 A compiled-in plugin:
 
-- **Adds nothing to startup.** Loading a plugin with jiti costs 30 to 60 ms per launch.
-- **Runs over 20× faster than the interpreter** that run-time plugins get on the JIT-off build.
-- **Stays within 1.3× of fully warmed-up JIT code**, without the JIT's warm-up, compiler threads or memory.
+- **Costs little at startup**: about 7 ms. Loading the same plugin with jiti costs 35 ms on Pi-Bolt and 67 ms on Bun.
+- **Runs 20× faster than the interpreter** that run-time plugins get on the JIT-off build. The interpreter is why that row says
+  1,087 ms: the JIT is off and run-time code was never compiled
+  ([details](BENCHMARKS.md#why-is-a-run-time-plugins-loop-1080-ms-on-pi-bolt-and-38-ms-on-bun)).
+- **Stays within 1.4× of fully warmed-up JIT code**, without the JIT's warm-up, compiler threads or memory.
 
 ## Three ways to run a plugin
 
@@ -177,19 +179,20 @@ every frame, and loops over large inputs. Elsewhere, write code the way you norm
 
 ### Loops
 
-Every loop that makes no real calls is compiled twice: a fast copy with no slow paths, and a generic copy that the fast copy falls
-back to when a check fails. A loop with a real call in it gets only the generic copy. In a tight loop, the difference is large
-(16.8 M iterations; JIT-on figures for comparison):
+Loops are compiled twice: a fast copy without slow paths, and a generic copy that the fast copy falls back to when a check
+fails. The fast copy is used for loops that make no calls, and for loops whose calls are to built-ins with fast paths, to
+functions declared at module level, or that index arrays. How a helper is written decides how fast a hot loop runs
+(16.8 M iterations; stock Bun's warmed-up JIT for comparison):
 
-| Loop body | Pi-Bolt (AOT) | stable Bun (JIT) |
+| Loop body | Pi-Bolt | Bun 1.4.2 (JIT) |
 |---|---:|---:|
-| check written inline: `c === 32 \|\| (c >= 9 && c <= 13)` | **29 ms** | 23 ms |
-| the same check in a helper: `if (isSpace(c))` | 251 ms | 27 ms |
-| the same check as a method: `if (helpers.isSpace(c))` | 366 ms | 24 ms |
+| check written inline: `c === 32 \|\| (c >= 9 && c <= 13)` | **29 ms** | 22 ms |
+| helper declared at module level: `function isSpace(c) { ... }` | **39 ms** | 27 ms |
+| helper in a module constant: `const isSpace = (c) => ...` | 181 ms | 24 ms |
+| helper as a method: `helpers.isSpace(c)` | 241 ms | 24 ms |
 
-- **In the hottest loops, write small checks inline**, or make the helper straight-line arithmetic with no `if`, `?:`, `&&` or `||`
-  (for example `return x * x + 1;`). The compiler inlines a straight-line helper declared at module level, so the loop keeps
-  its fast copy.
+- **Declare hot helpers as `function` at module level** and call them by name, or write small checks inline. Arrow functions
+  in constants and methods looked up on objects are real calls, and cost the loop its fast copy.
 - These built-ins have fast paths and do not count as calls: `Math.sqrt/abs/floor/ceil/trunc/fround/min/max/imul`,
   `String.prototype.charCodeAt/charAt/codePointAt`, `Array.prototype.push/pop`, `Array.isArray`, and `Map`/`Set`
   `get/has/set/add`.

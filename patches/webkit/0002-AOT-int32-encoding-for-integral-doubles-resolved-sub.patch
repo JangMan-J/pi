@@ -1,0 +1,158 @@
+From 3d1a6e81268abcdad2518def0aa84dcd8e5fc0fb Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Fri, 2 Oct 2026 14:32:15 +0000
+Subject: [PATCH] AOT: box integral doubles as int32, resolve substrings in
+ charAt/charCodeAt, keep spread items in split loops
+
+- Lowering::boxNumber(): encode a double as an int32 JSValue when it is
+  integral, as jsNumber() does, for all code rather than builtins only, so
+  values held as doubles reach the int32 fast paths of the stubs (charCodeAt,
+  indexed access, compares). x86-64: cvttsd2si and a compare. Also used on
+  the double path of generic arithmetic.
+- String.prototype.charAt/charCodeAt: resolve substring ropes in place, as
+  codePointAt does, so later calls take the compiled fast path.
+- Graph::findListsOfArguments(): elide an argument list only if every spread
+  item is an op_spread node. A spread result reaching the call through a phi
+  (where the fast and generic copies of a split loop rejoin) was passed as a
+  single argument. Fixes JSTests/stress/spread-calling.js with
+  aotLoopSplittingPolicy=5.
+---
+ Source/JavaScriptCore/aot/AOTGraph.cpp        |  8 +++++
+ Source/JavaScriptCore/aot/AOTLowerArith.cpp   |  2 +-
+ Source/JavaScriptCore/aot/AOTLowerCore.cpp    | 29 ++++++++++++++-----
+ Source/JavaScriptCore/aot/AOTLowering.h       |  1 +
+ .../runtime/StringPrototype.cpp               | 14 +++++++++
+ 5 files changed, 46 insertions(+), 8 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTGraph.cpp b/Source/JavaScriptCore/aot/AOTGraph.cpp
+index d95a8ad60f..0e37864b8e 100644
+--- a/Source/JavaScriptCore/aot/AOTGraph.cpp
++++ b/Source/JavaScriptCore/aot/AOTGraph.cpp
+@@ -1410,12 +1410,20 @@ void Graph::findListsOfArguments()
+                 auto bytecode = list->as<OpNewArrayWithSpread>();
+                 if (bytecode.m_argc > mostItemsInList)
+                     continue;
++                // Every item that is spread has to be an op_spread here: what was spread elsewhere and got here some other way (a
++                // phi, as where the fast copy of a loop rejoins the generic one) would be passed as it is, the list of what was in it.
++                const BitVector& whichAreSpread = m_codeBlock->bitVector(bytecode.m_bitVector);
++                bool spreadsAreHere = true;
+                 parts.append(list);
+                 for (unsigned i = bytecode.m_argc; i--;) {
+                     Node* element = list->use(VirtualRegister(bytecode.m_argv.offset() - static_cast<int>(i)));
+                     if (element->isBytecode(op_spread))
+                         parts.append(element);
++                    else if (whichAreSpread.get(i))
++                        spreadsAreHere = false;
+                 }
++                if (!spreadsAreHere)
++                    continue;
+             } else
+                 continue;
+             bool areRightBeforeTheCall = parts.size() <= index;
+diff --git a/Source/JavaScriptCore/aot/AOTLowerArith.cpp b/Source/JavaScriptCore/aot/AOTLowerArith.cpp
+index 7a1d8faace..534b12243e 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerArith.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerArith.cpp
+@@ -201,7 +201,7 @@ void Lowering::lowerBinaryArith(Node* node, VirtualRegister lhs, VirtualRegister
+     m_out.branch(m_out.bitAnd(isNumber(a), isNumber(b)), unsure(doubleCase), unsure(slowCase));
+ 
+     m_out.appendTo(doubleCase, slowCase);
+-    results.append(m_out.anchor(boxDouble(doubleOp(numberToDouble(a), numberToDouble(b)))));
++    results.append(m_out.anchor(boxNumber(doubleOp(numberToDouble(a), numberToDouble(b)))));
+     m_out.jump(continuation);
+ 
+     m_out.appendTo(slowCase, continuation);
+diff --git a/Source/JavaScriptCore/aot/AOTLowerCore.cpp b/Source/JavaScriptCore/aot/AOTLowerCore.cpp
+index ebce60dc78..3c04b255dd 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerCore.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerCore.cpp
+@@ -907,6 +907,27 @@ LValue Lowering::doubleToInt32(LValue value)
+     return plainCall(Int32, Entry::operationAOTDoubleToInt32, value);
+ }
+ 
++// Whatever an int32 can hold is encoded as one, as jsNumber() and the interpreter do. The engine's own functions take it for
++// granted, and every fast path that consumes a number (inline caches and stubs for indexing, charCodeAt, arithmetic, compares) is
++// for int32s: a counter that is held as a double and boxed as one would miss all of them, and go to C for every use. (Nothing that
++// a program can say tells the two encodings apart.)
++LValue Lowering::boxNumber(LValue value)
++{
++#if CPU(X86_64)
++    // Truncated, it compares equal only if it is an integer in range: anything else (NaN, -0, out of range: 0x80000000, which
++    // converts back to -2^31, itself an int32) stays a double. No call: unlike ToInt32, the value of the truncation does not matter.
++    PatchpointValue* narrow = m_out.patchpoint(Int32);
++    narrow->append(ConstrainedValue(value, ValueRep::SomeRegister));
++    narrow->setGenerator([](CCallHelpers& jit, const StackmapGenerationParams& params) {
++        jit.truncateDoubleToInt32(params[1].fpr(), params[0].gpr());
++    });
++    narrow->effects = Effects::none();
++#else
++    LValue narrow = doubleToInt32(value);
++#endif
++    return m_out.select(m_out.equal(m_out.bitCast(m_out.intToDouble(narrow), Int64), m_out.bitCast(value, Int64)), boxInt32(narrow), boxDouble(value));
++}
++
+ LValue Lowering::convert(LValue value, Rep from, Type fromType, Rep to)
+ {
+     if (from == to)
+@@ -921,13 +942,7 @@ LValue Lowering::convert(LValue value, Rep from, Type fromType, Rep to)
+             return m_out.select(m_out.equal(m_out.signExt32To64(narrow), value), boxInt32(narrow), boxDouble(m_out.intToDouble(value)));
+         }
+         case Rep::Double:
+-            // The engine's own functions pass numbers to functions that take it for granted how they are encoded: whatever an int32 can
+-            // hold is one, as it is when the interpreter has made it. (Nothing that a program can say tells the two apart.)
+-            if (code().codeBlock()->isBuiltinFunction()) {
+-                LValue narrow = m_out.doubleToInt32(value);
+-                return m_out.select(m_out.equal(m_out.bitCast(m_out.intToDouble(narrow), Int64), m_out.bitCast(value, Int64)), boxInt32(narrow), boxDouble(value));
+-            }
+-            return boxDouble(value);
++            return boxNumber(value);
+         case Rep::Boolean:
+             return boxBoolean(value);
+         case Rep::JSValue:
+diff --git a/Source/JavaScriptCore/aot/AOTLowering.h b/Source/JavaScriptCore/aot/AOTLowering.h
+index 237691d56c..17ad851551 100644
+--- a/Source/JavaScriptCore/aot/AOTLowering.h
++++ b/Source/JavaScriptCore/aot/AOTLowering.h
+@@ -141,6 +141,7 @@ private:
+     void setProj(Node*, VirtualRegister, LValue, Rep = Rep::JSValue);
+ 
+     LValue doubleToInt32(LValue); // ToInt32.
++    LValue boxNumber(LValue); // A double as a JSValue, encoded as an int32 if it is one (jsNumber()).
+     LValue toBoolean(Node*);
+ 
+     TypedPointer addressFor(VirtualRegister); // The address of a register that lives in the frame (Graph::livesInFrame()).
+diff --git a/Source/JavaScriptCore/runtime/StringPrototype.cpp b/Source/JavaScriptCore/runtime/StringPrototype.cpp
+index f48a8a6a3b..86c7e65d54 100644
+--- a/Source/JavaScriptCore/runtime/StringPrototype.cpp
++++ b/Source/JavaScriptCore/runtime/StringPrototype.cpp
+@@ -763,6 +763,13 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncCharAt, (JSGlobalObject* globalObject, C
+         return throwVMTypeError(globalObject, scope);
+     auto* thisString = thisValue.toString(globalObject);
+     RETURN_IF_EXCEPTION(scope, { });
++    // A substring (from slice(), substring(), split()...) stays a rope when it is only viewed, so the compiled fast paths, which
++    // need a resolved string, would send every character of it here. Resolve it in place, as codePointAt() does: it shares
++    // its base's characters, and from now on the fast paths read it directly.
++    if (thisString->isSubstring()) [[unlikely]] {
++        thisString->value(globalObject);
++        RETURN_IF_EXCEPTION(scope, { });
++    }
+     auto view = thisString->view(globalObject);
+     RETURN_IF_EXCEPTION(scope, { });
+     JSValue a0 = callFrame->argument(0);
+@@ -789,6 +796,13 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncCharCodeAt, (JSGlobalObject* globalObjec
+         return throwVMTypeError(globalObject, scope);
+     auto* thisString = thisValue.toString(globalObject);
+     RETURN_IF_EXCEPTION(scope, { });
++    // A substring (from slice(), substring(), split()...) stays a rope when it is only viewed, so the compiled fast paths, which
++    // need a resolved string, would send every character of it here. Resolve it in place, as codePointAt() does: it shares
++    // its base's characters, and from now on the fast paths read it directly.
++    if (thisString->isSubstring()) [[unlikely]] {
++        thisString->value(globalObject);
++        RETURN_IF_EXCEPTION(scope, { });
++    }
+     auto view = thisString->view(globalObject);
+     RETURN_IF_EXCEPTION(scope, { });
+     JSValue a0 = callFrame->argument(0);
+-- 
+2.43.0
+

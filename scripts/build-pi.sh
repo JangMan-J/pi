@@ -101,9 +101,11 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 	[ "$CPU" = baseline ] && export BUN_AOT_CPU=baseline
 	[ -z "$KEEP_BYTECODE" ] && export BUN_JSC_omitBytecodeFromStaticHeap=1
 	# Loops get a fast copy, without slow paths, that exits to a generic copy when a check fails: hot loops (string scanning,
-	# number crunching, in Pi and in plugins) run several times faster, for under 1 MB of code. BUN_JSC_useAOTLoopSplitting=0 turns
-	# it off.
+	# number crunching, in Pi and in plugins) run several times faster. Policy 5 also splits loops whose calls the fast copy
+	# does away with or that index arrays (pi-tui's text measuring: 2x), for about 6 MB of code. BUN_JSC_useAOTLoopSplitting=0
+	# turns it off; BUN_JSC_aotLoopSplittingPolicy=3 limits it to loops that make no calls.
 	export BUN_JSC_useAOTLoopSplitting="${BUN_JSC_useAOTLoopSplitting:-1}"
+	export BUN_JSC_aotLoopSplittingPolicy="${BUN_JSC_aotLoopSplittingPolicy:-5}"
 	[ -n "$REGEXPS" ] && export BUN_JSC_aotRegExpsPath="$REGEXPS"
 	"$BUN" build --compile --no-compile-autoload-bunfig --target=bun-linux-x64 --bytecode --format=esm "${ORDER_ARGS[@]}" \
 		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | grep -v "^AOT: " | tail -3
