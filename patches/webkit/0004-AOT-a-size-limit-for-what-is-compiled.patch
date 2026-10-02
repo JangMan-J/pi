@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Fri, 2 Oct 2026 22:01:04 +0000
+Subject: [PATCH] AOT: a size limit for what is compiled
+
+maximumAOTCandidateBytecodeSize (256 KB): the back end's time and memory
+grow faster than a function's size, and a module that is one big literal
+took minutes and tens of GB. A bigger function is left to the other tiers,
+as the DFG and FTL do. A program that goes without its bytecode has no other
+tier, so its build stops with a message that says what to do.
+---
+ Source/JavaScriptCore/aot/AOTCompiler.cpp   | 11 +++++++++++
+ Source/JavaScriptCore/runtime/OptionsList.h |  1 +
+ 2 files changed, 12 insertions(+)
+
+diff --git a/Source/JavaScriptCore/aot/AOTCompiler.cpp b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+index daf501e292..5810b0d894 100644
+--- a/Source/JavaScriptCore/aot/AOTCompiler.cpp
++++ b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+@@ -260,6 +260,17 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+         graph.fail("compiled for the debugger or a profiler"_s);
+         return declined();
+     }
++    if (unlinkedCodeBlock->instructions().size() > Options::maximumAOTCandidateBytecodeSize()) {
++        if (numbersOfIdentifiersOfProgram()) {
++            // (The program goes without its bytecode: a function that is not compiled could not run at all.)
++            WTFLogAlways("AOT: a function of %zu bytes of bytecode (%s) is bigger than maximumAOTCandidateBytecodeSize (%u bytes), and compiling one that big takes minutes and tens of GB. "
++                "Split it up (it is likely one big literal), or build with BUN_JSC_maximumAOTCandidateBytecodeSize=%zu to compile it anyway, or with BUN_JSC_omitBytecodeFromStaticHeap=0 to run it from bytecode.",
++                unlinkedCodeBlock->instructions().size(), unlinkedCodeBlock->codeType() == FunctionCode ? "a function" : "the top-level code of a module", Options::maximumAOTCandidateBytecodeSize(), unlinkedCodeBlock->instructions().size());
++            exit(1);
++        }
++        graph.fail("bigger than maximumAOTCandidateBytecodeSize"_s);
++        return declined();
++    }
+     if (!parseBytecode(graph))
+         return declined();
+     if (program)
+diff --git a/Source/JavaScriptCore/runtime/OptionsList.h b/Source/JavaScriptCore/runtime/OptionsList.h
+index 713304349c..a345bb087d 100644
+--- a/Source/JavaScriptCore/runtime/OptionsList.h
++++ b/Source/JavaScriptCore/runtime/OptionsList.h
+@@ -175,6 +175,7 @@ bool hasCapacityToUseLargeGigacage();
+     v(Unsigned, maximumAOTInliningCallerBytecodeCost, 4000, Normal, "With useAOTInlining: maximum total bytecode size inlined into one function."_s) \
+     v(Bool, validateAOTInferredTypes, false, Normal, "For testing the AOT compiler. Compiled code checks every value whose type was inferred rather than checked, and crashes if the type is wrong."_s) \
+     v(Bool, logAOTTypeInference, false, Normal, "After whole-program type inference, logs the result for each function and variable and what contributed to it. Lines start with \"AOT inference:\"."_s) \
++    v(Unsigned, maximumAOTCandidateBytecodeSize, 262144, Normal, "The AOT compiler leaves a function whose bytecode is bigger than this many bytes to the other tiers: the back end's time and memory grow faster than the size (a module that is one big literal: minutes, tens of GB), and such a function is data, not a hot path. A program that goes without its bytecode (omitBytecodeFromStaticHeap) has no other tier, so its build stops with a message instead."_s) \
+     v(Unsigned, aotLoopSplittingPolicy, 3, Normal, "Which loops useAOTLoopSplitting applies to. 1: all. 2: loops that contain something the fast copy improves (arithmetic, indexed element accesses, a call it can elide). 3: loops that make no calls. 4: loops that satisfy both 2 and 3. 5: loops that make no calls, or that contain a call the fast copy elides or an indexed element access."_s) \
+     \
+     v(Unsigned, repatchCountForCoolDown, 8, Normal, nullptr) \
+-- 
+2.43.0
+
