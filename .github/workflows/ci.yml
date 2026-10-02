@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [pi-bolt]
+  pull_request:
+    branches: [pi-bolt]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck -s sh -S warning install.sh npm/bin/pi-bolt
+          shellcheck -x -S warning scripts/*.sh scripts/lib/common.sh scripts/toolchain/*.sh tests/aot/run.sh bench/run-suite.sh
+      - name: python
+        run: python3 -m py_compile bench/*.py scripts/lib/*.py
+      - name: sources.json and versions
+        run: |
+          python3 -c 'import json; json.load(open("sources.json"))'
+          test "$(python3 -c 'import json; print(json.load(open("npm/package.json"))["version"])')" = "$(cat VERSION)"
+          grep -q "^VERSION=$(cat VERSION)\$" npm/bin/pi-bolt
+
+  # Builds Pi with the released runtime and runs the engine tests and Pi's end-to-end checks on the result. The runtime itself
+  # (patched WebKit and Bun) takes hours to build, so it comes from the latest release; a change to patches/ is verified by the
+  # release pipeline, which builds it.
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: runtime
+        run: scripts/fetch-runtime.sh
+      - name: Pi
+        run: scripts/prepare-pi.sh
+      - name: build
+        run: |
+          scripts/build-pi.sh --out out/pi-bolt
+          out/pi-bolt/pi --version
+          BUN_STATIC_HEAP_VERBOSE=1 out/pi-bolt/pi --version 2>&1 | grep -q "image registered: true"
+      - name: engine tests
+        run: tests/aot/run.sh
+      - name: end-to-end tools
+        run: |
+          scripts/build-pi.sh --stable --out out/pi-stable
+          python3 bench/e2e_tools.py --reference bun=out/pi-stable/pi --build pi-bolt=out/pi-bolt/pi
+      - name: TUI check
+        run: python3 bench/ui_check.py --project . --build pi-bolt=out/pi-bolt/pi

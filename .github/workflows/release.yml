@@ -1,0 +1,118 @@
+name: release
+
+# Builds, tests, packages, signs and publishes a release when a bolt-vX.Y.Z tag is pushed. The runtime (patched WebKit and Bun)
+# is rebuilt only when patches/ or sources.json changed since the previous release; otherwise the previous release's runtime is
+# used. Building the runtime needs about 32 GB of RAM and 40 GB of disk, so this runs on a self-hosted runner: see
+# docs/RELEASING.md for setting one up.
+on:
+  push:
+    tags: ["bolt-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The bolt-vX.Y.Z tag to release (must exist)"
+        required: true
+
+permissions:
+  contents: write
+  id-token: write # npm provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, linux, x64, pi-bolt]
+    timeout-minutes: 600
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: versions agree
+        run: |
+          test "bolt-v$(cat VERSION)" = "$TAG" || { echo "VERSION is $(cat VERSION), the tag is $TAG"; exit 1; }
+          test "$(python3 -c 'import json; print(json.load(open("npm/package.json"))["version"])')" = "$(cat VERSION)"
+          grep -q "^VERSION=$(cat VERSION)\$" npm/bin/pi-bolt
+
+      # The runtime is identified by what it is built from. The previous release's is reused if nothing changed.
+      - name: runtime
+        run: |
+          stamp=$(cat sources.json patches/webkit/*.patch patches/bun/*.patch scripts/build-runtime.sh scripts/toolchain/*.sh | sha256sum | cut -c1-16)
+          echo "runtime stamp: $stamp"
+          previous=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' || true)
+          if [ -n "$previous" ] && gh release download "$previous" --pattern RUNTIME_STAMP --output .work/previous-stamp 2>/dev/null \
+             && [ "$(cat .work/previous-stamp)" = "$stamp" ]; then
+            echo "same as $previous: downloading its runtime"
+            scripts/fetch-runtime.sh --version "$previous"
+          else
+            echo "building the runtime"
+            [ -d .toolchain/sysroot-glibc ] || scripts/toolchain/make-sysroot.sh
+            scripts/fetch-sources.sh
+            scripts/build-runtime.sh
+          fi
+          echo "$stamp" > .work/RUNTIME_STAMP
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Pi
+        run: scripts/prepare-pi.sh
+
+      - name: training profile
+        run: |
+          pi=$(python3 -c 'import json; print(json.load(open("packages/coding-agent/package.json"))["version"])')
+          [ -f "profiles/pi-$pi/bytecode.order" ] || { echo "no training profile for Pi $pi: run scripts/train-profile.sh and commit profiles/pi-$pi"; exit 1; }
+
+      - name: build and package
+        run: scripts/package-release.sh
+
+      - name: tests
+        run: |
+          tests/aot/run.sh
+          scripts/build-pi.sh --stable --out out/pi-stable
+          python3 bench/e2e_tools.py --reference bun=out/pi-stable/pi --build x64=out/pi-bolt/pi --build baseline=out/pi-bolt-baseline/pi --build jit=out/pi-bolt-jit/pi
+          python3 bench/ui_check.py --project . --build x64=out/pi-bolt/pi --build jit=out/pi-bolt-jit/pi
+
+      - name: sign
+        run: |
+          printf '%s' "$PIBOLT_SIGNING_KEY" > .work/signing-key.pem
+          scripts/sign-release.sh --key .work/signing-key.pem "dist/$(cat VERSION)"
+          rm -f .work/signing-key.pem
+          cp .work/RUNTIME_STAMP "dist/$(cat VERSION)/RUNTIME_STAMP"
+        env:
+          PIBOLT_SIGNING_KEY: ${{ secrets.PIBOLT_SIGNING_KEY }}
+
+      - name: GitHub release
+        run: |
+          version=$(cat VERSION)
+          pi=$(python3 -c 'import json; print(json.load(open("packages/coding-agent/package.json"))["version"])')
+          notes=.work/notes.md
+          if [ -f "docs/releases/$version.md" ]; then cp "docs/releases/$version.md" $notes; else
+            printf 'Pi-Bolt %s runs Pi %s.\n\nInstall:\n\n```bash\ncurl -fsSL https://pi-bolt.opensec.in/install.sh | sh\n```\n' "$version" "$pi" > $notes
+          fi
+          gh release create "$TAG" --title "Pi-Bolt $version (Pi $pi)" --notes-file $notes --latest dist/$version/*
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: installer and site
+        run: |
+          git config user.name "OpenSec"
+          git config user.email "323596076+opensec-intelligence@users.noreply.github.com"
+          scripts/publish-installer.sh origin
+
+      - name: npm
+        run: |
+          cd npm && npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
