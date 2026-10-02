@@ -14,7 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck -x -S warning install.sh scripts/*.sh scripts/lib/common.sh scripts/toolchain/*.sh tests/aot/run.sh
+        run: |
+          shellcheck -s sh -S warning install.sh npm/bin/pi-bolt
+          shellcheck -x -S warning scripts/*.sh scripts/lib/common.sh scripts/toolchain/*.sh tests/aot/run.sh bench/run-suite.sh
       - name: python
         run: python3 -m py_compile bench/*.py scripts/lib/*.py
       - name: sources.json

@@ -23,6 +23,10 @@ while [ $# -gt 0 ]; do
 done
 need sha256sum
 VERSION="$(cat "$PIBOLT_ROOT/VERSION")"
+# The npm launcher downloads the release of its own version: the two have to agree.
+NPM_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PIBOLT_ROOT/npm/package.json")"
+[ "$NPM_VERSION" = "$VERSION" ] || die "npm/package.json is $NPM_VERSION, VERSION is $VERSION"
+grep -q "^VERSION=$VERSION\$" "$PIBOLT_ROOT/npm/bin/pi-bolt" || die "npm/bin/pi-bolt does not download version $VERSION"
 DIST="$PIBOLT_ROOT/dist/$VERSION"
 PI_ROOT="$(realpath "$PI_DIR")"
 TARGETS=("linux-x64:pi-bolt:" "linux-x64-baseline:pi-bolt-baseline:--cpu baseline" "linux-x64-jit:pi-bolt-jit:--jit on")
