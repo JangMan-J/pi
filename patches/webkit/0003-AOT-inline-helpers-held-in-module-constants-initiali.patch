@@ -1,0 +1,191 @@
+From eb31ce9d6cdeffdcfc17b2a485ba7c5d4058c64f Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Fri, 2 Oct 2026 20:01:09 +0000
+Subject: [PATCH] AOT: inline helpers held in module constants, initialize vars
+ of cloned module tables
+
+- Inlining: a call through a module variable that only ever holds one
+  function (`const f = (c) => ...`) is inlined like a call to a function
+  declaration, behind a check that the variable is initialized
+  (GuardKind::Initialized). If it is not, the call throws there, as it
+  would have, so the loop keeps no call and is optimized as a whole.
+- Module environments: with compiler threads (JIT on), a module's symbol
+  table from the static heap is cloned, and the clone has only the names
+  the static heap kept. Its vars were then not set to undefined and held
+  the hole: a call before assignment went through, and typeof crashed.
+  A clone of a static-heap table is now initialized by offset too.
+- Calls and KnownCallee guards on a variable that is not yet initialized
+  test for undefined and the hole alike (both are below every cell).
+---
+ Source/JavaScriptCore/aot/AOTGraph.cpp        |  3 +++
+ Source/JavaScriptCore/aot/AOTGraph.h          |  4 ++++
+ Source/JavaScriptCore/aot/AOTInlining.cpp     | 21 +++++++++++++++++--
+ Source/JavaScriptCore/aot/AOTLowerCalls.cpp   |  4 ++--
+ Source/JavaScriptCore/aot/AOTLowerCore.cpp    |  3 ++-
+ Source/JavaScriptCore/aot/AOTLowerGuards.cpp  | 16 ++++++++++++--
+ .../runtime/CyclicModuleRecord.cpp            |  3 ++-
+ 7 files changed, 46 insertions(+), 8 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTGraph.cpp b/Source/JavaScriptCore/aot/AOTGraph.cpp
+index 0e37864b8e..bbe7946aa4 100644
+--- a/Source/JavaScriptCore/aot/AOTGraph.cpp
++++ b/Source/JavaScriptCore/aot/AOTGraph.cpp
+@@ -2028,6 +2028,9 @@ void Node::dump(PrintStream& out) const
+         case GuardKind::IsIntrinsic:
+             out.print("IsIntrinsic ", intrinsic, " ");
+             break;
++        case GuardKind::Initialized:
++            out.print("GuardInitialized(bc#", bytecodeIndex.offset(), ")");
++            break;
+         }
+         break;
+     }
+diff --git a/Source/JavaScriptCore/aot/AOTGraph.h b/Source/JavaScriptCore/aot/AOTGraph.h
+index 10cfe2379d..2499ad71ad 100644
+--- a/Source/JavaScriptCore/aot/AOTGraph.h
++++ b/Source/JavaScriptCore/aot/AOTGraph.h
+@@ -90,6 +90,10 @@ enum class GuardKind : uint8_t {
+     TypedArrayStorage, // The typed array (uses[0]) has a fixed length. Also loads its length and storage pointer.
+     IsIntrinsicOfArray, // IsIntrinsic, and uses[1] is an array. Created by inlineCalls().
+     IsIntrinsic, // uses[0] is the ImmutableIntrinsic numbered Node::intrinsic. Created by inlineCalls().
++    // The callee (uses[0]), read from a variable that only ever holds the function inlined in its place, is not undefined or the hole:
++    // the variable has been initialized. Created by inlineCalls(). Not the end of its block: if it fails, the call throws there and then,
++    // as it would have, so the code in place of the call has no other way to it.
++    Initialized,
+     // With Options::useAOTFunctionSplitting(). For an op_get_by_id or op_put_by_id whose base has a static type (TypeTable): the base was
+     // allocated with the property in Node::slotOfField (its layout is in [firstLayout, lastLayout]) and the property is still
+     // there. The guard also performs the access. Afterwards the base's layout is known (a Narrow with narrowedTo), so later guards
+diff --git a/Source/JavaScriptCore/aot/AOTInlining.cpp b/Source/JavaScriptCore/aot/AOTInlining.cpp
+index 9174355b90..5d44c2f20b 100644
+--- a/Source/JavaScriptCore/aot/AOTInlining.cpp
++++ b/Source/JavaScriptCore/aot/AOTInlining.cpp
+@@ -194,6 +194,9 @@ private:
+         bool isCertainlyTheIntrinsic = false;
+         // It is a form of the method that will only do for an array.
+         bool isLeanForm = false;
++        // The variable it is read from holds that one function once it is initialized, which is checked for (`const f = () => ...`):
++        // until then, the call is made as it is, and fails as it would.
++        bool checksInitialized = false;
+         // Options::verboseAOTCompilation(): why one of the engine's own functions does not become part of its caller.
+         auto notTaken = [&](ASCIILiteral why) {
+             dataLogLnIf(Options::verboseAOTCompilation(), "AOT: a builtin is not made part of its caller at bc#", call->bytecodeIndex.offset(), ": ", why);
+@@ -222,12 +225,13 @@ private:
+             bool isExact = false;
+             const KnownFunction* known = caller.knownCallee(call, &isExact);
+             if (Options::verboseAOTCompilation()) [[unlikely]] {
+-                const char* why = !known ? "unknown callee" : !isExact ? "callee not exact" : !known->forCall ? "no code for call" : !(known->isDeclaration || Graph::closedMethodReadBy(calleeNode)) ? "not a declaration" : !caller.passesNoFunctionObject(call) ? "passes function object" : nullptr;
++                const char* why = !known ? "unknown callee" : !isExact ? "callee not exact" : !known->forCall ? "no code for call" : !caller.passesNoFunctionObject(call) ? "passes function object" : nullptr;
+                 if (why)
+                     dataLogLn("AOT-INLINE: no: ", why);
+             }
+-            if (!known || !isExact || !known->forCall || !(known->isDeclaration || Graph::closedMethodReadBy(calleeNode)) || !caller.passesNoFunctionObject(call))
++            if (!known || !isExact || !known->forCall || !caller.passesNoFunctionObject(call))
+                 return false;
++            checksInitialized = !known->isDeclaration && !Graph::closedMethodReadBy(calleeNode);
+             callee = known->forCall;
+         }
+         auto about = m_program.about(callee);
+@@ -426,6 +430,19 @@ private:
+         }
+         block->successors.append(entry);
+         entry->predecessors.append(block);
++        // Until the variable is initialized, the call throws: nothing else is to be made of it.
++        if (checksInitialized) {
++            Node* guard = m_graph.addNode(NodeKind::Guard);
++            guard->graph = block->graph;
++            guard->guardKind = GuardKind::Initialized;
++            guard->opcode = call->opcode;
++            guard->instruction = call->instruction;
++            guard->bytecodeIndex = call->bytecodeIndex;
++            guard->block = block;
++            // (Under the call's own register for the callee: Graph::knownCallee() finds it there, as it does for the call.)
++            guard->uses.append({ calleeRegister, calleeNode });
++            block->nodes.append(guard);
++        }
+         // If it is not the function it was taken for, the call is made after all.
+         Node* callAfterAll = nullptr;
+         if (intrinsicToCheckFor && !isCertainlyTheIntrinsic) {
+diff --git a/Source/JavaScriptCore/aot/AOTLowerCalls.cpp b/Source/JavaScriptCore/aot/AOTLowerCalls.cpp
+index 922b5e93d2..4c9b5bd479 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerCalls.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerCalls.cpp
+@@ -136,13 +136,13 @@ bool Lowering::lowerCallToKnownFunction(Node* node, VirtualRegister calleeRegist
+     bool isSurelyThere = known->isDeclaration || node->use(calleeRegister)->isReadOnlyToBeCalled;
+     LValue callee = passesCallee || !isSurelyThere ? lowJSValue(node->use(calleeRegister)) : nullptr;
+     if (!isSurelyThere) {
+-        // What is in the variable until it is initialized is not a function. (If it is the hole, that has been seen to.)
++        // What is in the variable until it is initialized is not a function: undefined, or the hole if nothing has seen to it.
+         LBasicBlock isNotInitialized = newColdBlock();
+         LBasicBlock isInitialized = m_out.newBlock();
+         // (Or, if it is known by what it is and not by where it was read from: whatever else it may be.)
+         Type typeOfCallee = node->use(calleeRegister)->type;
+         if (isSubtype(typeOfCallee, TFunction | TUndefined | TEmpty))
+-            m_out.branch(m_out.equal(callee, m_out.constInt64(JSValue::ValueUndefined)), rarely(isNotInitialized), usually(isInitialized));
++            m_out.branch(m_out.belowOrEqual(callee, m_out.constInt64(JSValue::ValueUndefined)), rarely(isNotInitialized), usually(isInitialized)); // (Both are below every cell.)
+         else {
+             if (!isSubtype(typeOfCallee, TCell)) {
+                 LBasicBlock isCellCase = m_out.newBlock();
+diff --git a/Source/JavaScriptCore/aot/AOTLowerCore.cpp b/Source/JavaScriptCore/aot/AOTLowerCore.cpp
+index 3c04b255dd..2dffb741d1 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerCore.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerCore.cpp
+@@ -1331,7 +1331,8 @@ void Lowering::lowerBlock(BasicBlock* block)
+         lowerEntry();
+ 
+     Node* terminal = block->terminal();
+-    if (terminal && terminal->kind != NodeKind::Guard && !(terminal->kind == NodeKind::Bytecode && (isBranch(terminal->opcode) || isTerminal(terminal->opcode) || isThrow(terminal->opcode))))
++    bool isTerminalGuard = terminal && terminal->kind == NodeKind::Guard && terminal->guardKind != GuardKind::Initialized;
++    if (terminal && !isTerminalGuard && !(terminal->kind == NodeKind::Bytecode && (isBranch(terminal->opcode) || isTerminal(terminal->opcode) || isThrow(terminal->opcode))))
+         terminal = nullptr;
+ 
+     auto setCurrentNode = [&](Node* node) {
+diff --git a/Source/JavaScriptCore/aot/AOTLowerGuards.cpp b/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
+index 6e8573ca98..dd6e1c78e1 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
+@@ -236,14 +236,26 @@ void Lowering::emitGuard(Node* guard)
+     case GuardKind::KnownCallee: {
+         const KnownFunction* known = m_graph.knownCallee(guard);
+         if (m_graph.calleeIsExact(guard)) {
+-            // What is in the variable until it is initialized is not a function. (If it is the hole, that has been seen to.)
++            // What is in the variable until it is initialized is not a function: undefined, or the hole if nothing has seen to it. Both are below every cell.
+             if (!known->isDeclaration)
+-                exitUnless(isCell(lowJSValue(guard->uses[0].node)));
++                exitUnless(m_out.above(lowJSValue(guard->uses[0].node), m_out.constInt64(JSValue::ValueUndefined)));
+             return;
+         }
+         RELEASE_ASSERT_NOT_REACHED(); // There is no such guard of what is not proven (inlineCall()).
+         return;
+     }
++    case GuardKind::Initialized: {
++        // Undefined and the hole are below every cell.
++        LValue callee = lowJSValue(guard->uses[0].node);
++        LBasicBlock isNotInitialized = newColdBlock();
++        LBasicBlock isInitialized = m_out.newBlock();
++        m_out.branch(m_out.above(callee, m_out.constInt64(JSValue::ValueUndefined)), usually(isInitialized), rarely(isNotInitialized));
++        m_out.appendTo(isNotInitialized);
++        vmCall(guard, Void, Entry::operationAOTThrowNotAFunction, m_globalObject, callee);
++        m_out.unreachable();
++        m_out.appendTo(isInitialized);
++        return;
++    }
+     case GuardKind::TypedArrayStorage: {
+         LValue base = lowJSValue(guard->uses[0].node);
+         exitUnless(m_out.testIsZero32(m_out.load8ZeroExt32(base, m_heaps.JSArrayBufferView_mode), m_out.constInt32(isResizableOrGrowableSharedMode)));
+diff --git a/Source/JavaScriptCore/runtime/CyclicModuleRecord.cpp b/Source/JavaScriptCore/runtime/CyclicModuleRecord.cpp
+index fb79b0270d..16a64d2446 100644
+--- a/Source/JavaScriptCore/runtime/CyclicModuleRecord.cpp
++++ b/Source/JavaScriptCore/runtime/CyclicModuleRecord.cpp
+@@ -476,7 +476,8 @@ void CyclicModuleRecord::initializeEnvironment(JSGlobalObject* globalObject, Ref
+     // While the symbol table's entries are still in the bytecode cache nothing watches them, and where the variables are is known
+     // without their names.
+     // (Likewise with a table that was made when the program was built. That may not so much as have the names: StaticHeap keeps those that something can ask for.)
+-    bool isTableOfStaticHeap = StaticHeap::contains(symbolTable);
++    // (With compiler threads, the module's environment is laid out by a clone of that table, which has no more names than it: see SymbolTable::isSharedAcrossRealms().)
++    bool isTableOfStaticHeap = StaticHeap::contains(symbolTable) || (symbolTable->clonedFrom() && StaticHeap::contains(symbolTable->clonedFrom()));
+     bool initializeVarsByOffset = symbolTable->hasCachedEntriesPending() || isTableOfStaticHeap;
+     if (initializeVarsByOffset) {
+         for (unsigned i = 0; i < unlinkedCodeBlock->numberOfVarScopeOffsets(); ++i)
+-- 
+2.43.0
+
