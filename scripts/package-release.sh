@@ -9,6 +9,7 @@
 #   pi-bolt-linux-x64-baseline.tar.gz  JIT off, code for any x86-64 CPU
 #   pi-bolt-linux-x64-jit.tar.gz       JIT on, for code loaded at run time
 #   pi-bolt-runtime-linux-x64.tar.gz   the Pi-Bolt Bun runtime, to build Pi with plugins (docs/PLUGINS.md)
+# The Pi archives also come as .tar.xz, about 40% smaller, which install.sh prefers where xz is installed.
 source "$(dirname "$0")/lib/common.sh"
 
 PI_DIR="$PIBOLT_PI"; BUILD=1
@@ -16,12 +17,13 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--pi) PI_DIR="$2"; shift ;;
 	--no-build) BUILD="" ;;
-	-h | --help) sed -n '2,13p' "$0"; exit 0 ;;
+	-h | --help) sed -n '2,12p' "$0"; exit 0 ;;
 	*) die "unknown option $1" ;;
 	esac
 	shift
 done
 need sha256sum
+need xz
 VERSION="$(cat "$PIBOLT_ROOT/VERSION")"
 # The npm launcher downloads the release of its own version: the two have to agree.
 NPM_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PIBOLT_ROOT/npm/package.json")"
@@ -58,6 +60,7 @@ for target in "${TARGETS[@]}"; do
 	notices "$dir"
 	log "pi-bolt-$name.tar.gz (Pi $("$build/pi" --version))"
 	tar -C "$STAGE" --owner=0 --group=0 --numeric-owner -czf "$DIST/pi-bolt-$name.tar.gz" "pi-bolt-$name"
+	tar -C "$STAGE" --owner=0 --group=0 --numeric-owner -cf - "pi-bolt-$name" | xz -T0 -9e >"$DIST/pi-bolt-$name.tar.xz" # (-T0 writes blocks, which xz -T0 can decompress in parallel)
 done
 
 runtime="$(runtime_bun)"
@@ -66,6 +69,6 @@ mkdir -p "$dir" && cp "$runtime" "$dir/bun" && notices "$dir"
 log "pi-bolt-runtime-linux-x64.tar.gz (Bun $("$runtime" --version))"
 tar -C "$STAGE" --owner=0 --group=0 --numeric-owner -czf "$DIST/pi-bolt-runtime-linux-x64.tar.gz" pi-bolt-runtime-linux-x64
 
-(cd "$DIST" && sha256sum -- *.tar.gz >SHA256SUMS)
+(cd "$DIST" && sha256sum -- *.tar.gz *.tar.xz >SHA256SUMS)
 log "release $VERSION in $DIST:"
 (cd "$DIST" && ls -lh -- * | awk '{print "    " $5 "  " $9}')
