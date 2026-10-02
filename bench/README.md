@@ -1,7 +1,7 @@
 # Benchmark and end-to-end test tools
 
 Every tool takes the builds to compare as `--build name=command`. The command can be an executable (`out/pi-bolt/pi`) or a
-command line (`"node .work/pi/packages/coding-agent/dist/bundle/cli.js"`). Each run gets its own scripted model server and a
+command line (`"node packages/coding-agent/dist/bundle/cli.js"`). Each run gets its own scripted model server and a
 throwaway Pi home, so runs are isolated from your Pi configuration and from each other.
 
 | Tool | What it does |

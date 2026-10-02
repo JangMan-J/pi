@@ -5,6 +5,8 @@ set -euo pipefail
 PIBOLT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Where sources, toolchains and builds live; override with PIBOLT_WORK.
 PIBOLT_WORK="${PIBOLT_WORK:-$PIBOLT_ROOT/.work}"
+# The Pi to build: this repository, which is a fork of Pi. Override with PIBOLT_PI or --pi.
+PIBOLT_PI="${PIBOLT_PI:-$PIBOLT_ROOT}"
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -28,7 +30,7 @@ runtime_bun() {
 pi_agent_dir() {
 	local agent
 	agent="$(realpath "$1")/packages/coding-agent"
-	[ -f "$agent/dist/bun/cli.js" ] || die "$agent/dist/bun/cli.js not found: build Pi first (scripts/fetch-pi.sh, or npm ci && npm run build)"
+	[ -f "$agent/dist/bun/cli.js" ] || die "$agent/dist/bun/cli.js not found: build Pi first (scripts/prepare-pi.sh)"
 	printf '%s\n' "$agent"
 }
 pi_version() {

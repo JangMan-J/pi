@@ -10,8 +10,9 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1baf7a?style=flat-square" /></a>
 </p>
 
-> Pi-Bolt is an independent project, not affiliated with Pi's authors or with Oven. For Pi itself, see
-> [earendil-works/pi](https://github.com/earendil-works/pi).
+> Pi-Bolt is a fork of [Pi](https://github.com/earendil-works/pi) by an independent team, not affiliated with Pi's authors
+> or with Oven. This repository is Pi 1.0.0 with its full history, plus Pi-Bolt's compiler patches, build scripts and
+> benchmarks.
 
 # Pi-Bolt
 
@@ -25,6 +26,7 @@ with a prebuilt JavaScript heap, so at launch nothing is parsed, interpreted or 
 * **[Getting started](#getting-started)**: install a release; there is nothing to compile
 * **[Benchmarks](docs/BENCHMARKS.md)**: Pi-Bolt vs Pi on Bun and on Node, with method and raw data
 * **[Plugins](docs/PLUGINS.md)**: compile your Pi extensions in, and they run as machine code too
+* **[The fork](#the-fork)**: what Pi-Bolt adds to Pi's tree, and what it leaves alone
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-hero-dark.svg">
@@ -135,6 +137,23 @@ The default build has no JIT. A plugin loaded at run time is therefore interpret
 The compiler comes from [oven-sh/WebKit#743](https://github.com/oven-sh/WebKit/pull/743), which targets ARM64. Pi-Bolt ports it
 to x86-64 and adds its own code-generation and runtime work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## The fork
+
+Pi's own code is untouched: the `packages/` tree is Pi at
+[v1.0.0](https://github.com/earendil-works/pi/releases/tag/v1.0.0), and Pi-Bolt runs it as it is. Pi-Bolt adds:
+
+| | |
+|---|---|
+| `patches/` | its changes to WebKit (JavaScriptCore's ahead-of-time compiler) and Bun, against the commits in `sources.json` |
+| `scripts/` | `prepare-pi.sh`, `build-runtime.sh`, `build-pi.sh` and the rest, next to Pi's own scripts |
+| `profiles/` | training profiles per Pi version |
+| `bench/`, `tests/aot/` | benchmarks with their published results, and engine tests |
+| `docs/`, `examples/`, `install.sh` | documentation, an example plugin, the installer |
+
+It also replaces Pi's README, CONTRIBUTING and SECURITY files with its own, and leaves out Pi's GitHub automation.
+For Pi itself, see [earendil-works/pi](https://github.com/earendil-works/pi) and its
+[README](packages/coding-agent/README.md).
+
 ## Documentation
 
 | | |
@@ -155,7 +174,7 @@ cd Pi-Bolt
 scripts/fetch-sources.sh            # WebKit and Bun at the pinned commits, with Pi-Bolt's patches
 scripts/toolchain/make-sysroot.sh   # glibc 2.17 sysroot with static ICU, for portable executables
 scripts/build-runtime.sh            # the Pi-Bolt Bun runtime
-scripts/fetch-pi.sh                 # Pi 1.0.0, built
+scripts/prepare-pi.sh               # builds the Pi in this repository (1.0.0)
 scripts/build-pi.sh                 # out/pi-bolt/pi
 ```
 
@@ -167,20 +186,11 @@ Before submitting changes, run:
 ```bash
 tests/aot/run.sh                                                        # engine tests
 python3 bench/e2e_tools.py --reference bun=out/pi-stable/pi --build pi-bolt=out/pi-bolt/pi
-python3 bench/ui_check.py --project .work/pi --build pi-bolt=out/pi-bolt/pi
+python3 bench/ui_check.py --project . --build pi-bolt=out/pi-bolt/pi
 ```
 
 [docs/BUILDING.md](docs/BUILDING.md) has the requirements, every option, and how to regenerate the patches.
 
-```
-patches/      Pi-Bolt's changes to WebKit (JavaScriptCore) and Bun, against the commits in sources.json
-scripts/      fetch, build, train and package
-profiles/     training profiles per Pi version
-examples/     an example plugin
-bench/        benchmarks, end-to-end checks, the scripted model server, and published results
-tests/aot/    engine correctness tests
-docs/         documentation and images
-```
 
 ## Contributing
 

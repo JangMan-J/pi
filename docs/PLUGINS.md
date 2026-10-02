@@ -56,7 +56,7 @@ or trying out.
 
 ## Compile plugins into the executable
 
-You need a Pi-Bolt build environment (see [BUILDING.md](BUILDING.md): `scripts/fetch-pi.sh` and either the release runtime or
+You need a Pi-Bolt build environment (see [BUILDING.md](BUILDING.md): `scripts/prepare-pi.sh` and either the release runtime or
 `scripts/build-runtime.sh`).
 
 ### 1. Write a manifest

@@ -2,7 +2,7 @@
 # Builds Pi as a single executable with every function compiled ahead of time.
 #
 # Usage: scripts/build-pi.sh [options]
-#   --pi DIR          a Pi checkout that has been built (npm ci && npm run build). Default: $PIBOLT_WORK/pi (scripts/fetch-pi.sh)
+#   --pi DIR          a built Pi tree (scripts/prepare-pi.sh). Default: this repository, which is a fork of Pi
 #   --out DIR         where to put the executable and its assets. Default: out/pi-bolt
 #   --jit on|off      run with the JIT on (code that is not compiled ahead of time, such as extensions loaded at run time, gets
 #                     JIT-compiled) or off (least memory; the default)
@@ -20,7 +20,7 @@
 # Environment: PIBOLT_BUN (the Pi-Bolt runtime; default $PIBOLT_WORK/runtime/bun)
 source "$(dirname "$0")/lib/common.sh"
 
-PI_DIR="$PIBOLT_WORK/pi"; OUT=""; JIT=off; CPU=native; PROFILE=""; PLUGINS=""; PLUGIN_WORKERS=(); KEEP_BYTECODE=""; STABLE=""
+PI_DIR="$PIBOLT_PI"; OUT=""; JIT=off; CPU=native; PROFILE=""; PLUGINS=""; PLUGIN_WORKERS=(); KEEP_BYTECODE=""; STABLE=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--pi) PI_DIR="$2"; shift ;;

@@ -4,13 +4,14 @@
 # Usage: bench/run-suite.sh RESULTS_DIR [--cpus LIST]
 # Expects the builds of scripts/package-release.sh in out/ (pi-bolt, pi-bolt-jit), the plugin builds
 # (scripts/build-pi.sh --plugins examples/plugins/plugins.ts --out out/pi-bolt-plugins, and --jit on --out out/pi-bolt-plugins-jit),
-# the stock-Bun build (scripts/build-pi.sh --stable --out out/pi-stable) and, for Node, a built Pi checkout in $PIBOLT_WORK/pi.
+# the stock-Bun build (scripts/build-pi.sh --stable --out out/pi-stable) and, for Node, the Pi of this repository, built
+# (scripts/prepare-pi.sh).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$(realpath -m "${1:?results directory}")"; shift
 CPUS=40-47
 [ "${1:-}" = --cpus ] && CPUS="$2"
-PI="${PIBOLT_WORK:-$ROOT/.work}/pi"
+PI="${PIBOLT_PI:-$ROOT}"
 NODE="node $PI/packages/coding-agent/dist/bundle/cli.js"
 mkdir -p "$OUT"
 cd "$ROOT"

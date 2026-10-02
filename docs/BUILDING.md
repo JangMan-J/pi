@@ -20,7 +20,7 @@ Needs git, Node.js 22.19 or later with npm (to build Pi), Python 3, and rsync (f
 ```bash
 git clone https://github.com/opensec-git/Pi-Bolt.git && cd Pi-Bolt
 scripts/fetch-runtime.sh     # the Pi-Bolt runtime from the latest release -> .work/runtime/bun
-scripts/fetch-pi.sh          # Pi at the version in sources.json, cloned and built -> .work/pi
+scripts/prepare-pi.sh        # builds the Pi in this repository (Pi-Bolt is a fork of Pi)
 scripts/build-pi.sh          # -> out/pi-bolt/pi
 out/pi-bolt/pi --version
 ```
@@ -77,7 +77,7 @@ scripts/build-pi.sh [options]
 
 | Option | Default | |
 |---|---|---|
-| `--pi DIR` | `.work/pi` | A Pi checkout that has been built (`npm ci && npm run build`). |
+| `--pi DIR` | this repository | A built Pi tree (`scripts/prepare-pi.sh`). |
 | `--out DIR` | `out/pi-bolt` | Where the executable and its asset files go. |
 | `--jit on\|off` | `off` | `on` also JIT-compiles code loaded at run time, such as run-time plugins. |
 | `--cpu native\|baseline` | `native` | `native`: code for the build machine's instruction set (AVX2 class); on a CPU without it, the executable runs from bytecode. `baseline`: any x86-64 CPU. |
@@ -95,7 +95,7 @@ The script checks the result: the executable must report `image registered: true
 ### Building another Pi version
 
 ```bash
-scripts/fetch-pi.sh --tag v1.0.1 --dir .work/pi-1.0.1
+scripts/prepare-pi.sh --tag v1.0.1 --dir .work/pi-1.0.1   # clones that release from upstream
 scripts/train-profile.sh --pi .work/pi-1.0.1        # records profiles/pi-1.0.1
 scripts/build-pi.sh --pi .work/pi-1.0.1 --out out/pi-bolt-1.0.1
 ```
@@ -131,7 +131,7 @@ It writes them, the runtime and `SHA256SUMS` to `dist/<VERSION>/`. Each archive 
 |---|---|
 | `tests/aot/run.sh` | Engine correctness. Programs that stress values held in registers across slow paths, `Map`/`Set` fast paths, realms and workers are compiled ahead of time (JIT on and off). Their output must equal stock Bun's. |
 | `python3 bench/e2e_tools.py --reference bun=out/pi-stable/pi --build pi-bolt=out/pi-bolt/pi` | Every Pi tool (`ls`, `find`, `grep`, `write`, `edit`, `bash`, `read`) driven by a scripted model. The transcript and resulting files must be byte-identical to the reference build's. |
-| `python3 bench/ui_check.py --project .work/pi --build pi-bolt=out/pi-bolt/pi` | The TUI on a pseudo-terminal: trust prompt, `/` commands, `/hotkeys`, `/session`, `!` bash, a model turn with tool calls, `/model`, `/quit`. |
+| `python3 bench/ui_check.py --project . --build pi-bolt=out/pi-bolt/pi` | The TUI on a pseudo-terminal: trust prompt, `/` commands, `/hotkeys`, `/session`, `!` bash, a model turn with tool calls, `/model`, `/quit`. |
 | `python3 bench/tmux_check.py --build pi-bolt=out/pi-bolt/pi` | Pi in a real tmux pane: keystroke latency, paste, streaming, resize, Escape to abort, idle CPU, memory. |
 
 `out/pi-stable/pi` is the stock-Bun comparison build: `scripts/build-pi.sh --stable --out out/pi-stable`.

@@ -2,6 +2,10 @@
 
 Thank you for helping make Pi-Bolt better. Bug reports, benchmarks on other hardware, and fixes are all welcome.
 
+Pi-Bolt is a fork of [Pi](https://github.com/earendil-works/pi). Bugs and changes in Pi itself (anything that also
+happens with stock Pi) belong upstream, under Pi's own contribution rules. This repository takes changes to what Pi-Bolt adds:
+the compiler patches, scripts, benchmarks and documentation.
+
 ## Reporting bugs
 
 Follow [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#reporting-a-problem). The most useful detail is whether the problem

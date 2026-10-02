@@ -6,7 +6,7 @@
 #   --plugins FILE    train the build that has these extensions compiled in (scripts/build-pi.sh --plugins): give the profile its
 #                     own --out, and pass it to build-pi.sh with --profile
 source "$(dirname "$0")/lib/common.sh"
-PI_DIR="$PIBOLT_WORK/pi"; PLUGINS=""; OUT=""
+PI_DIR="$PIBOLT_PI"; PLUGINS=""; OUT=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--pi) PI_DIR="$2"; shift ;;

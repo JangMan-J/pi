@@ -2,7 +2,7 @@
 # Builds and packages a release: the Pi executables for each target, the runtime, and SHA256SUMS, in dist/<version>/.
 #
 # Usage: scripts/package-release.sh [--pi DIR] [--no-build]
-#   --pi DIR      the Pi checkout to build (default: $PIBOLT_WORK/pi)
+#   --pi DIR      the built Pi tree (default: this repository)
 #   --no-build    package the builds already in out/ instead of building them
 # Archives (the names stay the same from release to release, so that releases/latest/download/<name> always works):
 #   pi-bolt-linux-x64.tar.gz           JIT off, code for AVX2-class CPUs (falls back to bytecode on others)
@@ -11,7 +11,7 @@
 #   pi-bolt-runtime-linux-x64.tar.gz   the Pi-Bolt Bun runtime, to build Pi with plugins (docs/PLUGINS.md)
 source "$(dirname "$0")/lib/common.sh"
 
-PI_DIR="$PIBOLT_WORK/pi"; BUILD=1
+PI_DIR="$PIBOLT_PI"; BUILD=1
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--pi) PI_DIR="$2"; shift ;;
