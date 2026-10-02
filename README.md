@@ -5,6 +5,7 @@
 </p>
 <p align="center">
   <a href="https://github.com/opensec-git/Pi-Bolt/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/opensec-git/Pi-Bolt?style=flat-square&color=2a78d6" /></a>
+  <a href="https://www.npmjs.com/package/pi-bolt"><img alt="npm" src="https://img.shields.io/npm/v/pi-bolt?style=flat-square&logo=npm&logoColor=white&color=2a78d6" /></a>
   <a href="https://github.com/earendil-works/pi/releases/tag/v1.0.0"><img alt="Pi 1.0.0" src="https://img.shields.io/badge/pi-1.0.0-f0b03a?style=flat-square" /></a>
   <a href="#requirements"><img alt="Linux x86-64" src="https://img.shields.io/badge/linux-x86--64-444?style=flat-square&logo=linux&logoColor=white" /></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1baf7a?style=flat-square" /></a>
@@ -47,6 +48,21 @@ The installer:
 - checks its SHA-256 checksum;
 - installs it to `~/.pi-bolt`;
 - links the `pi-bolt` command into `~/.local/bin`.
+
+Run it again to reinstall or uninstall.
+
+Or use a package manager:
+
+```bash
+npm install -g pi-bolt
+```
+
+```bash
+bun add -g pi-bolt
+```
+
+The package's first run downloads the native executable. After that, `pi-bolt` starts it directly, with no Node.js or Bun in
+between.
 
 Start it where you want it to work:
 
