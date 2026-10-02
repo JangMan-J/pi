@@ -36,7 +36,7 @@ yarn global add pi-bolt
 Without a package manager:
 
 ```bash
-curl -fsSL https://opensec-git.github.io/Pi-Bolt/install.sh | sh
+curl -fsSL https://pi-bolt.opensec.in/install.sh | sh
 ```
 
 ## Usage

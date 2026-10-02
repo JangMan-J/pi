@@ -39,7 +39,7 @@ with a prebuilt JavaScript heap, so at launch nothing is parsed, interpreted or 
 Install the latest release:
 
 ```bash
-curl -fsSL https://opensec-git.github.io/Pi-Bolt/install.sh | sh
+curl -fsSL https://pi-bolt.opensec.in/install.sh | sh
 ```
 
 The installer:

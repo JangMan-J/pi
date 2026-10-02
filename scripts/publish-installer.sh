@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publishes install.sh to the gh-pages branch, which GitHub Pages serves at https://opensec-git.github.io/Pi-Bolt/install.sh.
+# Publishes install.sh to the gh-pages branch, which GitHub Pages serves at https://pi-bolt.opensec.in/install.sh.
 # Usage: scripts/publish-installer.sh [REMOTE]     (default remote: origin). Adds a commit to gh-pages; never rewrites it.
 source "$(dirname "$0")/lib/common.sh"
 need git
