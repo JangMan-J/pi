@@ -181,18 +181,20 @@ every frame, and loops over large inputs. Elsewhere, write code the way you norm
 
 Loops are compiled twice: a fast copy without slow paths, and a generic copy that the fast copy falls back to when a check
 fails. The fast copy is used for loops that make no calls, and for loops whose calls are to built-ins with fast paths, to
-functions declared at module level, or that index arrays. How a helper is written decides how fast a hot loop runs
+helpers held in module-level functions or constants, or that index arrays. How a helper is written decides how fast a hot loop runs
 (16.8 M iterations; stock Bun's warmed-up JIT for comparison):
 
 | Loop body | Pi-Bolt | Bun 1.4.2 (JIT) |
 |---|---:|---:|
 | check written inline: `c === 32 \|\| (c >= 9 && c <= 13)` | **29 ms** | 22 ms |
 | helper declared at module level: `function isSpace(c) { ... }` | **39 ms** | 27 ms |
-| helper in a module constant: `const isSpace = (c) => ...` | 181 ms | 24 ms |
-| helper as a method: `helpers.isSpace(c)` | 241 ms | 24 ms |
+| helper in a module constant: `const isSpace = (c) => ...` | **39 ms** | 24 ms |
+| helper as a method: `helpers.isSpace(c)` | 243 ms | 24 ms |
 
-- **Declare hot helpers as `function` at module level** and call them by name, or write small checks inline. Arrow functions
-  in constants and methods looked up on objects are real calls, and cost the loop its fast copy.
+- **Keep hot helpers at module level** and call them by name: `function isSpace(c) { ... }` or `const isSpace = (c) => ...`,
+  never reassigned. Both are inlined into the loop. Or write small checks inline.
+- **Don't call methods in hot loops.** A method looked up on an object (`helpers.isSpace(c)`) is a real call and costs the
+  loop its fast copy. Move it to a module-level helper.
 - These built-ins have fast paths and do not count as calls: `Math.sqrt/abs/floor/ceil/trunc/fround/min/max/imul`,
   `String.prototype.charCodeAt/charAt/codePointAt`, `Array.prototype.push/pop`, `Array.isArray`, and `Map`/`Set`
   `get/has/set/add`.
