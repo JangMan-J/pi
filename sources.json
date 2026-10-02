@@ -1,0 +1,19 @@
+{
+  "webkit": {
+    "repository": "https://github.com/oven-sh/WebKit.git",
+    "branch": "claude/sound-types-aot",
+    "commit": "d28f16e5cc234c19054d7edec2a2de5519500a1f",
+    "patches": "patches/webkit"
+  },
+  "bun": {
+    "repository": "https://github.com/oven-sh/bun.git",
+    "commit": "37da174d500f2201793c8352f791afdd9102eab9",
+    "patches": "patches/bun"
+  },
+  "pi": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "tag": "v1.0.0",
+    "commit": "a13d35a742c6ef8462812a28fbe1d8c8b7431c32",
+    "profile": "profiles/pi-1.0.0"
+  }
+}

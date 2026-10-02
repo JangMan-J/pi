@@ -1,0 +1,129 @@
+/ \\|
+/(?:^|\\n) {0,3}(?:\\$\\$|\\\\\\[)
+/[:|]
+/[\\u0e33\\u0eb3]
+/[^ ]
+/[a-zA-Z0-9.\\-_]
+/\\n[ \\t]*$
+/\\r\\n|\\r|\\n
+/\\s
+/\\s+
+/\\w$
+/\\x1b\\[([\\d;]*)m
+/\\x1b_G([^;]*);
+/\\|\\d+$
+/^ 
+/^ *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n| {0,3}((?:-[\\t ]*){3,}|(?:_[ \\t]*){3,}|(?:\\*[ \\t]*){3,})(?:\\n+|$)| {0,3}#{1,6}(?:\\s|$)| {0,3}>|(?: {4}| {0,3}\u0009)[^\\n]| {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)| {0,3}(?:[*+-]|1[.)])[ \\t]|</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)).*(?:\\n|$))*)\\n*|$)
+/^ *-+: *$
+/^ *:-+ *$
+/^ *:-+: *$
+/^ {0,3}(#{1,6})(?=\\s|$)(.*)(?:\\n+|$)
+/^ {0,3}((?:-[\\t ]*){3,}|(?:_[ \\t]*){3,}|(?:\\*[ \\t]*){3,})(?:\\n+|$)
+/^ {0,3}(`{3,}(?=[^`\\n]*(?:\\n|$))|~{3,})([^\\n]*)(?:\\n|$)(?:|([\\s\\S]*?)(?:\\n|$))(?: {0,3}\\1[~`]* *(?=\\n|$)|$)
+/^ {0,3}\\$\\$[ \\t]*(?:\\n)?([\\s\\S]*)$
+/^ {0,3}\\$\\$[ \\t]*(?:\\n)?([\\s\\S]*?)\\$\\$[ \\t]*(?:\\n|$)
+/^ {0,3}\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\])+)\\]: *(?:\\n[ \\t]*)?([^<\\s][^\\s]*|<.*?>)(?:(?: +(?:\\n[ \\t]*)?| *\\n[ \\t]*)((?:"(?:\\\\"?|[^"\\\\])*"|'[^'\\n]*(?:\\n[^'\\n]+)*\\n?'|\\([^()]*\\))))? *(?:\\n+|$)
+/^ {0,3}\\\\\\[[ \\t]*(?:\\n)?([\\s\\S]*)$
+/^ {0,3}\\\\\\[[ \\t]*(?:\\n)?([\\s\\S]*?)\\\\\\][ \\t]*(?:\\n|$)
+/^!?\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\])+)\\](?:\\[\\])?
+/^!?\\[((?:\\[(?:\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\\])|[^\\[\\]\\\\`])*?)\\]\\(\\s*(<(?:\\\\.|[^\\n<>\\\\])+>|[^ \\t\\n\\x00-\\x1f]+|(?=\\)))(?:(?:[ \\t]+(?:\\n[ \\t]*)?|\\n[ \\t]*)("(?:\\\\"?|[^"\\\\])*"|'(?:\\\\'?|[^'\\\\])*'|\\((?:\\\\\\)?|[^)\\\\])*\\)))?\\s*\\)
+/^!?\\[((?:\\[(?:\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\\])|[^\\[\\]\\\\`])*?)\\]\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\])+)\\]
+/^$
+/^( {0,3}(?:[*+-]|\\d{1,9}[.)]))([ \\t][^\\n]*?)?(?:\\n|$)
+/^( {0,3}> ?(([^\\n]+(?:\\n(?! {0,3}((?:-[\\t ]*){3,}|(?:_[ \\t]*){3,}|(?:\\*[ \\t]*){3,})(?:\\n+|$)| {0,3}#{1,6}(?:\\s|$)| {0,3}>| {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)| {0,3}(?:[*+-]|\\d{1,9}[.)])(?:[ \\t]|\\n|$)|<\\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?: +|\\n|\\/?>)|<(?:script|pre|style|textarea|!--)|[ \\t]+\\n)[^\\n]+)*)|[^\\n]*)(?:\\n|$))+
+/^( {2,}|\\\\)\\n(?!\\s*$)
+/^((?: {4}| {0,3}\\t)[^\\n]+(?:\\n(?:[ \\t]*(?:\\n|$))*)?)+
+/^((?:<|>)?=?)\\s{0,1}(v?(0|[1-9]\\d{0,256})\\.(0|[1-9]\\d{0,256})\\.(0|[1-9]\\d{0,256})(?:-((?:\\d{0,256}[a-zA-Z-][a-zA-Z0-9-]{0,250}|0|[1-9]\\d{0,256})(?:\\.(?:\\d{0,256}[a-zA-Z-][a-zA-Z0-9-]{0,250}|0|[1-9]\\d{0,256}))*))?(?:\\+([a-zA-Z0-9-]{1,250}(?:\\.[a-zA-Z0-9-]{1,250})*))?)$|^$
+/^((?:[hH][tT][tT][pP][sS]?|[fF][tT][pP]):\\/\\/|www\\.)(?:[a-zA-Z0-9\\-]+\\.?)+[^\\s<]*|^[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])
+/^(?! {0,3}(?:[*+-]|\\d{1,9}[.)]) |(?: {4}| {0,3}\\t)| {0,3}(?:`{3,}|~{3,})| {0,3}>| {0,3}#{1,6}(?:\\s|$)| {0,3}<[^\\n>]+>\\n| {0,3}\\|?(?:[:\\- ]*\\|)+[\\:\\- ]*\\n)((?:.|\\n(?!\\s*?\\n| {0,3}(?:[*+-]|\\d{1,9}[.)]) |(?: {4}| {0,3}\\t)| {0,3}(?:`{3,}|~{3,})| {0,3}>| {0,3}#{1,6}(?:\\s|$)| {0,3}<[^\\n>]+>\\n| {0,3}\\|?(?:[:\\- ]*\\|)+[\\:\\- ]*\\n))+?)\\n {0,3}(=+|-+) *(?:\\n+|$)
+/^(?:[ \\t]*(?:\\n|$))+
+/^(?:\\x1b\\[\\?997;(1|2)n)+$
+/^(?:\\x1b\\]133;[ABC](?:\\x07|\\x1b\\\\))+
+/^([^\\n]+(?:\\n(?! {0,3}((?:-[\\t ]*){3,}|(?:_[ \\t]*){3,}|(?:\\*[ \\t]*){3,})(?:\\n+|$)| {0,3}#{1,6}(?:\\s|$)| {0,3}>| {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)| {0,3}(?:[*+-]|1[.)])[ \\t]+[^ \\t\\n]|</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)| *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n| {0,3}((?:-[\\t ]*){3,}|(?:_[ \\t]*){3,}|(?:\\*[ \\t]*){3,})(?:\\n+|$)| {0,3}#{1,6}(?:\\s|$)| {0,3}>|(?: {4}| {0,3}\u0009)[^\\n]| {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)| {0,3}(?:[*+-]|1[.)])[ \\t]|<\\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?: +|\\n|\\/?>)|<(?:script|pre|style|textarea|!--)).*(?:\\n|$))*)\\n*|$)|[ \\t]+\\n)[^\\n]+)*)
+/^(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)
+/^(`+|~+|[^`~])(?:(?=[`~])|(?= {2,}\\n)|(?=[a-zA-Z0-9.!#$%&'*+\\/=?_`{\\|}~-]+@)|[\\s\\S]*?(?:(?=[\\\\<!\\[`*~_]|\\b_|[hH][tT][tT][pP][sS]?|[fF][tT][pP]:\\/\\/|www\\.|$)|[^ ](?= {2,}\\n)|[^a-zA-Z0-9.!#$%&'*+\\/=?_`{\\|}~-](?=[a-zA-Z0-9.!#$%&'*+\\/=?_`{\\|}~-]+@)))
+/^(~~)(?=[^\\s~])((?:\\\\.|[^\\\\])*?(?:\\\\.|[^\\s~\\\\]))\\1(?=[^~]|$)
+/^<!--(?:-?>|[\\s\\S]*?-->)|^</[a-zA-Z][\\w:-]*\\s*>|^<[a-zA-Z][\\w-]*(?:\\s+[a-zA-Z:_][\\w.:-]*(?:\\s*=\\s*"[^"]*"|\\s*=\\s*'[^']*'|\\s*=\\s*[^\\s"'=<>`]+)?)*?\\s*/?>|^<\\?[\\s\\S]*?\\?>|^<![a-zA-Z]+\\s[\\s\\S]*?>|^<!\\[CDATA\\[[\\s\\S]*?\\]\\]>
+/^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\\s\\x00-\\x1f<>]*|[a-zA-Z0-9.!#$%&'*+/=?_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_]))>
+/^<skill name="([^"]+)" location="([^"]+)">\\n([\\s\\S]*?)\\n<\\/skill>(?:\\n\\n([\\s\\S]+))?$
+/^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$
+/^[0-9]+$
+/^\\\\([!"#$%&'()*+,\\-./:;<=>?@\\[\\]\\\\^_`{|}~])
+/^\\x1b\\[(\\d+)(?::(\\d*))?(?::(\\d+))?(?:;(\\d+))?(?::(\\d+))?u$
+/^\\x1b\\[(\\d+)(?::\\d*)?(?::\\d+)?u$
+/^\\x1b\\[(\\d+)(?:;(\\d+))?(?::(\\d+))?~$
+/^\\x1b\\[1;(\\d+)(?::(\\d+))?([ABCD])$
+/^\\x1b\\[1;(\\d+)(?::(\\d+))?([HF])$
+/^\\x1b\\[27;(\\d+);(\\d+)~$
+/^\\x1b\\[6;(\\d+);(\\d+)t$
+/^\\x1b\\[<(\\d+);(\\d+);(\\d+)([Mm])$
+/^\\x1b\\[<(\\d+);(\\d+);(\\d+)[Mm]$
+/^\\x1b\\[<\\d+;\\d+;\\d+[Mm]$
+/^\\x1b\\[\\?(\\d+)u$
+/^\\x1b\\[\\?[\\d;]*$
+/^\\x1b\\[\\?[\\d;]*c$
+/^file:\\/\\/
+/^limit$
+/^offset$
+/^path$
+/^v?(0|[1-9]\\d{0,256})\\.(0|[1-9]\\d{0,256})\\.(0|[1-9]\\d{0,256})(?:-((?:\\d{0,256}[a-zA-Z-][a-zA-Z0-9-]{0,250}|0|[1-9]\\d{0,256})(?:\\.(?:\\d{0,256}[a-zA-Z-][a-zA-Z0-9-]{0,250}|0|[1-9]\\d{0,256}))*))?(?:\\+([a-zA-Z0-9-]{1,250}(?:\\.[a-zA-Z0-9-]{1,250})*))?$
+g/"(?:\\\\.|[^"\\\\])*"|,(\\s*[}\\]])
+g/"(?:\\\\.|[^"\\\\])*"|\\/\\/[^\\n]*
+g/(^|[^\\[])\\^
+g/[\\\\^$.*+?()[\\]{}|-]
+g/[\\r\\n]+
+g/[\\u00A0\\u2000-\\u200A\\u202F\\u205F\\u3000]
+g/[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]
+g/\\[(?:[^\\[\\]`]|(?<a>`+)[^`]+\\k<a>(?!`))*?\\]\\((?:\\\\[\\s\\S]|[^\\\\\\(\\)]|\\((?:\\\\[\\s\\S]|[^\\\\\\(\\)])*\\))*\\)|(?<!`)()(?<b>`+)[^`]+\\k<b>(?!`)|<(?! )[^<>]*?>
+g/\\\\
+g/\\\\\\|
+g/\\n
+g/\\r
+g/\\r\\n
+g/\\r\\n|\\r
+g/\\s
+g/\\s+
+g/\\t
+g/\\{2,\\}
+g/\\|
+g/^\\||\\| *$
+g/blockCode
+g/blockquote
+g/bull
+g/fences
+g/heading
+g/html
+g/notPunctSpace
+g/openQuote
+g/punct
+g/punctSpace
+g/table
+g/tag
+gu/[-_]
+gu/\\\\([\\p{P}\\p{S}])
+gu/^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\\*)(?!~)[\\p{P}\\p{S}](\\*+)(?=[\\s]|$)|(?:[^\\s\\p{P}\\p{S}]|~)(\\*+)(?!\\*)(?=(?!~)[\\s\\p{P}\\p{S}]|$)|(?!\\*)(?!~)[\\s\\p{P}\\p{S}](\\*+)(?=(?:[^\\s\\p{P}\\p{S}]|~))|[\\s](\\*+)(?!\\*)(?=(?!~)[\\p{P}\\p{S}])|(?!\\*)(?!~)[\\p{P}\\p{S}](\\*+)(?!\\*)(?=(?!~)[\\p{P}\\p{S}])|(?:[^\\s\\p{P}\\p{S}]|~)(\\*+)(?=(?:[^\\s\\p{P}\\p{S}]|~))
+gu/_
+i/-256(?:color)?$
+i/\\bgfs4\\b
+i/^ {0,3}(?:<(script|pre|style|textarea)[\\s>][\\s\\S]*?(?:</\\1>[^\\n]*\\n*|$)|<!--(?:-?>|[\\s\\S]*?(?:-->|$))[^\\n]*(\\n+|$)|<\\?[\\s\\S]*?(?:\\?>[^\\n]*\\n*|$)|<![A-Z][\\s\\S]*?(?:>[^\\n]*\\n*|$)|<!\\[CDATA\\[[\\s\\S]*?(?:\\]\\]>[^\\n]*\\n*|$)|</?(address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?: +|\\n|/?>)[\\s\\S]*?(?:(?:\\n[ \u0009]*)+\\n|$)|<(?!script|pre|style|textarea)([a-z][\\w-]*)(?: +[a-zA-Z:_][\\w.:-]*(?: *= *"[^"\\n]*"| *= *'[^'\\n]*'| *= *[^\\s"'=<>`]+)?)*? */?>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ \u0009]*)+\\n|$)|</(?!script|pre|style|textarea)[a-z][\\w-]*\\s*>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ \u0009]*)+\\n|$))
+i/^#([\\da-f]{3}|[\\da-f]{6})$
+i/^[a-z][a-z0-9+.-]*:
+i/^debug_
+i/^win
+iu/^https?:\\/\\/
+u/(?:^|(?:\\s|(?:(?=\\p{Punctuation})[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Bopomofo}]|[\uff0c\uff0e\uff1a\uff1b\uff01\uff1f\uff08\uff09\uff3b\uff3d\uff5b\uff5d\u201c\u201d\u2018\u2019\u2026\u2014])))[([{<`]*(?:@"[^"]*|[@#](?:(?!(?:\\s|(?:(?=\\p{Punctuation})[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Bopomofo}]|[\uff0c\uff0e\uff1a\uff1b\uff01\uff1f\uff08\uff09\uff3b\uff3d\uff5b\uff5d\u201c\u201d\u2018\u2019\u2026\u2014]))).)*)$
+u/(?:^|(?:\\s|(?:(?=\\p{Punctuation})[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Bopomofo}]|[\uff0c\uff0e\uff1a\uff1b\uff01\uff1f\uff08\uff09\uff3b\uff3d\uff5b\uff5d\u201c\u201d\u2018\u2019\u2026\u2014])))[([{<`]*(?:@(?:"[^"]*|(?:(?!(?:\\s|(?:(?=\\p{Punctuation})[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Bopomofo}]|[\uff0c\uff0e\uff1a\uff1b\uff01\uff1f\uff08\uff09\uff3b\uff3d\uff5b\uff5d\u201c\u201d\u2018\u2019\u2026\u2014]))).)*)|[#](?:(?!(?:\\s|(?:(?=\\p{Punctuation})[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Bopomofo}]|[\uff0c\uff0e\uff1a\uff1b\uff01\uff1f\uff08\uff09\uff3b\uff3d\uff5b\uff5d\u201c\u201d\u2018\u2019\u2026\u2014]))).)*)$
+u/[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Bopomofo}]
+u/\\/$
+u/\\/+$
+u/\\/v1$
+u/^(?:\\*+(?:((?!\\*)(?!~)[\\p{P}\\p{S}])|([^\\s*]))?)|^_+(?:((?!_)(?!~)[\\p{P}\\p{S}])|([^\\s_]))?
+u/^.*$
+u/^[\\p{ID_Start}_$][\\p{ID_Continue}_$\\u200C\\u200D]*$
+u/^function [A-Za-z_$][\\w$]*\\(\\) \\{ \\[native code\\] \\}$
+u/^x
+u/^~~?(?:((?!~)[\\p{P}\\p{S}])|[^\\s~])
+v/^(?:[\\p{Spacing_Mark}--[\\u1734\\u302E\\u302F]]|[\\u065F\\u0F7F\\u102B\\u102C\\u1031\\u1033-\\u1035\\u1038\\u103A-\\u103E])+$
+v/^(?:\\p{Default_Ignorable_Code_Point}|\\p{Control}|\\p{Mark}|\\p{Surrogate})+$
+v/^[\\p{Default_Ignorable_Code_Point}\\p{Control}\\p{Format}\\p{Mark}\\p{Surrogate}]+
+v/^\\p{RGI_Emoji}$

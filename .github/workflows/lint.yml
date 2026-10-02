@@ -1,0 +1,21 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x -S warning install.sh scripts/*.sh scripts/lib/common.sh scripts/toolchain/*.sh tests/aot/run.sh
+      - name: python
+        run: python3 -m py_compile bench/*.py scripts/lib/*.py
+      - name: sources.json
+        run: python3 -c 'import json; json.load(open("sources.json"))'

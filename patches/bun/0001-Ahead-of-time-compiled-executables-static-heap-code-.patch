@@ -1,0 +1,1530 @@
+From d05beafc3b274bef46314334ee4faec661c8fcd2 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Fri, 2 Oct 2026 12:04:59 +0000
+Subject: [PATCH] Ahead-of-time compiled executables: static heap, code image,
+ x86-64
+
+`bun build --compile --bytecode --format=esm` with BUN_STATIC_HEAP=1 and
+BUN_AOT=1 compiles every function of the program ahead of time and appends a
+prebuilt heap and a code image to the executable, which maps both at a fixed
+address on start.
+
+- Image trailer (BAOTIMG3) with the CPU features the code was compiled for and
+  the engine options it takes for granted; BUN_AOT_CPU=baseline compiles for
+  any x86-64 CPU Bun's baseline build runs on; BUN_AOT_JIT=0 bakes "run with
+  the JIT off" into the executable.
+- The image is mapped before the heap, and neither is used unless both fit:
+  a CPU without a required feature, an address space limit, a taken address
+  or an image the engine rejects falls back to the program's bytecode, with a
+  one-line notice. BUN_AOT=0 is the kill switch.
+- The builder runs with the JIT off itself (what the JIT records in cells is
+  not what the program finds when it runs); a build that cannot honour
+  BUN_STATIC_HEAP=1 fails instead of silently producing a plain executable.
+- Workers share the static heap (prepareThread() at thread start).
+- Prelinked module graph v4 plumbing; JSType numbers of the AOT engine.
+- Local WebKit builds against a Linux sysroot (LINUX_GLIBC_SYSROOT), with
+  ICU from the sysroot, for portable release builds.
+---
+ scripts/build/deps/webkit.ts                  |  18 +
+ src/bundler/bundle_v2.rs                      |  13 +
+ .../generateChunksInParallel.rs               |  21 ++
+ src/bundler/prelinked_module_graph.rs         |  14 +-
+ src/jsc/CachedBytecode.rs                     |  31 ++
+ src/jsc/JSType.rs                             | 144 ++++----
+ src/jsc/bindings/BunClientData.cpp            |   8 +-
+ src/jsc/bindings/BunClientData.h              |   2 +-
+ src/jsc/bindings/InternalModuleRegistry.cpp   |  15 +-
+ src/jsc/bindings/ZigGlobalObject.cpp          |  25 ++
+ src/jsc/bindings/ZigSourceProvider.cpp        | 347 +++++++++++++++++-
+ src/jsc/web_worker.rs                         |   4 +
+ src/runtime/cli/run_command.rs                |   5 +
+ src/standalone_graph/StandaloneModuleGraph.rs | 132 ++++++-
+ 14 files changed, 695 insertions(+), 84 deletions(-)
+
+diff --git a/scripts/build/deps/webkit.ts b/scripts/build/deps/webkit.ts
+index bba31a2c..17a71224 100644
+--- a/scripts/build/deps/webkit.ts
++++ b/scripts/build/deps/webkit.ts
+@@ -275,6 +275,12 @@ export const webkit: Dependency = {
+     if (cfg.freebsd && cfg.crossTarget !== undefined) {
+       optFlags.push(`--target=${cfg.crossTarget}`, `--sysroot=${cfg.sysroot!}`);
+     }
++    // Linux glibc/musl against a sysroot (LINUX_GLIBC_SYSROOT, e.g. linux-aarch64 from an x86-64 host): the same for a
++    // local WebKit, whose ICU then comes from the sysroot.
++    const linuxCross = cfg.linux && cfg.abi !== "android" && cfg.crossTarget !== undefined && cfg.sysroot !== undefined;
++    if (linuxCross) {
++      optFlags.push(`--target=${cfg.crossTarget}`, `--sysroot=${cfg.sysroot!}`);
++    }
+     const optFlagStr = optFlags.join(" ");
+     let cxxOptFlagStr = optFlagStr;
+     if (cfg.abi === "android") {
+@@ -308,6 +314,18 @@ export const webkit: Dependency = {
+             CMAKE_FIND_ROOT_PATH_MODE_INCLUDE: "BOTH",
+           }
+         : {}),
++      ...(linuxCross
++        ? {
++            CMAKE_SYSTEM_NAME: "Linux",
++            CMAKE_SYSTEM_PROCESSOR: cfg.arm64 ? "aarch64" : "x86_64",
++            CMAKE_SYSROOT: cfg.sysroot!,
++            CMAKE_FIND_ROOT_PATH: cfg.sysroot!,
++            CMAKE_FIND_ROOT_PATH_MODE_PROGRAM: "NEVER",
++            CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: "ONLY",
++            CMAKE_FIND_ROOT_PATH_MODE_LIBRARY: "ONLY",
++            CMAKE_FIND_ROOT_PATH_MODE_INCLUDE: "ONLY",
++          }
++        : {}),
+       ...(cfg.freebsd && cfg.crossTarget !== undefined
+         ? {
+             CMAKE_SYSTEM_NAME: "FreeBSD",
+diff --git a/src/bundler/bundle_v2.rs b/src/bundler/bundle_v2.rs
+index 871b0495..5ca21ad0 100644
+--- a/src/bundler/bundle_v2.rs
++++ b/src/bundler/bundle_v2.rs
+@@ -1544,6 +1544,12 @@ pub mod bv2_impl {
+                 depth: u32,
+                 names: &crate::bytecode_order::CodeNamesRef<'_>,
+             ) -> bool;
++            safe fn __bun_jsc_bytecode_link_encoder_set_prelinked_module_graph(
++                encoder: core::ptr::NonNull<BytecodeLinkEncoder>,
++                blob: &[u8],
++                slots: &[u32],
++                graph_module_of_each_add: &[u32],
++            );
+             safe fn __bun_jsc_bytecode_link_encoder_finish(
+                 encoder: core::ptr::NonNull<BytecodeLinkEncoder>,
+                 module_count: usize,
+@@ -1730,6 +1736,13 @@ pub mod bv2_impl {
+                 self.module_count += ok as usize;
+                 ok
+             }
++            /// The pre-resolved module graph and its slot table, and the graph module of each successful `add_*` call
++            /// (`u32::MAX` for none); the internal modules, added last, are of none.
++            pub(crate) fn set_prelinked_module_graph(&mut self, blob: &[u8], slots: &[u32], graph_modules_of_chunks: &[u32]) {
++                let mut of_each_add = graph_modules_of_chunks.to_vec();
++                of_each_add.resize(self.module_count, u32::MAX);
++                __bun_jsc_bytecode_link_encoder_set_prelinked_module_graph(self.encoder, blob, slots, &of_each_add);
++            }
+             pub(crate) fn finish(&mut self) -> Option<crate::bytecode_order::LinkedPayload> {
+                 __bun_jsc_bytecode_link_encoder_finish(self.encoder, self.module_count)
+             }
+diff --git a/src/bundler/linker_context/generateChunksInParallel.rs b/src/bundler/linker_context/generateChunksInParallel.rs
+index 88212ec8..ef33e540 100644
+--- a/src/bundler/linker_context/generateChunksInParallel.rs
++++ b/src/bundler/linker_context/generateChunksInParallel.rs
+@@ -1429,6 +1429,7 @@ pub(crate) fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
+         let mut linked = LinkedBytecode {
+             encoder,
+             output_files: Vec::with_capacity(linked_bytecode_chunks.len()),
++            graph_modules: Vec::with_capacity(linked_bytecode_chunks.len()),
+             internal_names,
+             names_out: crate::bytecode_order::names_out().map(|path| (path, Vec::new())),
+         };
+@@ -1451,6 +1452,11 @@ pub(crate) fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
+                 names.as_ref(),
+             ) {
+                 linked.output_files.push(*bytecode_index);
++                linked.graph_modules.push(prelinked_graph.as_ref().map_or(u32::MAX, |(_, chunk_indices)| {
++                    chunk_indices
++                        .binary_search(&(*chunk_index as u32))
++                        .map_or(u32::MAX, |module| module as u32)
++                }));
+                 if names.is_none() {
+                     // JavaScriptCore compiled what the parser here does not take: nothing of the chunk can be listed
+                     // in an order file, or placed by one.
+@@ -1522,6 +1528,19 @@ pub(crate) fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
+             }
+         }
+         let encoded = linked.output_files;
++        // What compiling ahead of time links the modules by (BUN_AOT=1): the graph the executable's loader is given.
++        if let Some((graph, _)) = &prelinked_graph {
++            let table = module_info_strings.serialize();
++            let slots: Vec<u32> = table
++                .get(size_of::<u32>()..)
++                .unwrap_or_default()
++                .chunks_exact(size_of::<u32>())
++                .map(|word| u32::from_le_bytes(word.try_into().expect("four bytes")))
++                .collect();
++            linked
++                .encoder
++                .set_prelinked_module_graph(graph, &slots, &linked.graph_modules);
++        }
+         match linked.encoder.finish() {
+             Some(crate::bytecode_order::LinkedPayload {
+                 payload,
+@@ -1702,6 +1721,8 @@ fn debug_assert_no_placeholder_left(c: &LinkerContext, files: &[options::OutputF
+ struct LinkedBytecode {
+     encoder: crate::bundle_v2::dispatch::BytecodeLinkEncoderHandle,
+     output_files: Vec<u32>,
++    /// For each chunk added to the encoder, its module in the pre-resolved graph (`u32::MAX`: none).
++    graph_modules: Vec<u32>,
+     /// What the code of the internal modules that will join the link is called, in their order.
+     internal_names: Vec<Option<crate::bytecode_order::CodeNames>>,
+     /// `BUN_BYTECODE_ORDER_NAMES_OUT`, and what is written there.
+diff --git a/src/bundler/prelinked_module_graph.rs b/src/bundler/prelinked_module_graph.rs
+index 497b0694..9517a930 100644
+--- a/src/bundler/prelinked_module_graph.rs
++++ b/src/bundler/prelinked_module_graph.rs
+@@ -12,7 +12,7 @@ use bun_js_printer::analyze_transpiled_module::{
+ use crate::analyze_transpiled_module::ModuleInfoSlotTableBuilder;
+ 
+ pub const MAGIC: u32 = 0x474d_4c50; // "PLMG"
+-pub const VERSION: u32 = 2;
++pub const VERSION: u32 = 4;
+ pub const NO_MODULE: u32 = u32::MAX;
+ /// Hash column value of an entry whose name is a sentinel (never looked up by name); sorts last.
+ const SENTINEL_HASH: u32 = u32::MAX;
+@@ -33,7 +33,7 @@ mod module_flags {
+ const PHASE_DEFER_BIT: u32 = 1 << 3;
+ 
+ const HEADER_WORDS: usize = 16;
+-const MODULE_WORDS: usize = 10;
++const MODULE_WORDS: usize = 12;
+ const REQUEST_WORDS: usize = 4;
+ const IMPORT_WORDS: usize = 6;
+ const EXPORT_WORDS: usize = 6;
+@@ -545,7 +545,9 @@ fn serialize(graph: &[Module], string_count: u32, hashes: &[Option<u32>]) -> Vec
+     let imports_offset = requests_offset + request_count * REQUEST_WORDS * 4;
+     let exports_offset = imports_offset + import_count * IMPORT_WORDS * 4;
+     let stars_offset = exports_offset + export_count * EXPORT_WORDS * 4;
+-    let total = stars_offset + star_count * 4;
++    // Version 4's `Binding`s (what the bundler knows of each top-level variable, for ahead-of-time compilation): none yet.
++    let bindings_offset = stars_offset + star_count * 4;
++    let total = bindings_offset;
+ 
+     let mut out: Vec<u8> = Vec::with_capacity(total);
+     let mut put = |v: u32| out.extend_from_slice(&v.to_le_bytes());
+@@ -570,8 +572,8 @@ fn serialize(graph: &[Module], string_count: u32, hashes: &[Option<u32>]) -> Vec
+         to_u32(imports_offset),
+         to_u32(exports_offset),
+         to_u32(stars_offset),
+-        0,
+-        0,
++        0, // bindingCount
++        to_u32(bindings_offset),
+         0,
+     ] {
+         put(v);
+@@ -591,6 +593,8 @@ fn serialize(graph: &[Module], string_count: u32, hashes: &[Option<u32>]) -> Vec
+             to_u32(m.exports.len()),
+             to_u32(first_star),
+             to_u32(m.star_exports.len()),
++            0, // firstBinding
++            0, // bindingCount
+         ] {
+             put(v);
+         }
+diff --git a/src/jsc/CachedBytecode.rs b/src/jsc/CachedBytecode.rs
+index 2364c15d..60175edb 100644
+--- a/src/jsc/CachedBytecode.rs
++++ b/src/jsc/CachedBytecode.rs
+@@ -105,6 +105,15 @@ unsafe extern "C" {
+         depth: u32,
+         names: &CodeNamesRef<'_>,
+     ) -> bool;
++    fn Bun__BytecodeLinkEncoder__setPrelinkedModuleGraph(
++        this: *mut BytecodeLinkEncoder,
++        blob: *const u8,
++        blob_size: usize,
++        slots: *const u32,
++        slot_count: usize,
++        graph_module_of_each_add: *const u32,
++        add_count: usize,
++    );
+     fn Bun__BytecodeLinkEncoder__finish(
+         this: *mut BytecodeLinkEncoder,
+         output_byte_code: *mut Option<NonNull<u8>>,
+@@ -418,6 +427,28 @@ pub(crate) fn __bun_jsc_bytecode_link_encoder_add_internal_module_from_source(
+     }
+ }
+ 
++/// `JSC::BytecodeLinkEncoder::setPrelinkedModuleGraph`: what AOT compilation links the modules by (the encoder copies it).
++#[unsafe(no_mangle)]
++pub(crate) fn __bun_jsc_bytecode_link_encoder_set_prelinked_module_graph(
++    encoder: NonNull<BytecodeLinkEncoder>,
++    blob: &[u8],
++    slots: &[u32],
++    graph_module_of_each_add: &[u32],
++) {
++    // SAFETY: the slices are valid for the call; C++ copies them.
++    unsafe {
++        Bun__BytecodeLinkEncoder__setPrelinkedModuleGraph(
++            encoder.as_ptr(),
++            blob.as_ptr(),
++            blob.len(),
++            slots.as_ptr(),
++            slots.len(),
++            graph_module_of_each_add.as_ptr(),
++            graph_module_of_each_add.len(),
++        )
++    }
++}
++
+ /// The payload, each module's cache-entry offset in it (in the order of the successful `add_*` calls), where each of the
+ /// payload's regions ends (`JSC::BytecodeLinkEncoder`), how many of the order files' hot functions are functions
+ /// of this link, and for each module how many functions with code its names did not cover.
+diff --git a/src/jsc/JSType.rs b/src/jsc/JSType.rs
+index 3c21ec7b..6503c62d 100644
+--- a/src/jsc/JSType.rs
++++ b/src/jsc/JSType.rs
+@@ -176,49 +176,51 @@ impl JSType {
+     /// const bar = () => 123
+     /// ```
+     pub const FunctionExecutable: JSType = JSType(12);
++    /// A FunctionExecutable in its short form (JSC AOT branch).
++    pub const ShortFunctionExecutable: JSType = JSType(13);
+ 
+-    pub const UnlinkedFunctionExecutable: JSType = JSType(13);
+-    pub const UnlinkedProgramCodeBlock: JSType = JSType(14);
+-    pub const UnlinkedModuleProgramCodeBlock: JSType = JSType(15);
+-    pub const UnlinkedEvalCodeBlock: JSType = JSType(16);
+-    pub const UnlinkedFunctionCodeBlock: JSType = JSType(17);
++    pub const UnlinkedFunctionExecutable: JSType = JSType(14);
++    pub const UnlinkedProgramCodeBlock: JSType = JSType(15);
++    pub const UnlinkedModuleProgramCodeBlock: JSType = JSType(16);
++    pub const UnlinkedEvalCodeBlock: JSType = JSType(17);
++    pub const UnlinkedFunctionCodeBlock: JSType = JSType(18);
+ 
+     /// Compiled bytecode block ready for execution.
+-    pub const CodeBlock: JSType = JSType(18);
++    pub const CodeBlock: JSType = JSType(19);
+ 
+-    pub const JSCellButterfly: JSType = JSType(19);
+-    pub const JSSourceCode: JSType = JSType(20);
++    pub const JSCellButterfly: JSType = JSType(20);
++    pub const JSSourceCode: JSType = JSType(21);
+ 
+     /// Slim promise reaction (no rejection handler / context payload).
+     /// Internal object used in the promise resolution mechanism.
+-    pub(crate) const SlimPromiseReaction: JSType = JSType(21);
++    pub(crate) const SlimPromiseReaction: JSType = JSType(22);
+ 
+     /// Full promise reaction (carries onFulfilled/onRejected and async context).
+     /// Internal object used in the promise resolution mechanism.
+-    pub(crate) const FullPromiseReaction: JSType = JSType(22);
++    pub(crate) const FullPromiseReaction: JSType = JSType(23);
+ 
+     /// Context object for Promise.all() operations.
+     /// Internal object used to track the state of Promise.all() resolution.
+     /// Note: Moved before ObjectType in recent WebKit.
+-    pub(crate) const PromiseAllContext: JSType = JSType(23);
++    pub(crate) const PromiseAllContext: JSType = JSType(24);
+ 
+     /// Global context for Promise.all() (new in recent WebKit).
+-    pub(crate) const PromiseAllGlobalContext: JSType = JSType(24);
++    pub(crate) const PromiseAllGlobalContext: JSType = JSType(25);
+ 
+     /// Base JavaScript object type.
+     /// ```js
+     /// {}
+     /// new Object()
+     /// ```
+-    pub const Object: JSType = JSType(33);
++    pub const Object: JSType = JSType(34);
+ 
+     /// Optimized object type for object literals with fixed properties.
+     /// ```js
+     /// { a: 1, b: 2 }
+     /// ```
+-    pub const FinalObject: JSType = JSType(34);
++    pub const FinalObject: JSType = JSType(35);
+ 
+-    pub const JSCallee: JSType = JSType(35);
++    pub const JSCallee: JSType = JSType(36);
+ 
+     /// JavaScript function object created from JavaScript source code.
+     /// ```js
+@@ -228,7 +230,7 @@ impl JSType {
+     ///   method() {}
+     /// }
+     /// ```
+-    pub const JSFunction: JSType = JSType(36);
++    pub const JSFunction: JSType = JSType(37);
+ 
+     /// Built-in function implemented in native code.
+     /// ```js
+@@ -237,21 +239,21 @@ impl JSType {
+     /// parseInt
+     /// console.log
+     /// ```
+-    pub const InternalFunction: JSType = JSType(37);
++    pub const InternalFunction: JSType = JSType(38);
+ 
+     /// Boxed Boolean object.
+     /// ```js
+     /// new Boolean(true)
+     /// new Boolean(false)
+     /// ```
+-    pub const BooleanObject: JSType = JSType(39);
++    pub const BooleanObject: JSType = JSType(40);
+ 
+     /// Boxed Number object.
+     /// ```js
+     /// new Number(42)
+     /// new Number(3.14)
+     /// ```
+-    pub const NumberObject: JSType = JSType(40);
++    pub const NumberObject: JSType = JSType(41);
+ 
+     /// JavaScript Error object and its subclasses.
+     /// ```js
+@@ -259,9 +261,9 @@ impl JSType {
+     /// new TypeError()
+     /// throw new RangeError()
+     /// ```
+-    pub const ErrorInstance: JSType = JSType(41);
++    pub const ErrorInstance: JSType = JSType(42);
+ 
+-    pub const GlobalProxy: JSType = JSType(42);
++    pub const GlobalProxy: JSType = JSType(43);
+ 
+     /// Arguments object for function parameters.
+     /// ```js
+@@ -270,10 +272,10 @@ impl JSType {
+     ///   console.log(arguments.length);
+     /// }
+     /// ```
+-    pub(crate) const DirectArguments: JSType = JSType(43);
++    pub(crate) const DirectArguments: JSType = JSType(44);
+ 
+-    pub(crate) const ScopedArguments: JSType = JSType(44);
+-    pub(crate) const ClonedArguments: JSType = JSType(45);
++    pub(crate) const ScopedArguments: JSType = JSType(45);
++    pub(crate) const ClonedArguments: JSType = JSType(46);
+ 
+     /// JavaScript Array object.
+     /// ```js
+@@ -282,94 +284,94 @@ impl JSType {
+     /// new Array(10)
+     /// Array.from(iterable)
+     /// ```
+-    pub const Array: JSType = JSType(46);
++    pub const Array: JSType = JSType(47);
+ 
+     /// Array subclass created through class extension.
+     /// ```js
+     /// class MyArray extends Array {}
+     /// const arr = new MyArray();
+     /// ```
+-    pub const DerivedArray: JSType = JSType(47);
++    pub const DerivedArray: JSType = JSType(48);
+ 
+     /// ArrayBuffer for binary data storage.
+     /// ```js
+     /// new ArrayBuffer(1024)
+     /// ```
+-    pub const ArrayBuffer: JSType = JSType(48);
++    pub const ArrayBuffer: JSType = JSType(49);
+ 
+     /// Typed array for 8-bit signed integers.
+     /// ```js
+     /// new Int8Array(buffer)
+     /// new Int8Array([1, -1, 127])
+     /// ```
+-    pub const Int8Array: JSType = JSType(49);
++    pub const Int8Array: JSType = JSType(50);
+ 
+     /// Typed array for 8-bit unsigned integers.
+     /// ```js
+     /// new Uint8Array(buffer)
+     /// new Uint8Array([0, 255])
+     /// ```
+-    pub const Uint8Array: JSType = JSType(50);
++    pub const Uint8Array: JSType = JSType(51);
+ 
+     /// Typed array for 8-bit unsigned integers with clamping.
+     /// ```js
+     /// new Uint8ClampedArray([0, 300]) // 300 becomes 255
+     /// ```
+-    pub const Uint8ClampedArray: JSType = JSType(51);
++    pub const Uint8ClampedArray: JSType = JSType(52);
+ 
+     /// Typed array for 16-bit signed integers.
+     /// ```js
+     /// new Int16Array(buffer)
+     /// ```
+-    pub const Int16Array: JSType = JSType(52);
++    pub const Int16Array: JSType = JSType(53);
+ 
+     /// Typed array for 16-bit unsigned integers.
+     /// ```js
+     /// new Uint16Array(buffer)
+     /// ```
+-    pub const Uint16Array: JSType = JSType(53);
++    pub const Uint16Array: JSType = JSType(54);
+ 
+     /// Typed array for 32-bit signed integers.
+     /// ```js
+     /// new Int32Array(buffer)
+     /// ```
+-    pub const Int32Array: JSType = JSType(54);
++    pub const Int32Array: JSType = JSType(55);
+ 
+     /// Typed array for 32-bit unsigned integers.
+     /// ```js
+     /// new Uint32Array(buffer)
+     /// ```
+-    pub const Uint32Array: JSType = JSType(55);
++    pub const Uint32Array: JSType = JSType(56);
+ 
+     /// Typed array for 16-bit floating point numbers.
+     /// ```js
+     /// new Float16Array(buffer)
+     /// ```
+-    pub const Float16Array: JSType = JSType(56);
++    pub const Float16Array: JSType = JSType(57);
+ 
+     /// Typed array for 32-bit floating point numbers.
+     /// ```js
+     /// new Float32Array(buffer)
+     /// ```
+-    pub const Float32Array: JSType = JSType(57);
++    pub const Float32Array: JSType = JSType(58);
+ 
+     /// Typed array for 64-bit floating point numbers.
+     /// ```js
+     /// new Float64Array(buffer)
+     /// ```
+-    pub const Float64Array: JSType = JSType(58);
++    pub const Float64Array: JSType = JSType(59);
+ 
+     /// Typed array for 64-bit signed BigInt values.
+     /// ```js
+     /// new BigInt64Array([123n, -456n])
+     /// ```
+-    pub const BigInt64Array: JSType = JSType(59);
++    pub const BigInt64Array: JSType = JSType(60);
+ 
+     /// Typed array for 64-bit unsigned BigInt values.
+     /// ```js
+     /// new BigUint64Array([123n, 456n])
+     /// ```
+-    pub const BigUint64Array: JSType = JSType(60);
++    pub const BigUint64Array: JSType = JSType(61);
+ 
+     /// DataView for flexible binary data access.
+     /// ```js
+@@ -377,7 +379,7 @@ impl JSType {
+     /// view.getInt32(0)
+     /// view.setFloat64(8, 3.14)
+     /// ```
+-    pub const DataView: JSType = JSType(61);
++    pub const DataView: JSType = JSType(62);
+ 
+     /// Global object containing all global variables and functions.
+     /// ```js
+@@ -385,12 +387,12 @@ impl JSType {
+     /// window // in browsers
+     /// global // in Node.js
+     /// ```
+-    pub const GlobalObject: JSType = JSType(62);
++    pub const GlobalObject: JSType = JSType(63);
+ 
+-    pub const GlobalLexicalEnvironment: JSType = JSType(63);
+-    pub const LexicalEnvironment: JSType = JSType(64);
+-    pub const ModuleEnvironment: JSType = JSType(65);
+-    pub const StrictEvalActivation: JSType = JSType(66);
++    pub const GlobalLexicalEnvironment: JSType = JSType(64);
++    pub const LexicalEnvironment: JSType = JSType(65);
++    pub const ModuleEnvironment: JSType = JSType(66);
++    pub const StrictEvalActivation: JSType = JSType(67);
+ 
+     /// Scope object for with statements.
+     /// ```js
+@@ -398,16 +400,16 @@ impl JSType {
+     ///   prop; // looks up prop in obj first
+     /// }
+     /// ```
+-    pub const WithScope: JSType = JSType(67);
++    pub const WithScope: JSType = JSType(68);
+ 
+     /// Namespace object for ES6 modules.
+     /// ```js
+     /// import * as ns from 'module';
+     /// ns.exportedFunction()
+     /// ```
+-    pub const ModuleNamespaceObject: JSType = JSType(70);
++    pub const ModuleNamespaceObject: JSType = JSType(71);
+ 
+-    pub(crate) const ShadowRealm: JSType = JSType(71);
++    pub(crate) const ShadowRealm: JSType = JSType(72);
+ 
+     /// Regular expression object.
+     /// ```js
+@@ -415,7 +417,7 @@ impl JSType {
+     /// new RegExp('pattern', 'flags')
+     /// /abc/gi
+     /// ```
+-    pub const RegExpObject: JSType = JSType(72);
++    pub const RegExpObject: JSType = JSType(73);
+ 
+     /// JavaScript Date object for date/time operations.
+     /// ```js
+@@ -423,7 +425,7 @@ impl JSType {
+     /// new Date('2023-01-01')
+     /// Date.now()
+     /// ```
+-    pub const JSDate: JSType = JSType(73);
++    pub const JSDate: JSType = JSType(74);
+ 
+     /// Proxy object that intercepts operations on another object.
+     /// ```js
+@@ -431,7 +433,7 @@ impl JSType {
+     ///   get(obj, prop) { return obj[prop]; }
+     /// })
+     /// ```
+-    pub const ProxyObject: JSType = JSType(74);
++    pub const ProxyObject: JSType = JSType(75);
+ 
+     /// Generator object created by generator functions.
+     /// ```js
+@@ -439,7 +441,7 @@ impl JSType {
+     /// const g = gen();
+     /// g.next()
+     /// ```
+-    pub(crate) const Generator: JSType = JSType(75);
++    pub(crate) const Generator: JSType = JSType(76);
+ 
+     /// Async generator object for asynchronous iteration.
+     /// ```js
+@@ -447,17 +449,17 @@ impl JSType {
+     ///   yield await promise;
+     /// }
+     /// ```
+-    pub(crate) const AsyncGenerator: JSType = JSType(77);
++    pub(crate) const AsyncGenerator: JSType = JSType(78);
+ 
+     /// Iterator for Array objects.
+     /// ```js
+     /// [1,2,3][Symbol.iterator]()
+     /// for (const x of array) {}
+     /// ```
+-    pub(crate) const JSArrayIterator: JSType = JSType(78);
++    pub(crate) const JSArrayIterator: JSType = JSType(79);
+ 
+-    pub(crate) const Iterator: JSType = JSType(79);
+-    pub(crate) const IteratorHelper: JSType = JSType(80);
++    pub(crate) const Iterator: JSType = JSType(80);
++    pub(crate) const IteratorHelper: JSType = JSType(81);
+ 
+     /// Iterator for Map objects.
+     /// ```js
+@@ -466,30 +468,30 @@ impl JSType {
+     /// map.entries()
+     /// for (const [k,v] of map) {}
+     /// ```
+-    pub(crate) const MapIterator: JSType = JSType(81);
++    pub(crate) const MapIterator: JSType = JSType(82);
+ 
+     /// Iterator for Set objects.
+     /// ```js
+     /// set.values()
+     /// for (const value of set) {}
+     /// ```
+-    pub(crate) const SetIterator: JSType = JSType(82);
++    pub(crate) const SetIterator: JSType = JSType(83);
+ 
+     /// Iterator for String objects.
+     /// ```js
+     /// 'hello'[Symbol.iterator]()
+     /// for (const char of string) {}
+     /// ```
+-    pub(crate) const StringIterator: JSType = JSType(83);
++    pub(crate) const StringIterator: JSType = JSType(84);
+ 
+-    pub(crate) const WrapForValidIterator: JSType = JSType(84);
++    pub(crate) const WrapForValidIterator: JSType = JSType(85);
+ 
+     /// Iterator for RegExp string matching.
+     /// ```js
+     /// 'abc'.matchAll(/./g)
+     /// for (const match of string.matchAll(regex)) {}
+     /// ```
+-    pub(crate) const RegExpStringIterator: JSType = JSType(85);
++    pub(crate) const RegExpStringIterator: JSType = JSType(86);
+ 
+     /// JavaScript Promise object for asynchronous operations.
+     /// ```js
+@@ -497,7 +499,7 @@ impl JSType {
+     /// Promise.resolve(42)
+     /// async function foo() { await promise; }
+     /// ```
+-    pub const JSPromise: JSType = JSType(87);
++    pub const JSPromise: JSType = JSType(88);
+ 
+     /// JavaScript Map object for key-value storage.
+     /// ```js
+@@ -505,7 +507,7 @@ impl JSType {
+     /// map.set(key, value)
+     /// map.get(key)
+     /// ```
+-    pub const Map: JSType = JSType(88);
++    pub const Map: JSType = JSType(89);
+ 
+     /// JavaScript Set object for unique value storage.
+     /// ```js
+@@ -513,33 +515,33 @@ impl JSType {
+     /// set.add(value)
+     /// set.has(value)
+     /// ```
+-    pub const Set: JSType = JSType(89);
++    pub const Set: JSType = JSType(90);
+ 
+     /// WeakMap for weak key-value references.
+     /// ```js
+     /// new WeakMap()
+     /// weakMap.set(object, value)
+     /// ```
+-    pub const WeakMap: JSType = JSType(90);
++    pub const WeakMap: JSType = JSType(91);
+ 
+     /// WeakSet for weak value references.
+     /// ```js
+     /// new WeakSet()
+     /// weakSet.add(object)
+     /// ```
+-    pub const WeakSet: JSType = JSType(91);
++    pub const WeakSet: JSType = JSType(92);
+ 
+-    pub(crate) const WebAssemblyModule: JSType = JSType(92);
+-    pub(crate) const WebAssemblyInstance: JSType = JSType(93);
+-    pub(crate) const WebAssemblyGCObject: JSType = JSType(94);
++    pub(crate) const WebAssemblyModule: JSType = JSType(93);
++    pub(crate) const WebAssemblyInstance: JSType = JSType(94);
++    pub(crate) const WebAssemblyGCObject: JSType = JSType(95);
+ 
+     /// Boxed String object.
+     /// ```js
+     /// new String("hello")
+     /// ```
+-    pub const StringObject: JSType = JSType(95);
++    pub const StringObject: JSType = JSType(96);
+ 
+-    pub const DerivedStringObject: JSType = JSType(96);
++    pub const DerivedStringObject: JSType = JSType(97);
+ 
+     pub const Event: JSType = JSType(0b11101111);
+     pub const DOMWrapper: JSType = JSType(0b11101110);
+diff --git a/src/jsc/bindings/BunClientData.cpp b/src/jsc/bindings/BunClientData.cpp
+index 6434aa34..97ac963d 100644
+--- a/src/jsc/bindings/BunClientData.cpp
++++ b/src/jsc/bindings/BunClientData.cpp
+@@ -1,6 +1,7 @@
+ #include "root.h"
+ 
+ #include "BunClientData.h"
++#include <JavaScriptCore/StaticHeap.h>
+ #include "WorkerMessagingProxy.h"
+ #include "WebCoreJSBuiltins.h"
+ 
+@@ -278,10 +279,15 @@ DOMClientIsoSubspaces::~DOMClientIsoSubspaces()
+     deleteSubspaceTable<JSC::GCClient::IsoSubspace>(this);
+ }
+ 
+-void JSVMClientData::setDecoderStringTable(std::span<const uint8_t> bytes)
++void JSVMClientData::setDecoderStringTable(JSC::VM& vm, std::span<const uint8_t> bytes)
+ {
+     if (m_decoderStringTable)
+         return; // slots may already hold cells this VM visits; never replace
++    // With the executable's static heap mapped, every string of the table is already there.
++    if (auto table = JSC::StaticHeap::tryCreateStringTable(vm, bytes)) {
++        m_decoderStringTable = WTF::move(table);
++        return;
++    }
+     m_decoderStringTable = makeUnique<JSC::DecoderStringTable>(bytes);
+ }
+ 
+diff --git a/src/jsc/bindings/BunClientData.h b/src/jsc/bindings/BunClientData.h
+index 34af44c7..004ab02b 100644
+--- a/src/jsc/bindings/BunClientData.h
++++ b/src/jsc/bindings/BunClientData.h
+@@ -301,7 +301,7 @@ public:
+     WTF::UncheckedKeyHashMap<WTF::String, RefPtr<JSC::SourceProvider>> isolationSourceProviderCache;
+ 
+     JSC::DecoderStringTable* decoderStringTable() final { return m_decoderStringTable.get(); }
+-    void setDecoderStringTable(std::span<const uint8_t>);
++    void setDecoderStringTable(JSC::VM&, std::span<const uint8_t>);
+ 
+     // The executable's pre-resolved module graph for this VM, created on first use over decoderStringTable() from the
+     // standalone module graph; null when there is none (or it does not validate).
+diff --git a/src/jsc/bindings/InternalModuleRegistry.cpp b/src/jsc/bindings/InternalModuleRegistry.cpp
+index baf1b157..d2182382 100644
+--- a/src/jsc/bindings/InternalModuleRegistry.cpp
++++ b/src/jsc/bindings/InternalModuleRegistry.cpp
+@@ -7,6 +7,7 @@
+ #include <JavaScriptCore/VMTrapsInlines.h>
+ #include <JavaScriptCore/JSModuleLoader.h>
+ #include <JavaScriptCore/Debugger.h>
++#include <JavaScriptCore/StaticHeap.h>
+ #include <atomic>
+ #include <utility>
+ 
+@@ -113,18 +114,24 @@ JSC::JSValue generateInternalModule(JSC::JSGlobalObject* globalObject, JSC::VM&
+     maybeAddCodeCoverage(vm, source);
+ 
+     UnlinkedFunctionExecutable* executable = nullptr;
++    JSC::FunctionExecutable* linked = nullptr;
+     const uint8_t* cachedBytes = nullptr;
+     size_t cachedSize = 0;
+     uint32_t cachedEntryOffset = 0;
+     if (Bun__standaloneInternalModuleBytecode(::bunVM(globalObject), id, &cachedBytes, &cachedSize, &cachedEntryOffset)) {
+-        executable = JSC::decodeBuiltinFunction(vm, embeddedBytecode({ const_cast<uint8_t*>(cachedBytes), cachedSize }, cachedEntryOffset), *source.provider(), bun_internal_modules_header.sourceStamp);
+-        if (executable)
++        // The executable's static heap made it when the program was built, and code compiled ahead of time knows it as that one.
++        linked = JSC::StaticHeap::builtinFunctionFor(globalObject, cachedEntryOffset, bun_internal_modules_header.sourceStamp, source.provider()->source().toString(), source.provider()->sourceOrigin(), source.provider()->sourceURL());
++        if (!linked)
++            executable = JSC::decodeBuiltinFunction(vm, embeddedBytecode({ const_cast<uint8_t*>(cachedBytes), cachedSize }, cachedEntryOffset), *source.provider(), bun_internal_modules_header.sourceStamp);
++        if (linked || executable)
+             s_internalModulesFromBytecode.fetch_add(1, std::memory_order_relaxed);
+     }
+-    if (!executable)
++    if (!linked && !executable)
+         executable = createInternalModuleExecutable(vm, source, moduleName);
++    if (!linked)
++        linked = executable->link(vm, nullptr, source);
+ 
+-    JSFunction* func = JSFunction::create(vm, globalObject, executable->link(vm, nullptr, source), static_cast<JSC::JSGlobalObject*>(globalObject));
++    JSFunction* func = JSFunction::create(vm, globalObject, linked, static_cast<JSC::JSGlobalObject*>(globalObject));
+ 
+     RETURN_IF_EXCEPTION(throwScope, {});
+     if (globalObject->hasDebugger() && globalObject->debugger()->isInteractivelyDebugging()) [[unlikely]] {
+diff --git a/src/jsc/bindings/ZigGlobalObject.cpp b/src/jsc/bindings/ZigGlobalObject.cpp
+index 9de807ad..500b8789 100644
+--- a/src/jsc/bindings/ZigGlobalObject.cpp
++++ b/src/jsc/bindings/ZigGlobalObject.cpp
+@@ -268,6 +268,18 @@ static consteval unsigned getWebKitBytecodeCacheVersion()
+ {
+     return WTF::SuperFastHash::computeHash(WEBKIT_BYTECODE_CACHE_HASH_KEY);
+ }
++
++// The static heap is stamped with the bytecode cache version, and it is mapped before JSCInitialize() runs.
++extern "C" void Bun__setBytecodeCacheVersion()
++{
++    JSC::dangerouslyOverrideJSCBytecodeCacheVersion(getWebKitBytecodeCacheVersion());
++}
++
++// ZigSourceProvider.cpp: an executable's code compiled ahead of time, and building one.
++extern "C" bool Bun__shouldCompileAheadOfTime();
++extern "C" void Bun__setOptionsForAheadOfTimeCode();
++extern "C" bool Bun__AOTImage__isMapped();
++extern "C" void Bun__AOTImage__register();
+ #undef WEBKIT_BYTECODE_CACHE_HASH_KEY
+ 
+ // Declare fuzzilli function registration from FuzzilliREPRL.cpp
+@@ -288,6 +300,9 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+     static std::once_flag jsc_init_flag;
+     // NOLINTBEGIN
+     std::call_once(jsc_init_flag, [evalMode, oneShotStartup, shortLivedGlobals, envp, envc, onCrash]() {
++        // Before any option is set: with the AOT engine, Options::notifyOptionsChanged() turns useJIT off for good if the compilers
++        // are not installed (CompilerHooks.h). This also installs the compiler of images for `bun build --compile`.
++        JSC::installCompilers();
+         Bun__ensureICUDefaultLocale();
+         JSC::Config::enableRestrictedOptions();
+         // JSC options come from BUN_JSC_* (applied in the callback below), not JSC_*.
+@@ -363,6 +378,12 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+                 JSC::Options::thresholdForFTLOptimizeAfterWarmUp() = 1000000;
+             }
+ 
++            // Code compiled ahead of time only fits bytecode made the way it was compiled from (BUN_JSC_* can still override).
++            if (Bun__AOTImage__isMapped() || Bun__shouldCompileAheadOfTime())
++                Bun__setOptionsForAheadOfTimeCode();
++            if (Bun__AOTImage__isMapped())
++                JSC::Options::useAOT() = true;
++
+             if (envc > 0) [[likely]] {
+                 auto envc_copy = envc;
+                 while (envc_copy--) {
+@@ -378,8 +399,12 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+                     }
+                 }
+             }
++            // Again after BUN_JSC_*: code compiled ahead of time is only right for bytecode made the way it was compiled from.
++            if (Bun__AOTImage__isMapped())
++                Bun__setOptionsForAheadOfTimeCode();
+             JSC::Options::assertOptionsAreCoherent();
+         }); // end JSC::initialize lambda
++        Bun__AOTImage__register();
+ 
+ #if OS(WINDOWS) && (CPU(X86_64) || CPU(ARM64))
+         // JSC::initialize() registered unwind info + a language-specific SEH
+diff --git a/src/jsc/bindings/ZigSourceProvider.cpp b/src/jsc/bindings/ZigSourceProvider.cpp
+index fbfaa2ff..ad81e6b1 100644
+--- a/src/jsc/bindings/ZigSourceProvider.cpp
++++ b/src/jsc/bindings/ZigSourceProvider.cpp
+@@ -2,6 +2,9 @@
+ 
+ #include "helpers.h"
+ 
++#if !OS(WINDOWS)
++#include <sys/mman.h>
++#endif
+ #include "ZigSourceProvider.h"
+ #include "MimallocWTFMalloc.h"
+ #include "BunAnalyzeTranspiledModule.h"
+@@ -16,8 +19,17 @@
+ #include <JavaScriptCore/SourceCodeKey.h>
+ #include <mimalloc.h>
+ #include <JavaScriptCore/CodeCache.h>
++#include <JavaScriptCore/StaticHeap.h>
++#include <JavaScriptCore/CachedTypes.h>
++#include <JavaScriptCore/MacroAssembler.h>
++#include <JavaScriptCore/Options.h>
++#include <wtf/text/AtomStringTable.h>
+ #include "BunBuiltinNames.h"
+ 
++namespace JSC::AOT {
++JS_EXPORT_PRIVATE uint64_t imageStamp(); // AOTImage.h, which is not a forwarding header.
++}
++
+ namespace Zig {
+ 
+ using SourceOrigin = JSC::SourceOrigin;
+@@ -105,6 +117,28 @@ Ref<SourceProvider> SourceProvider::create(
+             if (resolvedSource.bytecode_cache_persistent)
+                 bytecode->setPayloadIsPersistent();
+             bytecode->setEntryOffset(resolvedSource.bytecode_cache_entry_offset);
++            // A module of the static heap: its executables were made at build time and point at the provider's place.
++            static_assert(sizeof(SourceProvider) <= JSC::StaticHeap::sizeOfPlaceForSourceProvider);
++            JSC::SourceProvider* made = nullptr;
++            if (void* place = JSC::StaticHeap::takePlaceForSourceProvider(globalObject->vm(), resolvedSource.bytecode_cache_entry_offset, sizeof(SourceProvider), made)) {
++                auto* placed = new (NotNull, place) SourceProvider(
++                    globalObject->bunVM(),
++                    resolvedSource,
++                    string.isNull() ? Ref { *StringImpl::empty() } : Ref { *string.impl() },
++                    JSC::SourceTaintedOrigin::Untainted,
++                    origin,
++                    WTF::move(sourceURLString), TextPosition(),
++                    sourceType);
++                placed->m_hash = resolvedSource.source_code_hash;
++                placed->m_cachedBytecode = WTF::move(bytecode);
++                placed->setAOTModuleID(resolvedSource.bytecode_cache_entry_offset + 1);
++                placed->becomeShareableBetweenThreads();
++                placed->ref(); // Never destroyed: the static heap refers to it.
++                JSC::StaticHeap::didMakeSourceProvider(place);
++                return adoptRef(*placed);
++            }
++            if (made)
++                return Ref { *static_cast<SourceProvider*>(made) };
+             auto provider = adoptRef(*new SourceProvider(
+                 globalObject->bunVM(),
+                 resolvedSource,
+@@ -224,7 +258,7 @@ extern "C" void JSC__Heap__setInitialAllocationBudget(JSC::VM* vm, size_t bytes)
+ extern "C" void Bun__DecoderStringTable__install(JSC::VM* vm, const uint8_t* bytes, size_t len)
+ {
+     ASSERT(vm->clientData);
+-    static_cast<WebCore::JSVMClientData*>(vm->clientData)->setDecoderStringTable(std::span<const uint8_t>(bytes, len));
++    static_cast<WebCore::JSVMClientData*>(vm->clientData)->setDecoderStringTable(*vm, std::span<const uint8_t>(bytes, len));
+ }
+ 
+ extern "C" uint32_t Bun__EncoderStringTable__slotForLatin1(JSC::EncoderStringTable* table, const Latin1Character* chars, size_t length)
+@@ -290,17 +324,300 @@ extern "C" bool generateCachedCommonJSProgramByteCodeFromSourceCode(const BunStr
+     return generateCachedByteCodeFromSourceCode(sourceProviderURL, inputSourceCode, false, depth, optimize, outputByteCode, outputByteCodeSize, cachedBytecodePtr, externalStrings);
+ }
+ 
++// BUN_STATIC_HEAP=1 while building: JSC::StaticHeap is also built for the link's payload, and the executable maps it instead of
++// decoding. The link's string table, and the image while Bun__StaticHeap__takeBuilt has not taken it.
++static JSC::EncoderStringTable* s_stringsOfLinkEncoder;
++static Vector<uint8_t> s_builtStaticHeap;
++
++extern "C" bool Bun__AOTImage__isMapped();
++static bool shouldBuildStaticHeap()
++{
++    const char* value = getenv("BUN_STATIC_HEAP");
++    return value && value[0] == '1';
++}
++
++// BUN_AOT=1 as well: every function of the link is compiled ahead of time (JSC::AOT::Image), and the image follows the static heap
++// in what Bun__StaticHeap__takeBuilt hands out, on a page boundary, with a trailer that says where (AOTImageTrailer).
++extern "C" bool Bun__shouldCompileAheadOfTime()
++{
++    const char* value = getenv("BUN_AOT");
++    return value && value[0] == '1' && shouldBuildStaticHeap();
++}
++
++struct AOTImageTrailer {
++    static constexpr uint64_t expectedMagic = 0x33474d49544f4142ULL; // "BAOTIMG3"
++    // Engine options that the code takes for granted, and that the image's stamp (AOT::imageStamp()) includes: the executable sets
++    // them itself, before it checks the stamp.
++    static constexpr uint64_t immutableIntrinsics = 1;
++    // Not taken for granted by the code, but chosen when it was built (BUN_AOT_JIT=0): the program runs with the JIT off, as code
++    // compiled ahead of time is meant to. Less memory and no runtime code generation; every function runs the image's code.
++    static constexpr uint64_t withoutJIT = 2;
++    uint64_t offsetOfImage;
++    uint64_t sizeOfImage;
++    uint64_t cpuFeatures; // What the code was compiled to use (cpuFeaturesOfCode()). A CPU without one of them runs without the image.
++    uint64_t optionsOfCode;
++    uint64_t magic;
++};
++static uint64_t s_optionsOfMappedCode;
++
++// The instruction set extensions that the compiler picks instructions by (MacroAssemblerX86_64::supports*()), as of now: when the
++// image is compiled, what it was compiled for; when the program runs, what this CPU has.
++static uint64_t cpuFeaturesOfCode()
++{
++    uint64_t features = 0;
++#if CPU(X86_64)
++    using M = JSC::MacroAssemblerX86_64;
++    // (The states, which are public, rather than supports*(): restrictCPUFeaturesForCodeIfAsked() sets them.)
++    if (M::s_sse3CheckState == M::CPUIDCheckState::NotChecked)
++        M::collectCPUFeatures();
++    unsigned bit = 0;
++    for (auto state : { M::s_sse3CheckState, M::s_supplementalSSE3CheckState, M::s_sse4_1CheckState, M::s_popcntCheckState, M::s_avxCheckState, M::s_avx2CheckState, M::s_lzcntCheckState, M::s_bmi1CheckState }) {
++        bool has = state == M::CPUIDCheckState::Set;
++        if (has)
++            features |= 1ull << bit;
++        ++bit;
++    }
++#endif
++    return features;
++}
++
++// BUN_AOT_CPU=baseline while building: code for any x86-64 CPU that Bun's baseline build runs on (Nehalem: SSE4.2 and POPCNT,
++// without AVX, AVX2, LZCNT or BMI1). Otherwise the code uses what the building CPU has, and only runs on CPUs that have it too.
++static void restrictCPUFeaturesForCodeIfAsked()
++{
++#if CPU(X86_64)
++    const char* value = getenv("BUN_AOT_CPU");
++    if (!value || strcmp(value, "baseline"))
++        return;
++    using M = JSC::MacroAssemblerX86_64;
++    M::collectCPUFeatures();
++    M::s_avxCheckState = M::CPUIDCheckState::Clear;
++    M::s_avx2CheckState = M::CPUIDCheckState::Clear;
++    M::s_lzcntCheckState = M::CPUIDCheckState::Clear;
++    M::s_bmi1CheckState = M::CPUIDCheckState::Clear;
++#endif
++}
++static constexpr size_t pageSizeOfStaticHeap = 16 * 1024;
++static Vector<uint8_t> s_builtAOTImage;
++
++// What the program's code was compiled for is how its bytecode is made, which is set before any is.
++extern "C" void Bun__setOptionsForAheadOfTimeCode()
++{
++    if (s_optionsOfMappedCode & AOTImageTrailer::immutableIntrinsics)
++        JSC::Options::useImmutableIntrinsics() = true;
++    if (s_optionsOfMappedCode & AOTImageTrailer::withoutJIT)
++        JSC::Options::useJIT() = false;
++    // Building: what JSC records for the JIT in the cells it makes (watchpoints, profiles) is not what the program finds when it
++    // runs, so the bundler's VM must not JIT. (Running: the trailer decides, above.)
++    if (!Bun__AOTImage__isMapped() && shouldBuildStaticHeap())
++        JSC::Options::useJIT() = false;
++    JSC::Options::resolveAllScopeSlotsStatically() = true;
++    JSC::Options::evaluateObjectLiteralValuesFirst() = true;
++    JSC::Options::definePlainInstanceFieldsInConstructor() = true;
++    // With the JIT off, JSC otherwise runs in "mini mode" (no generational GC, synchronous sweeping, 1.2x heap growth): meant for a VM
++    // that interprets everything, not for one whose code is compiled ahead of time. (OptionsList.h says so; nothing did it.)
++    JSC::Options::useMiniVMModeWithoutJIT() = false;
++}
++
++extern "C" bool Bun__StaticHeap__takeBuilt(uint8_t** data, size_t* size)
++{
++    if (s_builtStaticHeap.isEmpty())
++        return false;
++    size_t offsetOfImage = WTF::roundUpToMultipleOf<pageSizeOfStaticHeap>(s_builtStaticHeap.size());
++    *size = s_builtAOTImage.isEmpty() ? s_builtStaticHeap.size() : offsetOfImage + s_builtAOTImage.size() + sizeof(AOTImageTrailer);
++    *data = static_cast<uint8_t*>(mi_zalloc(*size));
++    memcpy(*data, s_builtStaticHeap.span().data(), s_builtStaticHeap.size());
++    if (!s_builtAOTImage.isEmpty()) {
++        memcpy(*data + offsetOfImage, s_builtAOTImage.span().data(), s_builtAOTImage.size());
++        uint64_t options = JSC::Options::useImmutableIntrinsics() ? AOTImageTrailer::immutableIntrinsics : 0;
++        if (const char* jit = getenv("BUN_AOT_JIT"); jit && jit[0] == '0')
++            options |= AOTImageTrailer::withoutJIT;
++        AOTImageTrailer trailer { offsetOfImage, s_builtAOTImage.size(), cpuFeaturesOfCode(), options, AOTImageTrailer::expectedMagic };
++        memcpy(*data + *size - sizeof(trailer), &trailer, sizeof(trailer));
++    }
++    s_builtStaticHeap = { };
++    s_builtAOTImage = { };
++    return true;
++}
++
++extern "C" void Bun__StaticHeap__freeBuilt(uint8_t* data)
++{
++    mi_free(data);
++}
++
++// The code image that follows the static heap, if there is one (AOTImageTrailer): mapped where the static heap was built to find it,
++// the code executable and the rest read-only, and registered by Bun__AOTImage__register() once JSC is initialized.
++static std::span<const uint8_t> s_mappedAOTImage;
++static const void* s_codeOfMappedAOTImage;
++static const char* s_whyNotMapped; // When mapAOTImage() returns false for an image that is there.
++
++static bool hasAOTImageTrailer(const uint8_t* blob, size_t size)
++{
++    AOTImageTrailer trailer;
++    if (size < sizeof(trailer))
++        return false;
++    memcpy(&trailer, blob + size - sizeof(trailer), sizeof(trailer));
++    return trailer.magic == AOTImageTrailer::expectedMagic;
++}
++
++// False if the blob has an image that cannot be used: then the static heap, which was built for that code, is not used either.
++static bool mapAOTImage(const uint8_t* image, size_t size, int fd, uint64_t offsetInFile)
++{
++    bool verbose = getenv("BUN_STATIC_HEAP_VERBOSE");
++    // BUN_AOT=0: run without the code compiled ahead of time (to compare, or to rule it out).
++    if (const char* value = getenv("BUN_AOT"); value && value[0] == '0') {
++        if (verbose)
++            fprintf(stderr, "[aot] not used: BUN_AOT=0\n");
++        return !hasAOTImageTrailer(image, size);
++    }
++    if (!hasAOTImageTrailer(image, size))
++        return true; // A static heap without code.
++    AOTImageTrailer trailer;
++    memcpy(&trailer, image + size - sizeof(trailer), sizeof(trailer));
++    if (trailer.offsetOfImage % pageSizeOfStaticHeap || trailer.offsetOfImage > size || trailer.sizeOfImage > size - trailer.offsetOfImage)
++        return false;
++    // (Before anything compares stamps: JSCInitialize() sets them again, as Options::initialize() resets every option.)
++    s_optionsOfMappedCode = trailer.optionsOfCode;
++    if (trailer.optionsOfCode & AOTImageTrailer::immutableIntrinsics)
++        JSC::Options::useImmutableIntrinsics() = true;
++    if (uint64_t missing = trailer.cpuFeatures & ~cpuFeaturesOfCode()) {
++        if (verbose)
++            fprintf(stderr, "[aot] not used: the code was compiled for CPU features this CPU lacks (%llx)\n", static_cast<unsigned long long>(missing));
++        s_whyNotMapped = "this CPU lacks an instruction set the code was compiled for";
++        return false;
++    }
++    std::span<const uint8_t> inFile { image + trailer.offsetOfImage, static_cast<size_t>(trailer.sizeOfImage) };
++    auto range = JSC::aotImageCodeRange(inFile);
++    if (!range || range->first % pageSizeOfStaticHeap) {
++        if (verbose)
++            fprintf(stderr, "[aot] the image is not one for this engine\n");
++        s_whyNotMapped = "the image is not one for this engine";
++        return false;
++    }
++    using Region = bmalloc::StaticRegion;
++    uint64_t at = offsetInFile + trailer.offsetOfImage;
++    if (!Region::map(Region::Arena::Image, fd, static_cast<off_t>(at), range->first, 0, false)
++        || !Region::map(Region::Arena::Image, fd, static_cast<off_t>(at + range->first), WTF::roundUpToMultipleOf(WTF::pageSize(), range->second), range->first, true)) {
++        if (verbose)
++            fprintf(stderr, "[aot] the image could not be mapped\n");
++        s_whyNotMapped = "the image could not be mapped executable";
++        return false;
++    }
++    auto* base = reinterpret_cast<const uint8_t*>(Region::startOf(Region::Arena::Image));
++    s_mappedAOTImage = { base, inFile.size() };
++    s_codeOfMappedAOTImage = base + range->first;
++    if (verbose)
++        fprintf(stderr, "[aot] image of %zu bytes mapped, %zu of them code\n", inFile.size(), range->second);
++    return true;
++}
++
++extern "C" bool Bun__AOTImage__isMapped()
++{
++    return !s_mappedAOTImage.empty();
++}
++
++// After JSC::initialize(), before any JavaScript runs.
++extern "C" void Bun__AOTImage__register()
++{
++    if (s_mappedAOTImage.empty())
++        return;
++    bool registered = JSC::registerAOTImage(s_mappedAOTImage, s_codeOfMappedAOTImage);
++    if (getenv("BUN_STATIC_HEAP_VERBOSE"))
++        fprintf(stderr, "[aot] image registered: %s\n", registered ? "true" : "false");
++    if (!registered) {
++        // The static heap, which is mapped and was built with this code, cannot run without it (short-form executables point into
++        // it), and the engine is initialized by now: stop here, rather than at the first call.
++        fprintf(stderr, "bun: the executable's ahead-of-time code image was rejected by the engine; run with BUN_AOT=0 to use the bytecode instead\n");
++        exit(70); // EX_SOFTWARE
++    }
++}
++
++// Call on a thread that will run a VM other than the first, before it makes any atom string: that VM then uses the static heap
++// too (JSC::StaticHeap::install() for it needs this). A no-op without a heap, or with the JIT on (its compiler threads would read
++// cells whose locks are not taken).
++extern "C" void Bun__StaticHeap__prepareThread()
++{
++    JSC::StaticHeap::prepareThread();
++}
++
++// At startup, on the main thread, before anything makes an atom string: the executable's static heap, page-aligned at
++// `offsetInFile` of `fd`. False if it is not for this engine or the address range is taken; the program then decodes as usual.
++extern "C" void Bun__setBytecodeCacheVersion();
++
++// The code takes Structures to be in the 4 GB right after the static region (AOT::structureIDBaseOfImages), where JSC puts them if
++// it can when it initializes. Whether it can is known now: an address space limit (RLIMIT_AS, vm.overcommit_memory=2) or a taken
++// address would otherwise be found out by an assertion at the first call into the image.
++static bool structureHeapCanBeWhereTheCodeExpects()
++{
++    using Region = bmalloc::StaticRegion;
++    void* wanted = reinterpret_cast<void*>(Region::base + Region::reservation);
++    size_t size = 4ULL << 30;
++    void* result = mmap(wanted, size, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
++    if (result == MAP_FAILED)
++        return false;
++    munmap(result, size);
++    return result == wanted;
++}
++
++static void noteNotUsed(const char* why)
++{
++    // One line, once: the program still runs, from its bytecode, with the JIT; only slower to start.
++    fprintf(stderr, "bun: the executable's ahead-of-time compiled code is not used (%s); running from bytecode\n", why);
++}
++
++extern "C" bool Bun__StaticHeap__map(const uint8_t* image, size_t size, int fd, uint64_t offsetInFile)
++{
++    Bun__setBytecodeCacheVersion();
++    bool asked = !(getenv("BUN_AOT") && getenv("BUN_AOT")[0] == '0');
++    if (asked && (bmalloc::StaticRegion::bssMapped() < bmalloc::StaticRegion::arenaReservation || (hasAOTImageTrailer(image, size) && !structureHeapCanBeWhereTheCodeExpects()))) {
++        noteNotUsed("the address space for it is not available");
++        return false;
++    }
++    // The code first: a static heap that was built with code only works with it. Without either, the program decodes its bytecode.
++    if (!mapAOTImage(image, size, fd, offsetInFile)) {
++        if (asked)
++            noteNotUsed(s_whyNotMapped ? s_whyNotMapped : "the image could not be mapped");
++        return false;
++    }
++    bool mapped = JSC::StaticHeap::map(std::span { image, size }, fd, static_cast<off_t>(offsetInFile));
++    if (!mapped)
++        s_mappedAOTImage = { };
++    if (!mapped && asked && hasAOTImageTrailer(image, size))
++        noteNotUsed("the prebuilt heap could not be mapped");
++    if (!mapped && getenv("BUN_STATIC_HEAP_VERBOSE")) {
++        // Why not, in the order StaticHeap::map() checks.
++        uint64_t magic = size >= 16 ? reinterpret_cast<const uint64_t*>(image)[0] : 0;
++        uint64_t stamp = size >= 16 ? reinterpret_cast<const uint64_t*>(image)[1] : 0;
++        size_t atoms = WTF::Thread::currentSingleton().atomStringTable()->table().size();
++        fprintf(stderr, "[static heap] not mapped: magic %llx, stamp %llx vs engine %llx, %zu atoms already on this thread, offset %llu\n",
++            static_cast<unsigned long long>(magic), static_cast<unsigned long long>(stamp), static_cast<unsigned long long>(JSC::AOT::imageStamp()), atoms, static_cast<unsigned long long>(offsetInFile));
++    }
++    return mapped;
++}
++
++extern "C" void Bun__StaticHeap__install(JSC::VM* vm)
++{
++    JSC::StaticHeap::install(*vm);
++}
++
+ // `bun build --compile --bytecode` with a payload order file (--bytecode-order): one payload for the whole link.
+ // Created, fed and finished on the bundler's bytecode thread (it uses that thread's bytecode VM).
+ extern "C" JSC::BytecodeLinkEncoder* Bun__BytecodeLinkEncoder__create(JSC::EncoderStringTable* externalStrings, const uint64_t* hotFunctions, size_t hotFunctionCount, const uint64_t* knownFunctions, size_t knownFunctionCount, const uint64_t* evaluatedModules, size_t evaluatedModuleCount, const uint64_t* notEvaluatedModules, size_t notEvaluatedModuleCount)
+ {
+     JSC::VM& vm = vmForBytecodeCache();
+     JSC::JSLockHolder locker(vm);
++    s_stringsOfLinkEncoder = externalStrings;
++    // (What a link that did not get as far as embedding left behind is not this link's.)
++    s_builtStaticHeap = { };
++    s_builtAOTImage = { };
+     JSC::BytecodeLinkEncoder::Hints hints;
+     hints.hotFunctions.append(std::span { hotFunctions, hotFunctionCount });
+     hints.knownFunctions.append(std::span { knownFunctions, knownFunctionCount });
+     hints.evaluatedModules.append(std::span { evaluatedModules, evaluatedModuleCount });
+     hints.notEvaluatedModules.append(std::span { notEvaluatedModules, notEvaluatedModuleCount });
++    hints.compileAheadOfTime = Bun__shouldCompileAheadOfTime();
++    if (hints.compileAheadOfTime)
++        restrictCPUFeaturesForCodeIfAsked();
+     return new JSC::BytecodeLinkEncoder(vm, externalStrings, WTF::move(hints));
+ }
+ 
+@@ -331,6 +648,22 @@ extern "C" bool Bun__BytecodeLinkEncoder__addModule(JSC::BytecodeLinkEncoder* en
+     return true;
+ }
+ 
++// Hints::compileAheadOfTime: how the bundler linked the chunks (the executable's `.prelinked-module-graph` and the module-info
++// slot table it is read with), and for each successful add* call so far the chunk's module in that graph or
++// JSC::PrelinkedModuleGraph::noModule. Copied: finish() reads them.
++static Vector<uint8_t> s_prelinkedGraphOfLink;
++static Vector<uint32_t> s_prelinkedGraphSlotsOfLink;
++extern "C" void Bun__BytecodeLinkEncoder__setPrelinkedModuleGraph(JSC::BytecodeLinkEncoder* encoder, const uint8_t* blob, size_t blobSize, const uint32_t* slots, size_t slotCount, const uint32_t* graphModuleOfEachAdd, size_t addCount)
++{
++    // Only compilation ahead of time goes by it; a static heap without code is built as before.
++    if (!Bun__shouldCompileAheadOfTime())
++        return;
++    JSC::JSLockHolder locker(vmOfBytecodeLinkEncoder(*encoder));
++    s_prelinkedGraphOfLink = Vector<uint8_t>(std::span { blob, blobSize });
++    s_prelinkedGraphSlotsOfLink = Vector<uint32_t>(std::span { slots, slotCount });
++    encoder->setPrelinkedModuleGraph(s_prelinkedGraphOfLink.span(), s_prelinkedGraphSlotsOfLink.span(), Vector<uint32_t>(std::span { graphModuleOfEachAdd, addCount }));
++}
++
+ // `entryOffsets` has room for one number per successful add* call; `regionEnds` for
+ // JSC::BytecodeLinkEncoder::numberOfRegions.
+ static_assert(JSC::BytecodeLinkEncoder::numberOfRegions == 6, "bun_resolver::LINKED_BYTECODE_REGION_COUNT");
+@@ -340,6 +673,18 @@ extern "C" bool Bun__BytecodeLinkEncoder__finish(JSC::BytecodeLinkEncoder* encod
+     auto result = encoder->finish();
+     if (!result.payload || result.entryOffsets.size() != entryOffsetCount)
+         return false;
++    // What JSC records for the JIT in the cells it makes (watchpoints, profiles) is not what the program finds when it runs.
++    if (s_stringsOfLinkEncoder && shouldBuildStaticHeap() && JSC::Options::useJIT()) {
++        // Bun__setOptionsForAheadOfTimeCode() turns it off for a build; BUN_JSC_useJIT=1 would put it back.
++        fprintf(stderr, "error: BUN_STATIC_HEAP=1 needs the build to run with the JIT off\n");
++        return false;
++    }
++    if (s_stringsOfLinkEncoder && shouldBuildStaticHeap()) {
++        auto strings = s_stringsOfLinkEncoder->serialize();
++        s_builtStaticHeap = JSC::StaticHeap::build(encoder->vm(), strings.span(), result.payload->span(), result.entryOffsetsOfModules.span(), result.aotImage.span(), 0, nullptr, result.reportableSites.span(), result.variablesExportedByModules.span());
++        s_builtAOTImage = s_builtStaticHeap.isEmpty() ? Vector<uint8_t> { } : WTF::move(result.aotImage);
++        dataLogLnIf(JSC::Options::verboseDiskCache() || getenv("BUN_STATIC_HEAP_VERBOSE"), "[Bytecode Build] static heap: ", s_builtStaticHeap.size(), " bytes for ", result.entryOffsetsOfModules.size(), " modules; AOT image: ", s_builtAOTImage.size(), " bytes");
++    }
+     memcpySpan(std::span { entryOffsets, entryOffsetCount }, result.entryOffsets.span());
+     memcpySpan(std::span { regionEnds, JSC::BytecodeLinkEncoder::numberOfRegions }, std::span<const uint32_t> { result.regionEnds });
+     *namedHotFunctions = result.namedHotFunctions;
+diff --git a/src/jsc/web_worker.rs b/src/jsc/web_worker.rs
+index 486a196f..299d3f13 100644
+--- a/src/jsc/web_worker.rs
++++ b/src/jsc/web_worker.rs
+@@ -154,6 +154,7 @@ pub enum Status {
+ // even when C++ mutates through it. `proxy` is the opaque C++ `WorkerMessagingProxy*`
+ // round-tripped from `create()`; it is only ever handed back to C++.
+ unsafe extern "C" {
++    fn Bun__StaticHeap__prepareThread();
+     safe fn WebWorker__workerThreadStarted(proxy: *mut c_void);
+     safe fn WebWorker__workerGlobalScopeStarted(proxy: *mut c_void, global: &JSGlobalObject);
+     safe fn WebWorker__workerGlobalScopeDestroyed(
+@@ -465,6 +466,9 @@ impl WebWorker {
+         let spawn = std::thread::Builder::new()
+             .stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize)
+             .spawn(move || {
++                // Before this thread makes any atom string: the worker's VM then shares the executable's static heap (and runs
++                // its code compiled ahead of time) instead of decoding bytecode and interpreting it. A no-op without a heap.
++                unsafe { Bun__StaticHeap__prepareThread() };
+                 let start = start;
+                 start.worker.thread_main(start.init);
+                 // The thread's ref (and the parent ticket) drop here.
+diff --git a/src/runtime/cli/run_command.rs b/src/runtime/cli/run_command.rs
+index aea7e78e..5cede4c3 100644
+--- a/src/runtime/cli/run_command.rs
++++ b/src/runtime/cli/run_command.rs
+@@ -1116,6 +1116,11 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
+     ) -> crate::Result<()> {
+         use bun_standalone_graph::StandaloneModuleGraph::Flags as GraphFlags;
+ 
++        // Before JSC makes its first atom string: the static heap must own every atom there is.
++        let static_heap_mapped = graph.map_static_heap();
++        if std::env::var_os("BUN_STATIC_HEAP_VERBOSE").is_some() {
++            eprintln!("[static heap] {} bytes in executable, mapped: {}", graph.static_heap.len(), static_heap_mapped);
++        }
+         // argv belongs to the compiled program, so a `-e` or `-p` in it is not ours.
+         bun_jsc::initialize(bun_jsc::InitializeOptions::default());
+         bun_analytics::features::standalone_executable.fetch_add(1, Ordering::Relaxed);
+diff --git a/src/standalone_graph/StandaloneModuleGraph.rs b/src/standalone_graph/StandaloneModuleGraph.rs
+index a1cfe230..3dcdff9d 100644
+--- a/src/standalone_graph/StandaloneModuleGraph.rs
++++ b/src/standalone_graph/StandaloneModuleGraph.rs
+@@ -63,6 +63,8 @@ pub struct StandaloneModuleGraph {
+     /// point's static import closure, i.e. what loads before the first `import()`.
+     pub startup_module_count: u32,
+     pub runtime_options: RuntimeOptions,
++    /// `Flags::HAS_STATIC_HEAP`: the image `JSC::StaticHeap::map` takes; empty when there is none.
++    pub static_heap: &'static [u8],
+ }
+ 
+ /// Runtime defaults chosen at build time (`Flags::HAS_RUNTIME_OPTIONS` record: `u32 flags`, `u32 value`).
+@@ -648,6 +650,35 @@ mod elf {
+         Some((unsafe { target.add(8) }, payload_len as usize))
+     }
+ 
++    /// Where in the executable's file the byte at `address` (in the main program's mapped image) comes from.
++    pub(super) fn file_offset_of(address: usize) -> Option<u64> {
++        struct Ctx {
++            address: usize,
++            offset: Option<u64>,
++        }
++        extern "C" fn callback(info: *mut libc::dl_phdr_info, _size: libc::size_t, data: *mut core::ffi::c_void) -> core::ffi::c_int {
++            // SAFETY: dl_iterate_phdr passes a valid info pointer; `data` is the `Ctx` below.
++            let (info, ctx) = unsafe { (&*info, &mut *data.cast::<Ctx>()) };
++            // SAFETY: dlpi_phdr points to dlpi_phnum entries.
++            let phdrs = unsafe { core::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
++            for phdr in phdrs {
++                if phdr.p_type != libc::PT_LOAD {
++                    continue;
++                }
++                let start = (info.dlpi_addr as usize).wrapping_add(phdr.p_vaddr as usize);
++                if ctx.address >= start && ctx.address < start + phdr.p_filesz as usize {
++                    ctx.offset = Some(phdr.p_offset + (ctx.address - start) as u64);
++                    return 1;
++                }
++            }
++            0
++        }
++        let mut ctx = Ctx { address, offset: None };
++        // SAFETY: the callback only reads what it is handed and writes `ctx`, which outlives the call.
++        unsafe { libc::dl_iterate_phdr(Some(callback), (&raw mut ctx).cast()) };
++        ctx.offset
++    }
++
+     /// `MADV_WILLNEED` over `[lo, hi)`: queues page-cache readahead for the
+     /// file bytes backing the mapping and returns once the I/O is submitted.
+     /// Issued in 128 KiB pieces because one call reads at most
+@@ -940,7 +971,10 @@ bitflags::bitflags! {
+         /// `bytecode_order::REGION_COUNT` regions ends (`u32` each; the first two regions are what the recorded run
+         /// read). A module's `bytecode` then runs from its cache entry to the end of that payload.
+         const HAS_LINKED_BYTECODE_PAYLOAD   = 1 << 13;
+-        // _padding: u19
++        /// After the linked-payload record: `StringPointer` to `JSC::StaticHeap` built for that payload
++        /// (`BUN_STATIC_HEAP=1` at build time). Starts on a `STATIC_HEAP_ALIGNMENT` boundary of the mapped section.
++        const HAS_STATIC_HEAP               = 1 << 14;
++        // _padding: u18
+     }
+ }
+ 
+@@ -957,6 +991,30 @@ fn wtf_latin1_string_hash(bytes: &[u8]) -> u32 {
+ }
+ 
+ impl StandaloneModuleGraph {
++    /// Maps `Flags::HAS_STATIC_HEAP`'s image where JSC keeps it. Call before anything has made an atom string. False if
++    /// there is none, or JSC declines it (another engine build, the address range taken); the program then decodes as usual.
++    pub fn map_static_heap(&self) -> bool {
++        if self.static_heap.is_empty() {
++            return false;
++        }
++        #[cfg(target_os = "linux")]
++        {
++            unsafe extern "C" {
++                fn Bun__StaticHeap__map(image: *const u8, size: usize, fd: i32, offset_in_file: u64) -> bool;
++            }
++            let Some(offset) = elf::file_offset_of(self.static_heap.as_ptr() as usize) else {
++                return false;
++            };
++            let Ok(file) = bun_sys::File::open(bun_core::zstr!("/proc/self/exe"), bun_sys::O::RDONLY | bun_sys::O::CLOEXEC, 0) else {
++                return false;
++            };
++            // SAFETY: the image is mapped for the life of the process; JSC maps the file again itself, so `file` may close after.
++            return unsafe { Bun__StaticHeap__map(self.static_heap.as_ptr(), self.static_heap.len(), file.fd().native(), offset) };
++        }
++        #[allow(unreachable_code)]
++        false
++    }
++
+     fn from_bytes(
+         raw_ptr: *mut u8,
+         raw_len: usize,
+@@ -977,6 +1035,7 @@ impl StandaloneModuleGraph {
+                 prelinked_module_graph: &[],
+                 prelinked_module_files: Vec::new(),
+                 startup_module_count: 0,
++                static_heap: &[],
+                 runtime_options: RuntimeOptions::default(),
+             });
+         }
+@@ -1180,6 +1239,18 @@ impl StandaloneModuleGraph {
+             // refers to what lies before it, like a module's, so it cannot be decoded as a payload of its own either.
+             builtin_bytecode.clear();
+         }
++        let mut static_heap: &'static [u8] = &[];
++        if offsets.flags.contains(Flags::HAS_STATIC_HEAP) && record_at + 2 * size_of::<u32>() <= raw_len {
++            let ptr = StringPointer {
++                offset: read_u32(record_at),
++                length: read_u32(record_at + 4),
++            };
++            record_at += 2 * size_of::<u32>();
++            if (ptr.offset as usize).saturating_add(ptr.length as usize) <= raw_len {
++                // SAFETY: bounds checked above; the section is mapped for the life of the process and JSC only reads it.
++                static_heap = unsafe { core::slice::from_raw_parts(raw_ptr.add(ptr.offset as usize), ptr.length as usize) };
++            }
++        }
+         let _ = record_at;
+         let has_linked_bytecode_payload =
+             offsets.flags.contains(Flags::HAS_LINKED_BYTECODE_PAYLOAD);
+@@ -1329,6 +1400,7 @@ impl StandaloneModuleGraph {
+             prelinked_module_files,
+             startup_module_count: startup_module_count.min(module_count as u32),
+             runtime_options,
++            static_heap,
+         })
+     }
+ 
+@@ -1482,6 +1554,10 @@ pub(crate) fn to_bytes(
+     let mut has_entry_point = false;
+     let mut string_builder = bun_core::StringBuilder::default();
+     let mut module_count: usize = 0;
++    let static_heap = take_built_static_heap();
++    if let Some(heap) = &static_heap {
++        string_builder.cap += heap.len() + STATIC_HEAP_ALIGNMENT + 2 * size_of::<u32>();
++    }
+     for output_file in output_files {
+         string_builder.count_z(&output_file.dest_path);
+         string_builder.count_z(prefix);
+@@ -1591,6 +1667,9 @@ pub(crate) fn to_bytes(
+             .find(|f| f.output_kind == options::OutputKind::BytecodePayload)
+             .map(|f| bun_bundler::bytecode_order::split_payload_file(f.value.as_slice()));
+     let mut linked_payload_ptr = StringPointer::default();
++    // Beside the payload it was built from, in the data region (the records come after everything).
++    let static_heap_for_link = static_heap.as_deref().filter(|_| linked_payload.is_some() && target.is_host_platform());
++    let mut static_heap_ptr = StringPointer::default();
+ 
+     // `Flags::HAS_PRELINKED_MODULE_GRAPH`: graph module index -> file-table position, so the runtime registers a whole
+     // import closure by index without looking any path up. Empty (and the graph is not embedded) unless every graph
+@@ -1630,6 +1709,9 @@ pub(crate) fn to_bytes(
+             ));
+             if let Some((payload, _)) = linked_payload {
+                 linked_payload_ptr = append_bytecode_aligned(&mut string_builder, payload);
++                if let Some(heap) = static_heap_for_link {
++                    static_heap_ptr = append_static_heap_aligned(&mut string_builder, heap);
++                }
+             }
+         }
+         let buf_bytes = output_file.value.as_slice();
+@@ -1773,6 +1855,9 @@ pub(crate) fn to_bytes(
+         );
+         if let Some((payload, _)) = linked_payload {
+             linked_payload_ptr = append_bytecode_aligned(&mut string_builder, payload);
++            if let Some(heap) = static_heap_for_link {
++                static_heap_ptr = append_static_heap_aligned(&mut string_builder, heap);
++            }
+         }
+         shared
+     });
+@@ -1914,6 +1999,13 @@ pub(crate) fn to_bytes(
+         let _ = string_builder.append_count(&record);
+         flags |= Flags::HAS_LINKED_BYTECODE_PAYLOAD;
+     }
++    if static_heap_ptr.length != 0 {
++        let mut record = [0u8; 8];
++        record[0..4].copy_from_slice(&static_heap_ptr.offset.to_le_bytes());
++        record[4..8].copy_from_slice(&static_heap_ptr.length.to_le_bytes());
++        let _ = string_builder.append_count(&record);
++        flags |= Flags::HAS_STATIC_HEAP;
++    }
+     if !target.is_host_platform()
+         && output_files
+             .iter()
+@@ -3348,6 +3440,44 @@ fn append_bytecode_aligned(
+     }
+ }
+ 
++/// `JSC::StaticHeap` maps its arenas from the executable with `mmap`, in pages of this size.
++const STATIC_HEAP_ALIGNMENT: usize = 16 * 1024;
++
++/// Like `append_bytecode_aligned`, but on a `STATIC_HEAP_ALIGNMENT` boundary of the mapped section (which starts on a page
++/// boundary of the file, 8 bytes before the data).
++fn append_static_heap_aligned(string_builder: &mut bun_core::StringBuilder, image: &[u8]) -> StringPointer {
++    let header = size_of::<u64>();
++    let padding = (STATIC_HEAP_ALIGNMENT - (string_builder.len + header) % STATIC_HEAP_ALIGNMENT) % STATIC_HEAP_ALIGNMENT;
++    string_builder.writable()[0..padding].fill(0);
++    string_builder.len += padding;
++    let offset = string_builder.len;
++    string_builder.writable()[0..image.len()].copy_from_slice(image);
++    string_builder.len += image.len();
++    StringPointer {
++        offset: offset as u32,
++        length: image.len() as u32,
++    }
++}
++
++/// The static heap `bun build --compile --bytecode --bytecode-order` built while linking, with `BUN_STATIC_HEAP=1`.
++fn take_built_static_heap() -> Option<Vec<u8>> {
++    unsafe extern "C" {
++        fn Bun__StaticHeap__takeBuilt(data: *mut *mut u8, size: *mut usize) -> bool;
++        fn Bun__StaticHeap__freeBuilt(data: *mut u8);
++    }
++    let mut data: *mut u8 = core::ptr::null_mut();
++    let mut size: usize = 0;
++    // SAFETY: out-pointers to locals; on true, `data` is a malloc'd buffer of `size` bytes that we free below.
++    if !unsafe { Bun__StaticHeap__takeBuilt(&mut data, &mut size) } {
++        return None;
++    }
++    // SAFETY: as above.
++    let image = unsafe { core::slice::from_raw_parts(data, size) }.to_vec();
++    // SAFETY: `data` came from Bun__StaticHeap__takeBuilt.
++    unsafe { Bun__StaticHeap__freeBuilt(data) };
++    Some(image)
++}
++
+ /// Allocates a StandaloneModuleGraph in the process-static `INSTANCE`,
+ /// populates it from bytes, sets it globally, and returns the pointer.
+ fn from_bytes_alloc(
+-- 
+2.43.0
+

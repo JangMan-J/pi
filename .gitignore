@@ -43,3 +43,31 @@ plans/
 .pi/hf-sessions-backup/
 collect.sh
 packages/agent/docs/extensions/pi-server-artifact/index.md
+
+# --- Pi-Bolt ---
+# Sources, toolchains and builds made by the scripts (see docs/BUILDING.md)
+/.work/
+/.toolchain/
+/out/
+/dist/
+
+# Staged by scripts/build-pi.sh --plugins inside a Pi checkout
+.pibolt-plugins/
+
+# Benchmark and test output
+*.jsonl
+results/
+tmux-*.out
+*.order.tmp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editors and systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
