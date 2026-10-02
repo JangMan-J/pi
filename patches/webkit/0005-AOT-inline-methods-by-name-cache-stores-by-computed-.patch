@@ -1,0 +1,806 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Fri, 2 Oct 2026 23:18:47 +0000
+Subject: [PATCH] AOT: inline methods by name, cache stores by computed key
+
+- A method call whose callee is not known (`base.name(...)`, with no type
+  table) is taken for the one function the program stores under that name
+  (MethodsOfProgram: object literals, class bodies, `x.name = function`),
+  when there is exactly one and it is not the name of a standard method, and
+  inlined behind a check that the callee is that function
+  (GuardKind::IsKnownFunction: its executable's image index, patched in at
+  link time by KnownCalleeNumberReferences). In a loop's fast copy the check
+  leaves for the generic copy, which makes the call, so the fast copy keeps
+  no call; elsewhere the call is made in place when the check fails. Only
+  in loops: elsewhere the check and the copy cost more code than a call.
+- put_by_val with an atom string or symbol key stores through the VM's
+  megamorphic cache, as get_by_val reads through it: an object used as a
+  dictionary no longer takes a C++ call per store.
+---
+ Source/JavaScriptCore/aot/AOTCompiler.cpp     |   4 +
+ Source/JavaScriptCore/aot/AOTGraph.cpp        | 124 +++++++++++++++++-
+ Source/JavaScriptCore/aot/AOTGraph.h          |   9 ++
+ Source/JavaScriptCore/aot/AOTImage.cpp        |   6 +
+ Source/JavaScriptCore/aot/AOTInlining.cpp     |  80 +++++++++--
+ Source/JavaScriptCore/aot/AOTLowerGuards.cpp  |  30 +++++
+ Source/JavaScriptCore/aot/AOTProgram.cpp      |  47 +++++++
+ Source/JavaScriptCore/aot/AOTProgram.h        |  45 +++++++
+ Source/JavaScriptCore/aot/AOTRuntime.h        |   1 +
+ Source/JavaScriptCore/aot/AOTStubs.cpp        |  46 +++++++
+ Source/JavaScriptCore/aot/AOTStubs.h          |  21 +++
+ Source/JavaScriptCore/aot/AOTStubsX86_64.cpp  |  37 +++++-
+ .../b3/B3AbstractHeapRepository.h             |   1 +
+ Source/JavaScriptCore/runtime/CachedTypes.cpp |   3 +
+ Source/JavaScriptCore/runtime/OptionsList.h   |   1 +
+ 15 files changed, 438 insertions(+), 17 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTCompiler.cpp b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+index 5810b0d894..03df9fe043 100644
+--- a/Source/JavaScriptCore/aot/AOTCompiler.cpp
++++ b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+@@ -372,6 +372,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+     CompiledFunctionInfo info;
+     info.stubCalls = stubCalls.link(linkBuffer);
+     info.indexReferences = graph.indexReferences.link(linkBuffer);
++    info.knownCalleeNumberReferences = graph.knownCalleeNumberReferences.link(linkBuffer);
+     info.codeSize = linkBuffer.size();
+     void* start = linkBuffer.entrypoint<JSEntryPtrTag>().untaggedPtr();
+     // (It turned out to be what comes first anyway.)
+@@ -382,6 +383,8 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+             call.offset -= sizeof(uint32_t);
+         for (auto& reference : info.indexReferences)
+             reference.offset -= sizeof(uint32_t);
++        for (auto& reference : info.knownCalleeNumberReferences)
++            reference.offset -= sizeof(uint32_t);
+     }
+     auto offsetOf = [&](CCallHelpers::Label label) {
+         return static_cast<unsigned>(static_cast<uint8_t*>(linkBuffer.locationOf<JSEntryPtrTag>(label).untaggedPtr()) - static_cast<uint8_t*>(start));
+@@ -475,6 +478,7 @@ bool recordUsesOfKnownFunctionsForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeB
+     graph.noteFieldsComparedWithStrings();
+     recordReturnedLiterals(graph);
+     graph.noteClassesDefined();
++    graph.noteMethodsDefined();
+     if (variableSummaries)
+         graph.recordUntrackableVariableAccesses(*variableSummaries);
+     return true;
+diff --git a/Source/JavaScriptCore/aot/AOTGraph.cpp b/Source/JavaScriptCore/aot/AOTGraph.cpp
+index bbe7946aa4..b5eed73a81 100644
+--- a/Source/JavaScriptCore/aot/AOTGraph.cpp
++++ b/Source/JavaScriptCore/aot/AOTGraph.cpp
+@@ -1625,6 +1625,99 @@ void Graph::noteClassesDefined()
+     }
+ }
+ 
++// The property name of an op_define_data_property, when it is written in the program.
++static UniquedStringImpl* constantNameOf(const Node* property)
++{
++    if (property->kind != NodeKind::ConstantCell || !property->reg.isConstant())
++        return nullptr;
++    JSValue name = property->graph->codeBlock()->getConstant(property->reg);
++    const StringImpl* impl = name && name.isString() ? asString(name)->tryGetValueImpl() : nullptr;
++    if (!impl || !impl->isAtom())
++        return nullptr;
++    return static_cast<UniquedStringImpl*>(const_cast<StringImpl*>(impl));
++}
++
++void Graph::noteMethodsDefined()
++{
++    MethodsOfProgram* methods = methodsOfProgram();
++    const FunctionsOfProgram* functions = functionsOfProgram();
++    if (!methods || !functions)
++        return;
++    auto note = [&](UniquedStringImpl* name, Node* value) {
++        if (!name)
++            return;
++        UnlinkedFunctionExecutable* made = functionMadeBy(value);
++        uint32_t number = made ? functions->numberOf(made) : 0;
++        if (number)
++            methods->recordMethod(name, number);
++        else
++            methods->recordOtherStore(name);
++    };
++    for (BasicBlock* block : m_rpo) {
++        for (Node* node : block->nodes) {
++            if (node->kind != NodeKind::Bytecode)
++                continue;
++            switch (node->opcode) {
++            case op_put_by_id: {
++                auto bytecode = node->as<OpPutById>();
++                note(m_codeBlock->identifier(bytecode.m_property).impl(), node->use(bytecode.m_value));
++                break;
++            }
++            case op_new_object: {
++                // The stores of a literal are folded into the allocation (parseBytecode()): its uses hold their values, under
++                // NewObjectPlan::registerOf(the store's number).
++                if (!node->numberOfLiteralProperties)
++                    break;
++                auto stores = Graph::storesOfLiteral(m_codeBlock->instructions(), node->bytecodeIndex.offset());
++                for (unsigned i = 0; i < node->numberOfLiteralProperties && i < stores.size(); ++i) {
++                    VirtualRegister reg = NewObjectPlan::registerOf(i);
++                    for (auto& use : node->uses) {
++                        if (use.reg == reg)
++                            note(m_codeBlock->identifier(m_codeBlock->instructions().at(stores[i])->as<OpPutById>().m_property).impl(), use.node);
++                    }
++                }
++                break;
++            }
++            case op_create_this: {
++                // Likewise an instance's fields, stored by its constructor.
++                if (!node->numberOfLiteralProperties)
++                    break;
++                auto plan = NewObjectPlan::forCreateThis(m_codeBlock->instructions(), node->bytecodeIndex.offset());
++                for (unsigned i = 0; i < plan.properties.size(); ++i) {
++                    VirtualRegister reg = NewObjectPlan::registerOf(i);
++                    for (auto& use : node->uses) {
++                        if (use.reg == reg)
++                            note(m_codeBlock->identifier(plan.properties[i].identifier).impl(), use.node);
++                    }
++                }
++                break;
++            }
++            case op_define_data_property: {
++                auto bytecode = node->as<OpDefineDataProperty>();
++                note(constantNameOf(node->use(bytecode.m_property)), node->use(bytecode.m_value));
++                break;
++            }
++            case op_put_getter_by_id:
++                methods->recordOtherStore(m_codeBlock->identifier(node->as<OpPutGetterById>().m_property).impl());
++                break;
++            case op_put_setter_by_id:
++                methods->recordOtherStore(m_codeBlock->identifier(node->as<OpPutSetterById>().m_property).impl());
++                break;
++            case op_put_getter_setter_by_id:
++                methods->recordOtherStore(m_codeBlock->identifier(node->as<OpPutGetterSetterById>().m_property).impl());
++                break;
++            case op_define_accessor_property: {
++                if (UniquedStringImpl* name = constantNameOf(node->use(node->as<OpDefineAccessorProperty>().m_property)))
++                    methods->recordOtherStore(name);
++                break;
++            }
++            default:
++                break;
++            }
++        }
++    }
++}
++
+ uint32_t Graph::closedMethodReadBy(const Node* node)
+ {
+     if (!node->isBytecode(op_get_by_id) || !Options::useAOTTypedFields() || !TypeTable::typedFieldsAreEnforced() || !classesOfProgram())
+@@ -2031,6 +2124,9 @@ void Node::dump(PrintStream& out) const
+         case GuardKind::Initialized:
+             out.print("GuardInitialized(bc#", bytecodeIndex.offset(), ")");
+             break;
++        case GuardKind::IsKnownFunction:
++            out.print("IsKnownFunction #", knownCallee, " ");
++            break;
+         }
+         break;
+     }
+@@ -2212,9 +2308,18 @@ private:
+         case op_call:
+         case op_call_ignore_result: {
+             auto operands = Graph::operandsOfCall(instruction);
+-            for (auto [reg, identifier] : m_recentProperties) {
+-                if (reg == operands.callee)
+-                    return callIntrinsicFor(m_codeBlock->identifier(identifier).impl(), operands.argc) != CallIntrinsic::None;
++            for (auto [reg, identifier, base] : m_recentProperties) {
++                if (reg != operands.callee)
++                    continue;
++                if (callIntrinsicFor(m_codeBlock->identifier(identifier).impl(), operands.argc) != CallIntrinsic::None)
++                    return true;
++                // A method call that inlineCalls() will take for the one function the program stores under the name, if there is one:
++                // the fast copy of the loop is left for the generic copy if the callee is another (GuardKind::IsKnownFunction).
++                if (instruction->opcodeID() == op_call && base == operands.argument(0) && Options::useAOTMethodInliningByName() && methodsOfProgram() && functionsOfProgram()) {
++                    const KnownFunction* known = functionsOfProgram()->function(methodsOfProgram()->onlyMethodNamed(m_codeBlock->identifier(identifier).impl()));
++                    return known && mayBecomePartOfCallerInLoop(*known);
++                }
++                return false;
+             }
+             if (instruction->opcodeID() != op_call)
+                 return false;
+@@ -2653,14 +2758,14 @@ private:
+                 }
+                 if (instruction->opcodeID() == op_get_by_id) {
+                     auto bytecode = instruction->as<OpGetById>();
+-                    m_recentProperties.removeAllMatching([&](auto& entry) { return entry.first == bytecode.m_dst; });
+-                    m_recentProperties.append({ bytecode.m_dst, bytecode.m_property });
++                    m_recentProperties.removeAllMatching([&](auto& entry) { return entry.reg == bytecode.m_dst; });
++                    m_recentProperties.append({ bytecode.m_dst, bytecode.m_property, bytecode.m_base });
+                     m_recentFunctions.removeAllMatching([&](auto& entry) { return entry.first == bytecode.m_dst; });
+                 }
+                 if (instruction->opcodeID() == op_get_from_scope && m_graph.calleeHints()) {
+                     auto bytecode = instruction->as<OpGetFromScope>();
+                     m_recentFunctions.removeAllMatching([&](auto& entry) { return entry.first == bytecode.m_dst; });
+-                    m_recentProperties.removeAllMatching([&](auto& entry) { return entry.first == bytecode.m_dst; });
++                    m_recentProperties.removeAllMatching([&](auto& entry) { return entry.reg == bytecode.m_dst; });
+                     ResolveType type = bytecode.m_getPutInfo.resolveType();
+                     if (type == ResolvedClosureVar || type == ResolvedLazyClosureVar) {
+                         if (auto* known = m_graph.probablyFunctionInVariableOfModule(bytecode.m_var, bytecode.m_offset))
+@@ -3732,7 +3837,12 @@ private:
+     NewObjectPlan m_planOfObject;
+     unsigned m_nextStoreOfPlan { 0 };
+     Vector<std::pair<BasicBlock*, BasicBlock*>> m_backEdges;
+-    Vector<std::pair<VirtualRegister, unsigned>, 8> m_recentProperties; // In the block being looked at: what op_get_by_id put where.
++    struct RecentProperty {
++        VirtualRegister reg;
++        unsigned identifier;
++        VirtualRegister base;
++    };
++    Vector<RecentProperty, 8> m_recentProperties; // In the block being looked at: what op_get_by_id put where, and from what.
+     Vector<std::pair<VirtualRegister, const KnownFunction*>, 8> m_recentFunctions; // And what op_get_from_scope probably did.
+     UncheckedKeyHashMap<UnlinkedFunctionCodeBlock*, bool> m_canBeInlined;
+     UncheckedKeyHashMap<unsigned, Node*, WTF::IntHash<unsigned>, WTF::UnsignedWithZeroKeyHashTraits<unsigned>> m_resultsOfInlinedCalls; // By the offset of the call.
+diff --git a/Source/JavaScriptCore/aot/AOTGraph.h b/Source/JavaScriptCore/aot/AOTGraph.h
+index 2499ad71ad..ce7b9ed450 100644
+--- a/Source/JavaScriptCore/aot/AOTGraph.h
++++ b/Source/JavaScriptCore/aot/AOTGraph.h
+@@ -94,6 +94,9 @@ enum class GuardKind : uint8_t {
+     // the variable has been initialized. Created by inlineCalls(). Not the end of its block: if it fails, the call throws there and then,
+     // as it would have, so the code in place of the call has no other way to it.
+     Initialized,
++    // The callee (uses[0]) is a closure of the function numbered Node::knownCallee among the caller's known callees: the one the
++    // program stores under the method's name (MethodsOfProgram). Created by inlineCalls(); if it fails, the call is made after all.
++    IsKnownFunction,
+     // With Options::useAOTFunctionSplitting(). For an op_get_by_id or op_put_by_id whose base has a static type (TypeTable): the base was
+     // allocated with the property in Node::slotOfField (its layout is in [firstLayout, lastLayout]) and the property is still
+     // there. The guard also performs the access. Afterwards the base's layout is known (a Narrow with narrowedTo), so later guards
+@@ -241,6 +244,7 @@ struct Node {
+     unsigned expectedMask { 0 }; // op_get_by_val: the mask of the op_check_type that immediately consumes the result, if any.
+     GuardKind guardKind { GuardKind::Whole };
+     uint16_t intrinsic { 0 }; // NodeKind::Intrinsic: its index.
++    uint32_t knownCallee { 0 }; // GuardKind::IsKnownFunction: the index among Graph::knownCallees of the function it checks for.
+     // For a call: the built-in function being called, by its ImmutableIntrinsics index, provided the receiver is the given kind of
+     // Receiver (none means any receiver). The same fields are set on the read of the callee. See Graph::findBuiltinsCalled().
+     uint16_t builtinCalled { 0 };
+@@ -534,6 +538,8 @@ public:
+     // type.
+     static uint32_t classNotedBy(const Node*);
+     void noteClassesDefined();
++    // What this function stores under property names: MethodsOfProgram.
++    void noteMethodsDefined();
+     // For an op_get_by_id that always reads one particular non-escaping method: that function's number. Otherwise zero.
+     static uint32_t closedMethodReadBy(const Node*);
+     // The typed layout of `this` in this code, which must be a constructor, method or initializer of a class. Zero if unknown.
+@@ -719,6 +725,7 @@ public:
+     std::optional<KnownShape> shapeOfLiteral(const Node*) const;
+     StubCalls stubCalls;
+     IndexReferences indexReferences;
++    KnownCalleeNumberReferences knownCalleeNumberReferences;
+ 
+ private:
+     VM& m_vm;
+@@ -782,6 +789,8 @@ void inferRanges(Graph&);
+ void optimizeLoops(Graph&);
+ void simplify(Graph&);
+ void inlineCalls(Graph&, const CodeOfProgram&);
++// Whether inlineCalls() would make this function part of a caller in a loop, going by the function alone.
++bool mayBecomePartOfCallerInLoop(const KnownFunction&);
+ void analyzeEscapes(Graph&); // Sets Node::escape.
+ void promoteEnvironments(Graph&); // Sets Node::isPromoted.
+ void scalarReplaceReadOnlyObjects(Graph&); // Runs before type inference.
+diff --git a/Source/JavaScriptCore/aot/AOTImage.cpp b/Source/JavaScriptCore/aot/AOTImage.cpp
+index 9bd060d9af..0792d42523 100644
+--- a/Source/JavaScriptCore/aot/AOTImage.cpp
++++ b/Source/JavaScriptCore/aot/AOTImage.cpp
+@@ -822,6 +822,7 @@ Vector<uint8_t> ImageBuilder::finish()
+             memcpy(code.bytes.mutableSpan().data(), &breakpoint, sizeof(breakpoint));
+             code.info.stubCalls.clear();
+             code.info.indexReferences.clear();
++            code.info.knownCalleeNumberReferences.clear();
+             code.info.sitesOfSpreads.clear();
+             code.info.inlineFrames.clear();
+             code.info.catchEntrypoints.clear();
+@@ -1394,6 +1395,11 @@ Vector<uint8_t> ImageBuilder::finish()
+         memcpy(code + codeAt, function.code.bytes.span().data(), function.code.bytes.size());
+         for (auto& reference : info.indexReferences)
+             IndexReferences::fill(code + codeAt, reference, safeCast<uint32_t>(index));
++        for (auto& reference : info.knownCalleeNumberReferences) {
++            StubCall asCall;
++            asCall.function = reference.knownCallee;
++            KnownCalleeNumberReferences::fill(code + codeAt, reference, safeCast<uint32_t>(*directTargetOf(info, asCall)));
++        }
+         for (auto& call : info.stubCalls)
+             retargetStubCall(code, codeAt + call.offset, stubsForThis + (call.thunk ? stubs.thunkOffsets[call.thunk - 1] : stubs.offsets[static_cast<unsigned>(call.stub)]), call.isTailCall);
+     }
+diff --git a/Source/JavaScriptCore/aot/AOTInlining.cpp b/Source/JavaScriptCore/aot/AOTInlining.cpp
+index 5d44c2f20b..670e748331 100644
+--- a/Source/JavaScriptCore/aot/AOTInlining.cpp
++++ b/Source/JavaScriptCore/aot/AOTInlining.cpp
+@@ -153,8 +153,16 @@ private:
+     bool tryInline(BasicBlock* block, unsigned index)
+     {
+         Node* call = block->nodes[index];
+-        if (call->kind != NodeKind::Bytecode || call->guard || call->guarded)
++        if (call->kind != NodeKind::Bytecode || call->guarded)
+             return false;
++        // A method call in the fast copy of a loop that chooseGuards() left a way out of (canBeGuarded()): if the callee turns out
++        // to be another function, the generic copy makes the call, and the fast copy keeps no call at all.
++        Node* wayOut = nullptr;
++        if (call->guard) {
++            if (call->guard->guardKind != GuardKind::Whole || !Options::useAOTMethodInliningByName() || m_graph.intrinsicOfCall(call) != CallIntrinsic::None)
++                return false;
++            wayOut = call->guard;
++        }
+         VirtualRegister calleeRegister;
+         unsigned argc;
+         unsigned argv;
+@@ -197,6 +205,9 @@ private:
+         // The variable it is read from holds that one function once it is initialized, which is checked for (`const f = () => ...`):
+         // until then, the call is made as it is, and fails as it would.
+         bool checksInitialized = false;
++        // It is a method call, and the callee is taken for the one function the program stores under the method's name, which is
++        // checked for (GuardKind::IsKnownFunction): if it is another, the call is made after all.
++        bool checksMethod = false;
+         // Options::verboseAOTCompilation(): why one of the engine's own functions does not become part of its caller.
+         auto notTaken = [&](ASCIILiteral why) {
+             dataLogLnIf(Options::verboseAOTCompilation(), "AOT: a builtin is not made part of its caller at bc#", call->bytecodeIndex.offset(), ": ", why);
+@@ -229,11 +240,18 @@ private:
+                 if (why)
+                     dataLogLn("AOT-INLINE: no: ", why);
+             }
+-            if (!known || !isExact || !known->forCall || !caller.passesNoFunctionObject(call))
+-                return false;
+-            checksInitialized = !known->isDeclaration && !Graph::closedMethodReadBy(calleeNode);
++            if (!known || !isExact || !known->forCall || !caller.passesNoFunctionObject(call)) {
++                // (Only where it is called over and over: elsewhere the check and the copy of the body cost more code than a call.)
++                known = block->isInLoop ? methodNamedAt(call, calleeNode, argv) : nullptr;
++                if (!known)
++                    return false;
++                checksMethod = true;
++            } else
++                checksInitialized = !known->isDeclaration && !Graph::closedMethodReadBy(calleeNode);
+             callee = known->forCall;
+         }
++        if (wayOut && !checksMethod)
++            return false;
+         auto about = m_program.about(callee);
+         // (A closure that is called where it is made is as good as called from one place.)
+         if (intrinsicToCheckFor && (!about || !canBePartOfAnother(callee)))
+@@ -443,18 +461,32 @@ private:
+             guard->uses.append({ calleeRegister, calleeNode });
+             block->nodes.append(guard);
+         }
+-        // If it is not the function it was taken for, the call is made after all.
++        // If it is not the function it was taken for, the call is made after all: by the generic copy of the loop, where there is one
++        // to leave for, or else right here.
+         Node* callAfterAll = nullptr;
+-        if (intrinsicToCheckFor && !isCertainlyTheIntrinsic) {
++        if (wayOut) {
++            wayOut->guardKind = GuardKind::IsKnownFunction;
++            wayOut->knownCallee = m_graph.indexOfKnownCallee(m_program.about(callee)->key);
++            wayOut->uses.clear();
++            wayOut->uses.append({ calleeRegister, calleeNode });
++            wayOut->guarded = nullptr;
++            call->guard = nullptr;
++        } else if ((intrinsicToCheckFor && !isCertainlyTheIntrinsic) || checksMethod) {
+             Node* guard = m_graph.addNode(NodeKind::Guard);
+             guard->graph = block->graph;
+-            guard->guardKind = isLeanForm ? GuardKind::IsIntrinsicOfArray : GuardKind::IsIntrinsic;
+-            guard->intrinsic = intrinsicToCheckFor;
++            if (checksMethod) {
++                guard->guardKind = GuardKind::IsKnownFunction;
++                guard->knownCallee = m_graph.indexOfKnownCallee(m_program.about(callee)->key);
++            } else {
++                guard->guardKind = isLeanForm ? GuardKind::IsIntrinsicOfArray : GuardKind::IsIntrinsic;
++                guard->intrinsic = intrinsicToCheckFor;
++            }
+             guard->opcode = call->opcode;
+             guard->instruction = call->instruction;
+             guard->bytecodeIndex = call->bytecodeIndex;
+             guard->block = block;
+-            guard->uses.append({ VirtualRegister(), calleeNode });
++            // (Under the call's own register for the callee: Graph::knownCallee() finds it there, as it does for the call.)
++            guard->uses.append({ checksMethod ? calleeRegister : VirtualRegister(), calleeNode });
+             if (isLeanForm)
+                 guard->uses.append({ VirtualRegister(), call->use(VirtualRegister(firstArgument)) });
+             block->nodes.append(guard);
+@@ -548,6 +580,31 @@ private:
+         return std::nullopt;
+     }
+ 
++    // For `base.name(...)`: the one function the program stores under `name`, if there is exactly one (MethodsOfProgram).
++    const KnownFunction* methodNamedAt(Node* call, Node* calleeNode, unsigned argv)
++    {
++        if (!Options::useAOTMethodInliningByName() || !calleeNode->isBytecode(op_get_by_id))
++            return nullptr;
++        const MethodsOfProgram* methods = methodsOfProgram();
++        const FunctionsOfProgram* functions = functionsOfProgram();
++        if (!methods || !functions)
++            return nullptr;
++        auto bytecode = calleeNode->as<OpGetById>();
++        int firstArgument = -static_cast<int>(argv) + CallFrame::thisArgumentOffset();
++        if (resolve(call->use(VirtualRegister(firstArgument))) != resolve(calleeNode->use(bytecode.m_base)))
++            return nullptr;
++        UniquedStringImpl* name = calleeNode->graph->codeBlock()->identifier(bytecode.m_property).impl();
++        bool others = false;
++        uint32_t number = methods->onlyMethodNamed(name, &others);
++        const KnownFunction* known = functions->function(number);
++        if (!known || !known->forCall) {
++            dataLogLnIf(Options::verboseAOTCompilation(), "AOT-INLINE: no: the program stores ", number ? "no code" : methods->onlyMethodNamed(name) ? "" : "no one function", " under `", String(name), "`");
++            return nullptr;
++        }
++        dataLogLnIf(Options::verboseAOTCompilation(), "AOT-INLINE: method `", String(name), "` is taken for the one function the program stores under the name", others ? " (something else is stored under it too)" : "");
++        return known;
++    }
++
+     unsigned likelyArrayMethod(Node* call, Node* calleeNode, unsigned argc, unsigned argv)
+     {
+         if (!Options::useImmutableIntrinsics() || !calleeNode->isBytecode(op_get_by_id) || argc < 2)
+@@ -597,6 +654,11 @@ private:
+ 
+ } // anonymous namespace
+ 
++bool mayBecomePartOfCallerInLoop(const KnownFunction& known)
++{
++    return known.forCall && Inliner::canBePartOfAnother(known.forCall) && Inliner::isProfitable(known.forCall, known.summary, true);
++}
++
+ void inlineCalls(Graph& graph, const CodeOfProgram& program)
+ {
+     // (A site has to have room to say which call it is in.)
+diff --git a/Source/JavaScriptCore/aot/AOTLowerGuards.cpp b/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
+index dd6e1c78e1..0e53792c35 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
+@@ -9,6 +9,8 @@
+ #if ENABLE(FTL_JIT)
+ 
+ #include "AOTProgram.h"
++#include "B3PatchpointValue.h"
++#include "B3StackmapGenerationParams.h"
+ #include "B3ValueInlines.h"
+ #include "BytecodeStructs.h"
+ #include "FTLSwitchCase.h"
+@@ -244,6 +246,34 @@ void Lowering::emitGuard(Node* guard)
+         RELEASE_ASSERT_NOT_REACHED(); // There is no such guard of what is not proven (inlineCall()).
+         return;
+     }
++    case GuardKind::IsKnownFunction: {
++        // A closure of the function: a JSFunction whose FunctionExecutable (or the short form of one) has that function's number.
++        Node* calleeNode = guard->uses[0].node;
++        LValue callee = lowJSValue(calleeNode);
++        if (!isSubtype(calleeNode->type, TCell))
++            exitUnless(isCell(callee));
++        exitUnless(isCellOfType(callee, JSFunctionType));
++        LBasicBlock hasRareData = m_out.newBlock();
++        LBasicBlock haveExecutable = m_out.newBlock();
++        LValue executableOrRareData = m_out.loadPtr(callee, m_heaps.JSFunction_executableOrRareData);
++        ValueFromBlock direct = m_out.anchor(executableOrRareData);
++        m_out.branch(m_out.testNonZeroPtr(executableOrRareData, m_out.constIntPtr(JSFunction::rareDataTag)), rarely(hasRareData), usually(haveExecutable));
++        m_out.appendTo(hasRareData, haveExecutable);
++        ValueFromBlock indirect = m_out.anchor(m_out.loadPtr(m_out.address(m_heaps.FunctionRareData_executable, executableOrRareData, FunctionRareData::offsetOfExecutable() - JSFunction::rareDataTag)));
++        m_out.jump(haveExecutable);
++        m_out.appendTo(haveExecutable);
++        LValue executable = m_out.phi(pointerType(), direct, indirect);
++        static_assert(ShortFunctionExecutableType == FunctionExecutableType + 1);
++        exitUnless(m_out.belowOrEqual(m_out.sub(cellType(executable), m_out.constInt32(FunctionExecutableType)), m_out.int32One));
++        LValue number = m_out.load32(executable, m_heaps.FunctionExecutable_aotIndexForCall);
++        PatchpointValue* expected = m_out.patchpoint(Int32);
++        expected->effects = Effects::none();
++        expected->setGenerator([graph = &m_graph, knownCallee = guard->knownCallee](CCallHelpers& jit, const StackmapGenerationParams& params) {
++            graph->knownCalleeNumberReferences.load(jit, params[0].gpr(), knownCallee);
++        });
++        exitUnless(m_out.equal(number, expected));
++        return;
++    }
+     case GuardKind::Initialized: {
+         // Undefined and the hole are below every cell.
+         LValue callee = lowJSValue(guard->uses[0].node);
+diff --git a/Source/JavaScriptCore/aot/AOTProgram.cpp b/Source/JavaScriptCore/aot/AOTProgram.cpp
+index 7d50baee24..d7847dbbb8 100644
+--- a/Source/JavaScriptCore/aot/AOTProgram.cpp
++++ b/Source/JavaScriptCore/aot/AOTProgram.cpp
+@@ -171,6 +171,53 @@ static ClassesOfProgram* s_classesOfProgram;
+ void setClassesOfProgram(ClassesOfProgram* classes) { s_classesOfProgram = classes; }
+ ClassesOfProgram* classesOfProgram() { return s_classesOfProgram; }
+ 
++WTF_MAKE_TZONE_ALLOCATED_IMPL(MethodsOfProgram);
++
++static MethodsOfProgram* s_methodsOfProgram;
++void setMethodsOfProgram(MethodsOfProgram* methods) { s_methodsOfProgram = methods; }
++MethodsOfProgram* methodsOfProgram() { return s_methodsOfProgram; }
++
++void MethodsOfProgram::recordMethod(UniquedStringImpl* name, uint32_t function)
++{
++    Locker locker { m_lock };
++    Entry& entry = m_byName.add(name, Entry { }).iterator->value;
++    if (!entry.function)
++        entry.function = function;
++    else if (entry.function != function) {
++        if (Options::verboseAOTCompilation() && entry.function != ambiguous) [[unlikely]] {
++            auto describe = [](uint32_t number) {
++                const KnownFunction* known = functionsOfProgram() ? functionsOfProgram()->function(number) : nullptr;
++                return known ? makeString("#"_s, number, " @"_s, known->key.module, ":"_s, known->key.start) : makeString("#"_s, number);
++            };
++            dataLogLn("AOT: `", String(name), "` is stored as a method by more than one function (", describe(entry.function), " and ", describe(function), ")");
++        }
++        entry.function = ambiguous;
++    }
++}
++
++// The names of the properties of the standard objects and their prototypes (ImmutableIntrinsics), and of the iterator and
++// promise protocols, which the intrinsics do not all reach.
++bool MethodsOfProgram::isNameOfStandardMethod(UniquedStringImpl* name) const
++{
++    Locker locker { m_standardLock };
++    if (!m_standardNames) {
++        m_standardNames.emplace();
++        if (const ImmutableIntrinsics* intrinsics = ImmutableIntrinsics::shared()) {
++            for (unsigned i = 1; i < intrinsics->count(); ++i)
++                m_standardNames->add(intrinsics->at(i).name);
++        }
++        for (ASCIILiteral extra : { "next"_s, "return"_s, "throw"_s, "then"_s, "catch"_s, "finally"_s, "toString"_s, "valueOf"_s, "toJSON"_s, "constructor"_s, "call"_s, "apply"_s, "bind"_s, "hasOwnProperty"_s, "toLocaleString"_s })
++            m_standardNames->add(String(extra));
++    }
++    return m_standardNames->contains(String(name));
++}
++
++void MethodsOfProgram::recordOtherStore(UniquedStringImpl* name)
++{
++    Locker locker { m_lock };
++    m_byName.add(name, Entry { }).iterator->value.others = true;
++}
++
+ void ClassesOfProgram::recordNonEscapingMethod(uint32_t classType, UniquedStringImpl* name, uint32_t function)
+ {
+     Locker locker { m_lock };
+diff --git a/Source/JavaScriptCore/aot/AOTProgram.h b/Source/JavaScriptCore/aot/AOTProgram.h
+index 6585df2494..d2f967afb0 100644
+--- a/Source/JavaScriptCore/aot/AOTProgram.h
++++ b/Source/JavaScriptCore/aot/AOTProgram.h
+@@ -292,6 +292,51 @@ private:
+ JS_EXPORT_PRIVATE void setClassesOfProgram(ClassesOfProgram*); // Not during compilation.
+ ClassesOfProgram* classesOfProgram();
+ 
++// What the program stores under each property name as a method: the functions written in place in object literals, class bodies
++// and `x.name = function` (Graph::noteMethodsDefined()). Functions are identified by their FunctionsOfProgram number. A call
++// `base.name(...)` whose callee is not otherwise known is taken for the one function that the program stores under that name, if
++// there is exactly one, behind a check that it is that function (GuardKind::IsKnownFunction): with no type table, that is all
++// that there is to go by. Needs no type table.
++class MethodsOfProgram {
++    WTF_MAKE_TZONE_ALLOCATED(MethodsOfProgram);
++    WTF_MAKE_NONCOPYABLE(MethodsOfProgram);
++public:
++    MethodsOfProgram() = default;
++
++    // Collection phase. Any thread.
++    JS_EXPORT_PRIVATE void recordMethod(UniquedStringImpl* name, uint32_t function);
++    JS_EXPORT_PRIVATE void recordOtherStore(UniquedStringImpl* name); // Something else is stored under the name somewhere.
++
++    // After collection. Any thread. The one function stored under the name, or zero if there is none or more than one, or if the
++    // name is one of the standard objects' methods (`indexOf`, `call`, `then`: a program's `indexOf` is seldom what is called by that
++    // name). `others` says whether anything else is stored under the name (the check then fails now and then).
++    uint32_t onlyMethodNamed(UniquedStringImpl* name, bool* others = nullptr) const
++    {
++        auto it = m_byName.find(name);
++        if (it == m_byName.end())
++            return 0;
++        if (others)
++            *others = it->value.others;
++        if (it->value.function == ambiguous || isNameOfStandardMethod(name))
++            return 0;
++        return it->value.function;
++    }
++    JS_EXPORT_PRIVATE bool isNameOfStandardMethod(UniquedStringImpl*) const;
++
++private:
++    static constexpr uint32_t ambiguous = std::numeric_limits<uint32_t>::max();
++    struct Entry {
++        uint32_t function { 0 };
++        bool others { false };
++    };
++    Lock m_lock;
++    UncheckedKeyHashMap<UniquedStringImpl*, Entry> m_byName;
++    mutable Lock m_standardLock;
++    mutable std::optional<UncheckedKeyHashSet<String>> m_standardNames;
++};
++JS_EXPORT_PRIVATE void setMethodsOfProgram(MethodsOfProgram*); // Not during compilation.
++MethodsOfProgram* methodsOfProgram();
++
+ // Functions whose every return statement returns a fresh, otherwise unobserved object literal with the same property names in the
+ // same order. Determined from bytecode alone.
+ class MultiValueReturnTable {
+diff --git a/Source/JavaScriptCore/aot/AOTRuntime.h b/Source/JavaScriptCore/aot/AOTRuntime.h
+index 8cf0e50194..426664cdc3 100644
+--- a/Source/JavaScriptCore/aot/AOTRuntime.h
++++ b/Source/JavaScriptCore/aot/AOTRuntime.h
+@@ -786,6 +786,7 @@ struct CompiledFunctionInfo {
+     unsigned codeSize { 0 }; // The entry point is at offset zero.
+     Convention convention;
+     Vector<IndexReference> indexReferences;
++    Vector<KnownCalleeNumberReference> knownCalleeNumberReferences;
+     Vector<SiteOfSpread> sitesOfSpreads;
+     struct InlineFrame {
+         uint32_t parent;
+diff --git a/Source/JavaScriptCore/aot/AOTStubs.cpp b/Source/JavaScriptCore/aot/AOTStubs.cpp
+index 9a15d9815f..95c119441e 100644
+--- a/Source/JavaScriptCore/aot/AOTStubs.cpp
++++ b/Source/JavaScriptCore/aot/AOTStubs.cpp
+@@ -4182,6 +4182,52 @@ void IndexReferences::fill(uint8_t* code, const IndexReference& reference, uint3
+ #endif
+ }
+ 
++void KnownCalleeNumberReferences::load(CCallHelpers& jit, GPRReg dest, uint32_t knownCallee)
++{
++#if CPU(ARM64)
++    // movz dest, #low; movk dest, #high, lsl #16: both 16-bit immediates are patched.
++    jit.m_assembler.movz(dest, 0, 0);
++    jit.m_assembler.movk(dest, 0, 16);
++    m_references.append({ jit.label(), knownCallee });
++#elif CPU(X86_64)
++    // mov dest, imm32, the immediate being the instruction's last four bytes. The label is after it.
++    jit.padBeforePatch();
++    jit.m_assembler.movl_i32r(0, dest);
++    m_references.append({ jit.label(), knownCallee });
++#else
++    UNUSED_PARAM(dest);
++    UNUSED_PARAM(knownCallee);
++    RELEASE_ASSERT_NOT_REACHED();
++#endif
++}
++
++Vector<KnownCalleeNumberReference> KnownCalleeNumberReferences::link(LinkBuffer& linkBuffer)
++{
++    auto* start = static_cast<uint8_t*>(linkBuffer.entrypoint<JSEntryPtrTag>().untaggedPtr());
++    Vector<KnownCalleeNumberReference> result;
++    for (auto& reference : m_references)
++        result.append({ static_cast<uint32_t>(static_cast<uint8_t*>(linkBuffer.locationOf<JSEntryPtrTag>(reference.after).untaggedPtr()) - start), reference.knownCallee });
++    return result;
++}
++
++void KnownCalleeNumberReferences::fill(uint8_t* code, const KnownCalleeNumberReference& reference, uint32_t index)
++{
++#if CPU(ARM64)
++    auto* instructions = reinterpret_cast<uint32_t*>(code + reference.offset) - 2;
++    constexpr uint32_t immediate = 0xffffu << 5;
++    RELEASE_ASSERT(!(instructions[0] & immediate) && !(instructions[1] & immediate));
++    instructions[0] |= (index & 0xffff) << 5;
++    instructions[1] |= (index >> 16) << 5;
++#elif CPU(X86_64)
++    memcpy(code + reference.offset - sizeof(uint32_t), &index, sizeof(index));
++#else
++    UNUSED_PARAM(code);
++    UNUSED_PARAM(reference);
++    UNUSED_PARAM(index);
++    RELEASE_ASSERT_NOT_REACHED();
++#endif
++}
++
+ Vector<StubCall> StubCalls::link(LinkBuffer& linkBuffer)
+ {
+     auto* start = static_cast<uint8_t*>(linkBuffer.entrypoint<JSEntryPtrTag>().untaggedPtr());
+diff --git a/Source/JavaScriptCore/aot/AOTStubs.h b/Source/JavaScriptCore/aot/AOTStubs.h
+index 375e653008..0d9c5f1037 100644
+--- a/Source/JavaScriptCore/aot/AOTStubs.h
++++ b/Source/JavaScriptCore/aot/AOTStubs.h
+@@ -448,6 +448,27 @@ struct StubBlob {
+ };
+ const StubBlob& stubBlob();
+ 
++// A place in a function's code that holds the index of one of the function's known callees (CompiledFunctionInfo::knownCallees)
++// as an immediate, to compare with FunctionExecutable::aotIndexFor(): a check that a function is that one. The index is not known
++// until the image is assembled, and is then patched into the instruction.
++struct KnownCalleeNumberReference {
++    uint32_t offset; // Offset after the instruction.
++    uint32_t knownCallee;
++};
++class KnownCalleeNumberReferences {
++public:
++    void load(CCallHelpers&, GPRReg dest, uint32_t knownCallee); // dest = the index of that callee, once the image is assembled
++    Vector<KnownCalleeNumberReference> link(LinkBuffer&);
++    static void fill(uint8_t* code, const KnownCalleeNumberReference&, uint32_t index);
++
++private:
++    struct Pending {
++        CCallHelpers::Label after;
++        uint32_t knownCallee;
++    };
++    Vector<Pending> m_references;
++};
++
+ // A place in a function's code that depends on the function's index. The index is not known until the image is assembled, and is
+ // then patched into the instructions.
+ struct IndexReference {
+diff --git a/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp b/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
+index 201c878d03..ff2b458f9f 100644
+--- a/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
++++ b/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
+@@ -2288,7 +2288,7 @@ static void generatePutByVal(CCallHelpers& jit)
+     // An element within the capacity of contiguous storage that is not copy-on-write.
+     CCallHelpers::JumpList slow;
+     jit.move(CCallHelpers::TrustedImm64(JSValue::NumberTag), T9);
+-    slow.append(jit.branch64(CCallHelpers::Below, A1, T9));
++    Jump notNumber = jit.branch64(CCallHelpers::Below, A1, T9);
+     slow.append(jit.branchIfNotCell(A0));
+     jit.load8(Address(A0, JSCell::indexingTypeAndMiscOffset()), storage);
+     jit.and32(TrustedImm32(IndexingShapeMask | CopyOnWrite), storage);
+@@ -2346,12 +2346,47 @@ static void generatePutByVal(CCallHelpers& jit)
+     inBounds.link(&jit);
+     jit.store64(A2, CCallHelpers::BaseIndex(storage, index, CCallHelpers::TimesEight));
+ 
++    CCallHelpers::Label stored = jit.label();
+     Jump notCell = jit.branchIfNotCell(A2);
+     loadInstance(jit, T9);
+     returnAfterBarrier(jit);
+     notCell.link(&jit);
+     jit.ret();
+ 
++    // A property name (an atom string or a symbol) of a property the object has: the VM's megamorphic cache says where it is,
++    // once operationAOTPutByVal() has stored to it (fillMegamorphicCacheAfterPut()). An object used as a dictionary is written
++    // this way. (The helper wants five registers besides the base and the value, and the assembler's scratch register for itself:
++    // A3, whether the code is strict, is kept on the stack meanwhile, for the operation.)
++    notNumber.link(&jit);
++    {
++        constexpr GPRReg uid = A4;
++        constexpr GPRReg cache = A5;
++        slow.append(jit.branchIfNotCell(A0));
++        slow.append(jit.branchIfNotObject(A0));
++        slow.append(jit.branchIfNotCell(A1));
++        Jump isSymbol = jit.branchIfSymbol(A1);
++        slow.append(jit.branchIfNotString(A1));
++        jit.loadPtr(Address(A1, JSString::offsetOfValue()), uid);
++        slow.append(jit.branchIfRopeStringImpl(uid));
++        slow.append(jit.branchTest32(CCallHelpers::Zero, Address(uid, StringImpl::flagsOffset()), TrustedImm32(StringImpl::flagIsAtom())));
++        Jump haveName = jit.jump();
++        isSymbol.link(&jit);
++        jit.loadPtr(Address(A1, Symbol::offsetOfSymbolImpl()), uid);
++        haveName.link(&jit);
++        loadInstance(jit, cache);
++        jit.loadPtr(Address(cache, Instance::offsetOfRuntimeTable()), cache);
++        jit.loadPtr(Address(cache, static_cast<unsigned>(Entry::MegamorphicCache) * sizeof(void*)), cache);
++        slow.append(jit.branchTestPtr(CCallHelpers::Zero, cache));
++        jit.push(A3);
++        auto [notCached, reallocating] = jit.storeMegamorphicProperty(CCallHelpers::MegamorphicCacheLocation(cache), A0, uid, nullptr, A2, storage, T9, A3);
++        jit.pop(A3);
++        jit.jump().linkTo(stored, &jit);
++        notCached.link(&jit);
++        reallocating.link(&jit);
++        jit.pop(A3);
++        slow.append(jit.jump());
++    }
++
+     slow.link(&jit);
+     callElementOperation(jit, Entry::operationAOTPutByVal);
+ }
+diff --git a/Source/JavaScriptCore/b3/B3AbstractHeapRepository.h b/Source/JavaScriptCore/b3/B3AbstractHeapRepository.h
+index 413895dd46..d0906dd638 100644
+--- a/Source/JavaScriptCore/b3/B3AbstractHeapRepository.h
++++ b/Source/JavaScriptCore/b3/B3AbstractHeapRepository.h
+@@ -76,6 +76,7 @@ namespace JSC::B3 {
+     macro(DirectArguments_mappedArguments, DirectArguments::offsetOfMappedArguments(), Mutability::Mutable) \
+     macro(DirectArguments_modifiedArgumentsDescriptor, DirectArguments::offsetOfModifiedArgumentsDescriptor(), Mutability::Mutable) \
+     macro(FunctionExecutable_rareData, FunctionExecutable::offsetOfRareData(), Mutability::Mutable) \
++    macro(FunctionExecutable_aotIndexForCall, FunctionExecutable::offsetOfAOTIndexFor(CodeSpecializationKind::CodeForCall), Mutability::Immutable) \
+     macro(FunctionExecutableRareData_asString, FunctionExecutable::RareData::offsetOfAsString(), Mutability::Mutable) \
+     macro(FunctionRareData_allocator, FunctionRareData::offsetOfObjectAllocationProfile() + ObjectAllocationProfileWithPrototype::offsetOfAllocator(), Mutability::Mutable) \
+     macro(FunctionRareData_structure, FunctionRareData::offsetOfObjectAllocationProfile() + ObjectAllocationProfileWithPrototype::offsetOfStructure(), Mutability::Mutable) \
+diff --git a/Source/JavaScriptCore/runtime/CachedTypes.cpp b/Source/JavaScriptCore/runtime/CachedTypes.cpp
+index 807c106367..5173ab608a 100644
+--- a/Source/JavaScriptCore/runtime/CachedTypes.cpp
++++ b/Source/JavaScriptCore/runtime/CachedTypes.cpp
+@@ -6458,6 +6458,9 @@ struct BytecodeLinkEncoder::Impl {
+         AOT::MultiValueReturnTable multiValueReturnTable;
+         AOT::setMultiValueReturnTable(&multiValueReturnTable);
+         auto forgetThingsReturnedByFunctions = makeScopeExit([] { AOT::setMultiValueReturnTable(nullptr); });
++        AOT::MethodsOfProgram methodsOfProgram;
++        AOT::setMethodsOfProgram(&methodsOfProgram);
++        auto forgetMethodsOfProgram = makeScopeExit([] { AOT::setMethodsOfProgram(nullptr); });
+         {
+             MonotonicTime before = MonotonicTime::now();
+             for (auto& hintsOfModule : hints) {
+diff --git a/Source/JavaScriptCore/runtime/OptionsList.h b/Source/JavaScriptCore/runtime/OptionsList.h
+index a345bb087d..ac0df64355 100644
+--- a/Source/JavaScriptCore/runtime/OptionsList.h
++++ b/Source/JavaScriptCore/runtime/OptionsList.h
+@@ -175,6 +175,7 @@ bool hasCapacityToUseLargeGigacage();
+     v(Unsigned, maximumAOTInliningCallerBytecodeCost, 4000, Normal, "With useAOTInlining: maximum total bytecode size inlined into one function."_s) \
+     v(Bool, validateAOTInferredTypes, false, Normal, "For testing the AOT compiler. Compiled code checks every value whose type was inferred rather than checked, and crashes if the type is wrong."_s) \
+     v(Bool, logAOTTypeInference, false, Normal, "After whole-program type inference, logs the result for each function and variable and what contributed to it. Lines start with \"AOT inference:\"."_s) \
++    v(Bool, useAOTMethodInliningByName, true, Normal, "A method call whose callee is not known (`base.name(...)`) is taken for the one function the program stores under that name, if there is exactly one, and inlined behind a check that the callee is that function; otherwise the call is made. For programs without a type table."_s) \
+     v(Unsigned, maximumAOTCandidateBytecodeSize, 262144, Normal, "The AOT compiler leaves a function whose bytecode is bigger than this many bytes to the other tiers: the back end's time and memory grow faster than the size (a module that is one big literal: minutes, tens of GB), and such a function is data, not a hot path. A program that goes without its bytecode (omitBytecodeFromStaticHeap) has no other tier, so its build stops with a message instead."_s) \
+     v(Unsigned, aotLoopSplittingPolicy, 3, Normal, "Which loops useAOTLoopSplitting applies to. 1: all. 2: loops that contain something the fast copy improves (arithmetic, indexed element accesses, a call it can elide). 3: loops that make no calls. 4: loops that satisfy both 2 and 3. 5: loops that make no calls, or that contain a call the fast copy elides or an indexed element access."_s) \
+     \
+-- 
+2.43.0
+

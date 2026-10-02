@@ -16,7 +16,7 @@ OUT="$PIBOLT_WORK/tests/aot"
 mkdir -p "$OUT"
 
 tests=("$@")
-[ ${#tests[@]} -eq 0 ] && tests=(liveness.mjs mapset.mjs realms.mjs workers.mjs spread-loops.mjs number-encoding.mjs helper-calls.mjs callbacks.mjs)
+[ ${#tests[@]} -eq 0 ] && tests=(liveness.mjs mapset.mjs realms.mjs workers.mjs spread-loops.mjs number-encoding.mjs helper-calls.mjs callbacks.mjs methods.mjs dictionaries.mjs)
 status=0
 for t in "${tests[@]}"; do
 	name=${t%.mjs}
