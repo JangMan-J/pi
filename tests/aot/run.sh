@@ -16,7 +16,7 @@ OUT="$PIBOLT_WORK/tests/aot"
 mkdir -p "$OUT"
 
 tests=("$@")
-[ ${#tests[@]} -eq 0 ] && tests=(liveness.mjs mapset.mjs realms.mjs workers.mjs spread-loops.mjs number-encoding.mjs helper-calls.mjs)
+[ ${#tests[@]} -eq 0 ] && tests=(liveness.mjs mapset.mjs realms.mjs workers.mjs spread-loops.mjs number-encoding.mjs helper-calls.mjs callbacks.mjs)
 status=0
 for t in "${tests[@]}"; do
 	name=${t%.mjs}
@@ -29,7 +29,7 @@ for t in "${tests[@]}"; do
 	BUN_BYTECODE_ORDER_OUT="$OUT/$name.order" "$OUT/$name-bytecode" >/dev/null 2>&1
 	for mode in jit-on jit-off; do
 		# shellcheck disable=SC2046,SC2086 # AOT_BUILD_ENV and the JIT setting are lists of words
-		env BUN_JSC_useAOTLoopSplitting=1 BUN_JSC_aotLoopSplittingPolicy=5 ${AOT_BUILD_ENV:-} $([ $mode = jit-off ] && echo BUN_AOT_JIT=0) BUN_JSC_useJIT=0 BUN_STATIC_HEAP=1 BUN_AOT=1 \
+		env BUN_JSC_useAOTLoopSplitting=1 BUN_JSC_aotLoopSplittingPolicy=5 BUN_JSC_useImmutableIntrinsics=1 ${AOT_BUILD_ENV:-} $([ $mode = jit-off ] && echo BUN_AOT_JIT=0) BUN_JSC_useJIT=0 BUN_STATIC_HEAP=1 BUN_AOT=1 \
 			BUN_JSC_omitBytecodeFromStaticHeap=1 \
 			"$BUN" build --compile --bytecode --format=esm --target=bun-linux-x64 --bytecode-order="$OUT/$name.order" \
 			"$t" "${extra[@]}" --outfile "$OUT/$name-$mode" >/dev/null 2>&1

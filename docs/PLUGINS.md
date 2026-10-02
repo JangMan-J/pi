@@ -198,6 +198,9 @@ helpers held in module-level functions or constants, or that index arrays. How a
 - These built-ins have fast paths and do not count as calls: `Math.sqrt/abs/floor/ceil/trunc/fround/min/max/imul`,
   `String.prototype.charCodeAt/charAt/codePointAt`, `Array.prototype.push/pop`, `Array.isArray`, and `Map`/`Set`
   `get/has/set/add`.
+- **Array callbacks are inlined.** `forEach`, `map`, `filter`, `reduce`, `some`, `every`, `find` and the like, with a closure
+  written in place or a module-level function, are compiled into the loop around them: `nums.forEach((n) => { s += n })` costs
+  the same as the `for` loop. (Since 0.3.1; they were real calls before.)
 - Loop over arrays with an index or `for...of`. Avoid `arguments` and `delete` in hot code.
 - Only hot loops need this. A loop that runs a few hundred times per prompt does not.
 
@@ -208,6 +211,19 @@ helpers held in module-level functions or constants, or that index arrays. How a
 - Use `Map` for dictionaries with changing keys, not plain objects with `obj[key]` for arbitrary strings. Its `get`, `has` and
   `set` have fast paths.
 - Prefer plain data and classes to `Proxy`, getters and setters in hot paths. They work, but each access calls a function.
+
+### The standard objects are fixed
+
+Pi-Bolt builds freeze the methods that `Object`, `Array`, `String`, `Number`, `Function`, `Promise`, `Map`, `Set`, `Math`,
+`JSON`, `RegExp`, `Date` and their prototypes start with, and `Object.prototype` takes no new properties. That is what lets the
+compiler treat `[].map` or `Math.floor` as what they are. Consequences for plugin code:
+
+- Overwriting one of them (`Array.prototype.map = ...`, `JSON.parse = ...`) throws a `TypeError`. Polyfills that only add what
+  is missing (`if (!Array.prototype.at) ...`) are fine, and so is adding your own method to a prototype.
+- `Object.prototype` cannot be extended at all.
+
+If a dependency does this, `scripts/build-pi.sh` with `BUN_JSC_useImmutableIntrinsics=0` builds without the freeze; array
+callbacks are then real calls again.
 
 ### Strings and regular expressions
 
