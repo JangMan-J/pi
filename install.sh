@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Pi-Bolt installer: downloads a release, verifies its checksum, installs it to ~/.pi-bolt and links `pi-bolt` into ~/.local/bin.
 #
-#   curl -fsSL https://raw.githubusercontent.com/opensec-git/Pi-Bolt/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/opensec-git/Pi-Bolt/HEAD/install.sh | bash
 #
 # Environment:
-#   PIBOLT_VERSION   a release tag such as v0.1.0 (default: the latest release)
+#   PIBOLT_VERSION   a release tag such as bolt-v0.2.0 (default: the latest release)
 #   PIBOLT_VARIANT   x64, x64-baseline or x64-jit (default: x64 on CPUs with AVX2, x64-baseline otherwise)
 #   PIBOLT_INSTALL   where to install (default: ~/.pi-bolt)
 #   PIBOLT_BIN_DIR   where to link the `pi-bolt` command (default: ~/.local/bin)
