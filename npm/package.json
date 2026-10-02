@@ -1,0 +1,15 @@
+{
+	"name": "pi-bolt",
+	"version": "0.2.0",
+	"description": "Pi, the coding agent, compiled ahead of time to native code: one Linux executable, ready in 83 ms, half the CPU",
+	"keywords": ["pi", "coding-agent", "ai", "cli", "aot", "bun"],
+	"homepage": "https://github.com/opensec-git/Pi-Bolt",
+	"repository": { "type": "git", "url": "git+https://github.com/opensec-git/Pi-Bolt.git", "directory": "npm" },
+	"bugs": "https://github.com/opensec-git/Pi-Bolt/issues",
+	"license": "MIT",
+	"author": "OpenSec",
+	"bin": { "pi-bolt": "bin/pi-bolt" },
+	"files": ["bin/pi-bolt", "README.md"],
+	"os": ["linux"],
+	"cpu": ["x64"]
+}

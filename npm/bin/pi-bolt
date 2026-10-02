@@ -1,0 +1,45 @@
+#!/bin/sh
+# pi-bolt launcher (npm and bun packages). The first run downloads the Pi-Bolt release that matches this package's version,
+# verifies its checksum and keeps it in ~/.pi-bolt/npm; every run then replaces this script with the native executable (exec),
+# so the launcher costs no startup time. Same environment as install.sh: PIBOLT_VARIANT, PIBOLT_HOME.
+set -eu
+
+VERSION=0.2.0
+REPO="https://github.com/opensec-git/Pi-Bolt"
+HOME_DIR="${PIBOLT_HOME:-$HOME/.pi-bolt}"
+
+die() { printf 'pi-bolt: %s\n' "$*" >&2; exit 1; }
+has() { command -v "$1" >/dev/null 2>&1; }
+
+VARIANT="${PIBOLT_VARIANT:-}"
+if [ -z "$VARIANT" ]; then
+	if grep -qw avx2 /proc/cpuinfo 2>/dev/null; then VARIANT=x64; else VARIANT=x64-baseline; fi
+fi
+NAME="pi-bolt-linux-$VARIANT"
+DIR="$HOME_DIR/npm/$VERSION/$NAME"
+
+if [ ! -x "$DIR/pi" ]; then
+	[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || die "Pi-Bolt runs on Linux x86-64 only"
+	has sha256sum && has tar || die "sha256sum and tar are required"
+	if has curl; then
+		fetch() { curl -fsSL -o "$1" "$2"; }
+	elif has wget; then
+		fetch() { wget -q -O "$1" "$2"; }
+	else
+		die "curl or wget is required"
+	fi
+	BASE="${PIBOLT_DOWNLOAD_BASE:-$REPO/releases/download/bolt-v$VERSION}"
+	mkdir -p "$HOME_DIR/npm/$VERSION"
+	TMP="$(mktemp -d "$HOME_DIR/npm/$VERSION/.download.XXXXXX")"
+	trap 'rm -rf "$TMP"' EXIT INT TERM
+	printf 'pi-bolt: downloading %s %s (once)\n' "$NAME" "$VERSION" >&2
+	fetch "$TMP/$NAME.tar.gz" "$BASE/$NAME.tar.gz" || die "download failed: $BASE/$NAME.tar.gz"
+	fetch "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" || die "download failed: $BASE/SHA256SUMS"
+	(cd "$TMP" && grep " $NAME.tar.gz\$" SHA256SUMS | sha256sum -c --quiet -) || die "checksum mismatch: the download is corrupt or incomplete"
+	tar -C "$TMP" -xzf "$TMP/$NAME.tar.gz"
+	# Another launcher may have finished first: keep whichever copy is in place.
+	mv "$TMP/$NAME" "$DIR" 2>/dev/null || [ -x "$DIR/pi" ] || die "could not install to $DIR"
+	rm -rf "$TMP"
+	trap - EXIT INT TERM
+fi
+exec "$DIR/pi" "$@"
