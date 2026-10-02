@@ -189,12 +189,14 @@ helpers held in module-level functions or constants, or that index arrays. How a
 | check written inline: `c === 32 \|\| (c >= 9 && c <= 13)` | **29 ms** | 22 ms |
 | helper declared at module level: `function isSpace(c) { ... }` | **39 ms** | 27 ms |
 | helper in a module constant: `const isSpace = (c) => ...` | **39 ms** | 24 ms |
-| helper as a method: `helpers.isSpace(c)` | 243 ms | 24 ms |
+| helper as a method: `helpers.isSpace(c)` | 58 ms | 24 ms |
 
 - **Keep hot helpers at module level** and call them by name: `function isSpace(c) { ... }` or `const isSpace = (c) => ...`,
   never reassigned. Both are inlined into the loop. Or write small checks inline.
-- **Don't call methods in hot loops.** A method looked up on an object (`helpers.isSpace(c)`) is a real call and costs the
-  loop its fast copy. Move it to a module-level helper.
+- **Methods are inlined when their name is unique.** `helpers.isSpace(c)` or `this.isSpace(c)` is compiled into the loop when
+  the program defines exactly one method called `isSpace`, behind a check that the object's `isSpace` is that function (an object
+  with another function under that name takes the ordinary call). A name that several classes define (`area`, `render`) stays a
+  real call: give hot helpers distinct names, or move them to module level.
 - These built-ins have fast paths and do not count as calls: `Math.sqrt/abs/floor/ceil/trunc/fround/min/max/imul`,
   `String.prototype.charCodeAt/charAt/codePointAt`, `Array.prototype.push/pop`, `Array.isArray`, and `Map`/`Set`
   `get/has/set/add`.
@@ -208,8 +210,8 @@ helpers held in module-level functions or constants, or that index arrays. How a
 
 - **Give objects one shape.** Create every field in the constructor or object literal, in the same order, and do not add fields
   later. A property read handles a few shapes with a fast inline check; beyond that it goes through a generic lookup.
-- Use `Map` for dictionaries with changing keys, not plain objects with `obj[key]` for arbitrary strings. Its `get`, `has` and
-  `set` have fast paths.
+- Plain objects used as dictionaries (`counts[key] = (counts[key] || 0) + 1`) are fine: reads and writes with string or symbol
+  keys go through the engine's property cache. `Map` is still faster when keys come and go.
 - Prefer plain data and classes to `Proxy`, getters and setters in hot paths. They work, but each access calls a function.
 
 ### The standard objects are fixed

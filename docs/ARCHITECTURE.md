@@ -77,8 +77,12 @@ it can prove:
   unknown types). They keep the code compact, so a slow path costs a call, not code in every function.
 - **Inline caches** for property access, filled in at run time, with a polymorphic inline check where it pays off.
 - **Intrinsics** for hot built-ins: `Math.*`, `charCodeAt`, `push`/`pop`, and `Map`/`Set` `get`/`has`/`set`/`add`.
-- **Inlining** of known small functions across the program: function declarations, and functions held in module constants
-  that are never reassigned. A call through a constant checks that it has been initialized, and throws as it would if not.
+- **Inlining** of known small functions across the program: function declarations, functions held in module constants that
+  are never reassigned, and methods whose name the program defines exactly once. A call through a constant checks that it has
+  been initialized, and throws as it would if not. A method call checks that the callee is the function it was taken for, and
+  makes the call if not; inside a loop's fast copy, that check leaves for the generic copy, so the fast copy keeps no call.
+- **Array callbacks**: `forEach`, `map`, `filter`, `reduce` and the like are inlined with their callback. The standard objects'
+  original methods are frozen when the program starts (`useImmutableIntrinsics`), which is what makes `[].map` knowable.
 - **Loop splitting**: a loop gets a fast copy without slow paths, which falls back to a generic copy at the first failed check.
   This applies to loops without real calls, and to loops whose calls are to built-ins or known module functions, or that
   index arrays. String scanning and number crunching run several times faster this way.
