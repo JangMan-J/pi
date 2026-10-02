@@ -1,4 +1,5 @@
 import { compare, valid } from "semver";
+import { PIBOLT, PIBOLT_LATEST_RELEASE_API, piBoltVersionOfTag } from "../pi-bolt.ts";
 import { fetchWithRetry } from "./management-http.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
@@ -53,6 +54,7 @@ export async function getLatestPiRelease(
 	options: { timeoutMs?: number; retry?: boolean } = {},
 ): Promise<LatestPiRelease | undefined> {
 	if (process.env.PI_OFFLINE) return undefined;
+	if (PIBOLT) return getLatestPiBoltRelease(currentVersion, options);
 
 	const response = await fetchWithRetry(
 		LATEST_VERSION_URL,
@@ -87,6 +89,22 @@ export async function getLatestPiRelease(
 	};
 }
 
+/** Pi-Bolt updates as a whole (its Pi and its engine together), so a Pi-Bolt build looks at Pi-Bolt's releases, by Pi-Bolt version. */
+async function getLatestPiBoltRelease(
+	currentVersion: string,
+	options: { timeoutMs?: number; retry?: boolean },
+): Promise<LatestPiRelease | undefined> {
+	const response = await fetchWithRetry(
+		PIBOLT_LATEST_RELEASE_API,
+		{ headers: { "User-Agent": getPiUserAgent(currentVersion), accept: "application/vnd.github+json" } },
+		{ maxRetries: options.retry ? 2 : 0, timeoutMs: options.timeoutMs ?? DEFAULT_VERSION_CHECK_TIMEOUT_MS },
+	);
+	if (!response.ok) return undefined;
+	const data = (await response.json()) as { tag_name?: unknown; name?: unknown };
+	const version = piBoltVersionOfTag(data.tag_name);
+	return version ? { version } : undefined;
+}
+
 export async function getLatestPiVersion(
 	currentVersion: string,
 	options: { timeoutMs?: number; retry?: boolean } = {},
@@ -96,6 +114,7 @@ export async function getLatestPiVersion(
 
 export async function checkForNewPiVersion(currentVersion: string): Promise<LatestPiRelease | undefined> {
 	if (process.env.PI_SKIP_VERSION_CHECK) return undefined;
+	if (PIBOLT) currentVersion = PIBOLT.version;
 
 	try {
 		const latestRelease = await getLatestPiRelease(currentVersion);

@@ -68,6 +68,7 @@ import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "./modes/interactive/theme/theme-json.ts";
 import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { PIBOLT } from "./pi-bolt.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -630,7 +631,11 @@ export async function main(args: string[], options?: MainOptions) {
 	time("parseArgs");
 
 	if (parsed.version) {
-		console.log(VERSION);
+		console.log(
+			PIBOLT
+				? `${VERSION} (Pi-Bolt ${PIBOLT.version}, linux-${PIBOLT.variant}, JIT ${PIBOLT.jit ? "on" : "off"})`
+				: VERSION,
+		);
 		process.exit(0);
 	}
 

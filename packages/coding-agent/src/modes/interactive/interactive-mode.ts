@@ -121,6 +121,7 @@ import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { addMcpServerConfig, loadMcpConfig } from "../../extensions/mcp/config.ts";
+import { PIBOLT, PIBOLT_RELEASES_URL } from "../../pi-bolt.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -4547,9 +4548,9 @@ export class InteractiveMode {
 
 	showNewVersionNotification(release: LatestPiRelease): void {
 		const updateInstruction = () =>
-			theme.fg("muted", `New version ${release.version} is available. Run `) +
-			theme.fg("accent", `${APP_NAME} update`);
-		const changelogUrl = "https://pi.dev/changelog";
+			theme.fg("muted", `New ${PIBOLT ? "Pi-Bolt " : ""}version ${release.version} is available. Run `) +
+			theme.fg("accent", `${PIBOLT ? "pi-bolt" : APP_NAME} update`);
+		const changelogUrl = PIBOLT ? PIBOLT_RELEASES_URL : "https://pi.dev/changelog";
 		const changelogLine = () => {
 			const changelogLink = getCapabilities().hyperlinks
 				? hyperlink(theme.fg("accent", changelogUrl), changelogUrl)

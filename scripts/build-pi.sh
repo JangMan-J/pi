@@ -42,6 +42,8 @@ done
 
 AGENT="$(pi_agent_dir "$PI_DIR")"
 VERSION="$(pi_version "$AGENT")"
+PIBOLT_VERSION="$(cat "$PIBOLT_ROOT/VERSION")"
+CPU_VARIANT=x64; [ "$CPU" = baseline ] && CPU_VARIANT=x64-baseline; [ "$JIT" = on ] && CPU_VARIANT=x64-jit
 OUT="$(realpath -m "${OUT:-$PIBOLT_ROOT/out/pi-bolt}")"
 PROFILE="$(realpath -m "${PROFILE:-$PIBOLT_ROOT/profiles/pi-$VERSION}")"
 
@@ -106,11 +108,18 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 	# turns it off; BUN_JSC_aotLoopSplittingPolicy=3 limits it to loops that make no calls.
 	export BUN_JSC_useAOTLoopSplitting="${BUN_JSC_useAOTLoopSplitting:-1}"
 	export BUN_JSC_aotLoopSplittingPolicy="${BUN_JSC_aotLoopSplittingPolicy:-5}"
+	# The standard objects' own methods (Array.prototype.map, Math.floor, ...) are what they were when the realm was made: the
+	# compiler then inlines them, callbacks and all (forEach, map, filter, reduce: 5-10x in loops). Code that overwrites one of
+	# them gets a TypeError; adding methods is fine. BUN_JSC_useImmutableIntrinsics=0 turns it off (docs/PLUGINS.md).
+	export BUN_JSC_useImmutableIntrinsics="${BUN_JSC_useImmutableIntrinsics:-1}"
 	[ -n "$REGEXPS" ] && export BUN_JSC_aotRegExpsPath="$REGEXPS"
+	# What `pi --version` and `pi update` know themselves by (packages/coding-agent/src/pi-bolt.ts).
 	"$BUN" build --compile --no-compile-autoload-bunfig --target=bun-linux-x64 --bytecode --format=esm "${ORDER_ARGS[@]}" \
+		--define "PIBOLT_BUILD=\"$PIBOLT_VERSION $CPU_VARIANT jit-$JIT\"" \
 		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | grep -v "^AOT: " | tail -3
 )
 stage_assets "$OUT"
+printf 'Pi-Bolt %s (Pi %s), linux-%s, JIT %s, built %s\n' "$PIBOLT_VERSION" "$VERSION" "$CPU_VARIANT" "$JIT" "$(date -u +%Y-%m-%d)" >"$OUT/pi-bolt.txt"
 
 check=$(BUN_STATIC_HEAP_VERBOSE=1 "$OUT/pi" --version 2>&1)
 grep -q "image registered: true" <<<"$check" || die "the executable does not use its compiled code:"$'\n'"$check"

@@ -20,4 +20,5 @@ if [ ! -x "$DIR/pi" ]; then
 		sh "$here/../install.sh" 1>&2
 	printf '\n' >&2
 fi
-exec "$DIR/pi" "$@"
+# (So that `pi-bolt update` knows to say: update the package.)
+PIBOLT_NPM=1 exec "$DIR/pi" "$@"

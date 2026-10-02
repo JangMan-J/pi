@@ -34,6 +34,7 @@ import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader, isBuiltinExtension } from "./core/resource-loader.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { PIBOLT, PIBOLT_INSTALL_COMMAND, piBoltInstallMethod, piBoltUpdateEnvironment } from "./pi-bolt.ts";
 import { spawnProcess, spawnProcessSync, waitForChildProcess } from "./utils/child-process.ts";
 import { canonicalizePath, getCwdRelativePath } from "./utils/paths.ts";
 import { getPiUserAgent } from "./utils/pi-user-agent.ts";
@@ -660,9 +661,11 @@ interface SelfUpdatePlan {
 }
 
 async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
+	// (A Pi-Bolt build is versioned, and updated, as Pi-Bolt.)
+	const currentVersion = PIBOLT ? PIBOLT.version : VERSION;
 	let latestRelease: Awaited<ReturnType<typeof getLatestPiRelease>>;
 	try {
-		latestRelease = await getLatestPiRelease(VERSION, { retry: true });
+		latestRelease = await getLatestPiRelease(currentVersion, { retry: true });
 	} catch (error: unknown) {
 		throw new Error(`Could not determine latest ${APP_NAME} version: ${formatVersionCheckError(error)}`, {
 			cause: error,
@@ -674,7 +677,7 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 
 	const packageName = latestRelease.packageName ?? PACKAGE_NAME;
 	const installSpec = `${packageName}@${latestRelease.version}`;
-	if (force || packageName !== PACKAGE_NAME || isNewerPackageVersion(latestRelease.version, VERSION)) {
+	if (force || packageName !== PACKAGE_NAME || isNewerPackageVersion(latestRelease.version, currentVersion)) {
 		return {
 			packageName,
 			installSpec,
@@ -684,8 +687,40 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 		};
 	}
 
-	console.log(chalk.green(`${APP_NAME} is already up to date (v${VERSION})`));
+	console.log(chalk.green(`${PIBOLT ? "Pi-Bolt" : APP_NAME} is already up to date (v${currentVersion})`));
 	return { packageName, installSpec, version: latestRelease.version, shouldRun: false };
+}
+
+/**
+ * Updates a Pi-Bolt installation to the latest release: the installer, run again, replaces the executable in place (same
+ * variant, same folder). One installed with the npm package is updated with the package manager instead.
+ */
+async function runPiBoltSelfUpdate(version: string): Promise<boolean> {
+	if (piBoltInstallMethod() === "npm") {
+		console.log(
+			`This Pi-Bolt was installed with the npm package. Update it with the package manager that installed it:`,
+		);
+		console.log(`  npm install -g pi-bolt@latest      (or: bun add -g pi-bolt@latest)`);
+		return false;
+	}
+	console.log(chalk.dim(`Updating Pi-Bolt to ${version} with ${PIBOLT_INSTALL_COMMAND}...`));
+	const status = await new Promise<number | null>((resolve, reject) => {
+		const child = spawnProcess("sh", ["-c", PIBOLT_INSTALL_COMMAND], {
+			stdio: "inherit",
+			env: piBoltUpdateEnvironment(),
+		});
+		child.on("error", reject);
+		child.on("close", (code) => resolve(code));
+	}).catch((error: unknown) => {
+		console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+		return 1;
+	});
+	if (status !== 0) {
+		console.error(chalk.red(`The installer did not finish. You can run it yourself: ${PIBOLT_INSTALL_COMMAND}`));
+		return false;
+	}
+	console.log(chalk.green(`Updated Pi-Bolt from ${PIBOLT?.version} to ${version}`));
+	return true;
 }
 
 async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
@@ -1055,6 +1090,15 @@ export async function handlePackageCommand(
 						return true;
 					}
 
+					if (PIBOLT) {
+						if (selfUpdatePlan.note) {
+							printSelfUpdateNote(selfUpdatePlan.note);
+						}
+						if (!(await runPiBoltSelfUpdate(selfUpdatePlan.version))) {
+							process.exitCode = 1;
+						}
+						return true;
+					}
 					const installMethod = detectInstallMethod();
 					if (process.platform === "win32" && installMethod !== "npm" && installMethod !== "pnpm") {
 						console.error(

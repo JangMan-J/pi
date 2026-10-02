@@ -3,6 +3,7 @@ import { createRequire } from "module";
 import { homedir } from "os";
 import { basename, dirname, join, resolve, sep, win32 } from "path";
 import { fileURLToPath } from "url";
+import { PIBOLT, PIBOLT_INSTALL_COMMAND } from "./pi-bolt.ts";
 import { spawnProcessSync } from "./utils/child-process.ts";
 import { normalizePath } from "./utils/paths.ts";
 import { stripBom } from "./utils/text.ts";
@@ -339,6 +340,7 @@ export function getSelfUpdateUnavailableInstruction(
 	const method = detectInstallMethod();
 	const target = normalizeSelfUpdatePackageTarget(updatePackageTarget);
 	if (method === "bun-binary") {
+		if (PIBOLT) return `Update Pi-Bolt with: ${PIBOLT_INSTALL_COMMAND}`;
 		return `Download from: https://github.com/earendil-works/pi/releases/latest`;
 	}
 	const command = getSelfUpdateCommandForMethod(method, packageName, target, npmCommand);
