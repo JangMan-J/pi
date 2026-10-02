@@ -72,3 +72,6 @@ __pycache__/
 .vscode/
 *.swp
 *~
+
+# Copied from install.sh when the npm package is packed
+npm/install.sh
