@@ -55,7 +55,20 @@ def parse_builds(specs: list[str]) -> list[Build]:
         if not shutil.which(argv[0]) and not os.access(argv[0], os.X_OK):
             raise SystemExit(f"build {name}: {argv[0]} is not executable")
         builds.append(Build(name, argv))
+    warm_page_cache(builds)
     return builds
+
+
+def warm_page_cache(builds: list[Build]) -> None:
+    """Reads every build's files once, so that all are equally in the page cache. The kernel maps neighbouring pages of a file
+    that are already cached along with the one that faulted, so a freshly written executable shows up to 10% more resident
+    memory than the same executable read from disk; comparing a fresh build with an old one would be unfair either way."""
+    for build in builds:
+        for path in build.argv:
+            if "/" in path and os.path.isfile(path):
+                with open(path, "rb") as f:
+                    while f.read(1 << 22):
+                        pass
 
 
 def free_port() -> int:
