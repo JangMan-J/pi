@@ -77,7 +77,7 @@ factories. A cold page cache (the first start after boot or install) adds the ti
 
 ## Reporting a problem
 
-Please open an issue with:
+Please [open an issue](https://github.com/opensec-git/Pi-Bolt/issues/new) with:
 
 - the output of `BUN_STATIC_HEAP_VERBOSE=1 pi-bolt --version`;
 - your distribution, `ldd --version | head -1`, and the CPU model (`grep -m1 "model name" /proc/cpuinfo`);
@@ -85,3 +85,11 @@ Please open an issue with:
 
 If it only happens with the compiled code, it is a Pi-Bolt bug. If it also happens with stock Pi, report it to
 [Pi](https://github.com/earendil-works/pi/issues).
+
+### A crash
+
+When Pi-Bolt crashes it prints "Pi-Bolt has crashed", some lines about the system, and a link that starts with
+`https://pi-bolt.opensec.in/crash/`. The link holds an encoded stack trace and nothing else: no file names, paths or data of
+yours. Please include it in the issue, with what you were doing. Pi-Bolt's maintainers decode it against the symbols of that
+release. (In Pi-Bolt 0.3.0 and earlier the message named Bun and the link went to bun.report, which cannot decode Pi-Bolt
+traces: report those here too.)

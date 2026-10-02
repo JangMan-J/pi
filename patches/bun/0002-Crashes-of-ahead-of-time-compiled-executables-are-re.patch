@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Fri, 2 Oct 2026 22:01:25 +0000
+Subject: [PATCH] Crashes of ahead-of-time compiled executables are reported to
+ Pi-Bolt
+
+Bun's team cannot decode a trace of code that is not Bun's. An executable
+that runs an AOT image says "Pi-Bolt has crashed", points at Pi-Bolt's
+issues, and links the encoded trace to pi-bolt.opensec.in/crash, where it
+is decoded against the release's symbols. BUN_CRASH_REPORT_URL still
+overrides the address.
+---
+ src/crash_handler/lib.rs | 33 ++++++++++++++++++++++++++++-----
+ 1 file changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/src/crash_handler/lib.rs b/src/crash_handler/lib.rs
+index 91e2ee80..491b2a2e 100644
+--- a/src/crash_handler/lib.rs
++++ b/src/crash_handler/lib.rs
+@@ -1118,11 +1118,11 @@ mod draft {
+                                 }
+                             } else if matches!(reason, CrashReason::OutOfMemory) {
+                                 if writer.write_all(
+-                                b"Bun has run out of memory.\n\nTo send a redacted crash report to Bun's team,\nplease file a GitHub issue using the link below:\n\n",
++                                if is_ahead_of_time_executable() { PI_BOLT_OOM_MESSAGE } else { b"Bun has run out of memory.\n\nTo send a redacted crash report to Bun's team,\nplease file a GitHub issue using the link below:\n\n" },
+                             ).is_err() { abort(); }
+                             } else {
+                                 if writer.write_all(
+-                                b"Bun has crashed. This indicates a bug in Bun, not your code.\n\nTo send a redacted crash report to Bun's team,\nplease file a GitHub issue using the link below:\n\n",
++                                if is_ahead_of_time_executable() { PI_BOLT_CRASH_MESSAGE } else { b"Bun has crashed. This indicates a bug in Bun, not your code.\n\nTo send a redacted crash report to Bun's team,\nplease file a GitHub issue using the link below:\n\n" },
+                             ).is_err() { abort(); }
+                             }
+                         }
+@@ -1463,10 +1463,31 @@ mod draft {
+             if let Some(url) = env_var::BUN_CRASH_REPORT_URL::get() {
+                 return strings::without_trailing_slash(url);
+             }
++            if is_ahead_of_time_executable() {
++                return PI_BOLT_REPORT_BASE_URL.as_bytes();
++            }
+             DEFAULT_REPORT_BASE_URL.as_bytes()
+         })
+     }
+ 
++    /// An executable that runs code compiled ahead of time (Pi-Bolt) is not a Bun that Bun's team can decode a trace of: its
++    /// crashes go to Pi-Bolt, with the trace in the same encoding, which Pi-Bolt decodes against its own symbols.
++    const PI_BOLT_REPORT_BASE_URL: &str = "https://pi-bolt.opensec.in/crash";
++    const PI_BOLT_CRASH_MESSAGE: &[u8] = b"Pi-Bolt has crashed. This is a bug in Pi-Bolt, not in your code.\n\n\
++        Please report it at https://github.com/opensec-git/Pi-Bolt/issues/new\n\
++        with the link below and what you were doing:\n\n";
++    const PI_BOLT_OOM_MESSAGE: &[u8] = b"Pi-Bolt has run out of memory.\n\n\
++        Please report it at https://github.com/opensec-git/Pi-Bolt/issues/new\n\
++        with the link below and what you were doing:\n\n";
++
++    fn is_ahead_of_time_executable() -> bool {
++        unsafe extern "C" {
++            fn Bun__AOTImage__isMapped() -> bool;
++        }
++        // SAFETY: a plain query of a flag set at startup.
++        unsafe { Bun__AOTImage__isMapped() }
++    }
++
+     const ARCH_DISPLAY_STRING: &str = if cfg!(target_arch = "aarch64") {
+         if cfg!(target_os = "macos") {
+             "Silicon"
+@@ -1814,11 +1835,13 @@ mod draft {
+                 } else {
+                     let _ = writer.write_all(b": ");
+                 }
+-                let _ = writer.write_all(
++                let _ = writer.write_all(if is_ahead_of_time_executable() {
++                    PI_BOLT_CRASH_MESSAGE
++                } else {
+                     b"Bun has crashed. This indicates a bug in Bun, not your code.\n\n\
+                   To send a redacted crash report to Bun's team,\n\
+-                  please file a GitHub issue using the link below:\n\n ",
+-                );
++                  please file a GitHub issue using the link below:\n\n "
++                });
+                 if enable_ansi_colors_stderr() {
+                     let _ = writer.write_all(&Output::pretty_fmt::<true>("<cyan>"));
+                 }
+-- 
+2.43.0
+

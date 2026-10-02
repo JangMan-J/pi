@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Publishes install.sh to the gh-pages branch, which GitHub Pages serves at https://pi-bolt.opensec.in/install.sh.
+# Publishes install.sh and site/ (the index, the crash-report page) to the gh-pages branch, which GitHub Pages serves at
+# https://pi-bolt.opensec.in.
 # Usage: scripts/publish-installer.sh [REMOTE]     (default remote: origin). Adds a commit to gh-pages; never rewrites it.
 source "$(dirname "$0")/lib/common.sh"
 need git
@@ -9,11 +10,12 @@ trap 'git -C "$PIBOLT_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null || t
 git -C "$PIBOLT_ROOT" fetch -q "$REMOTE" gh-pages
 git -C "$PIBOLT_ROOT" worktree add -q --detach "$WORKTREE" FETCH_HEAD
 cp "$PIBOLT_ROOT/install.sh" "$WORKTREE/install.sh"
-if git -C "$WORKTREE" diff --quiet -- install.sh; then
-	log "gh-pages already has this install.sh"
+cp "$PIBOLT_ROOT"/site/* "$WORKTREE/"
+if git -C "$WORKTREE" diff --quiet; then
+	log "gh-pages already has this install.sh and site"
 	exit 0
 fi
-git -C "$WORKTREE" add install.sh
-git -C "$WORKTREE" commit -q -m "chore(pages): update install.sh"
+git -C "$WORKTREE" add install.sh "$WORKTREE"/*.html "$WORKTREE"/*.svg
+git -C "$WORKTREE" commit -q -m "chore(pages): update install.sh and site"
 git -C "$WORKTREE" push -q "$REMOTE" HEAD:gh-pages
 log "published install.sh to $REMOTE gh-pages"
