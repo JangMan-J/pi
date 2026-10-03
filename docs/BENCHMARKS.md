@@ -5,6 +5,7 @@ Pi-Bolt compared with the same Pi release on stock Bun and on Node.js. Every fig
 [`bench/report.py`](../bench/report.py).
 
 - [Results](#results)
+- [macOS on Apple silicon](#macos-on-apple-silicon)
 - [Setup and method](#setup-and-method)
 - [In a real terminal (tmux)](#in-a-real-terminal-tmux)
   - [What Pi writes to the terminal](#what-pi-writes-to-the-terminal)
@@ -58,6 +59,54 @@ In fullscreen mode a screen that is drawn again shows the answers before it too,
 they waited for: from the second prompt of a session on, the next prompt was sent while the one before was still being
 answered, and cut it short, on every runtime. The interactive and long-session rows were of sessions that did less than they
 say (the long session reached 2.7M tokens, not 4.2M). Answers are now numbered, and every figure here was taken again.
+
+## macOS on Apple silicon
+
+The same tools on an Apple M5 MacBook Air (10 cores, 16 GB, macOS 27.0.1), against Pi 1.0.0 as released on Bun 1.4.2 and its npm
+package on Node 26.10. macOS cannot pin processes to cores, so runs are interleaved on an otherwise idle machine; "own memory" is
+the physical footprint (what Activity Monitor shows), the closest measure to private dirty pages on Linux. Raw data:
+[`bench/results/2026-10-04-darwin-arm64-vs-pi-1.0.0`](../bench/results/2026-10-04-darwin-arm64-vs-pi-1.0.0).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/darwin-arm64/bench-hero-dark.svg">
+  <img alt="macOS: ready to type 48 / 64 / 188 ms; CPU per session 149 / 368 / 544 ms; CPU while streaming 724 / 880 / 952 ms; memory after a long session 54 / 100 / 2,517 MB" src="images/darwin-arm64/bench-hero-light.svg">
+</picture>
+
+| Scenario | Metric | Pi-Bolt | Pi-Bolt, JIT on | Bun 1.4.2 | Node 26 |
+|---|---|---:|---:|---:|---:|
+| `pi --version` | wall | **20 ms** | 21 ms | 32 ms | 147 ms |
+| | CPU | **17 ms** | 18 ms | 56 ms | 157 ms |
+| `pi -p "<prompt>"`: one prompt, 5 model turns, 4 tool calls | wall | **45 ms** | 47 ms | 67 ms | 214 ms |
+| | CPU | **42 ms** | 44 ms | 134 ms | 276 ms |
+| Interactive TUI: launch, 5 prompts (25 model turns), `/quit` | time to interactive | 48 ms | **44 ms** | 64 ms | 188 ms |
+| | CPU | 149 ms | **146 ms** | 368 ms | 544 ms |
+| | peak memory | **136 MB** | 138 MB | 198 MB | 239 MB |
+| Long session: 75 prompts, a conversation of about 4.2M tokens | time per prompt, last 25 | **212 ms** | | 279 ms | 342 ms |
+| | CPU per prompt, last 25 | **71 ms** | | 156 ms | 259 ms |
+| | own memory at the end | **54 MB** | | 100 MB | 2,517 MB |
+| tmux: replies streaming at human pace (4 prompts) | CPU | **724 ms** | | 880 ms | 952 ms |
+| | own memory | **32 MB** | | 66 MB | 81 MB |
+| | bytes written to the terminal per prompt | **168 KB** | | 354 KB | 355 KB |
+| Long answers in the TUI (1,200 characters a second) | CPU, 20,000 characters | **2.3 s** | | 7.2 s | 6.5 s |
+| | CPU, 60,000 characters | **8.4 s** | | 26.9 s | 25.5 s |
+| A file written through a tool call (`pi -p`) | 200 KB: wall / CPU | **0.3 / 0.2 s** | | 11.5 / 19.5 s | 14.3 / 14.6 s |
+| The same in the TUI | longest pause in drawing, 200 KB | **80 ms** | | 94 ms | 176 ms |
+| A plugin's hot loop | compiled in | **44 ms** | 43 ms | | |
+| | loaded at run time | 482 ms | **39 ms** | 39 ms | |
+
+Medians of 21 runs (3 warm-up runs), 3 long sessions and 5 tmux rounds per runtime.
+
+**CPU time understates the difference on Apple silicon.** macOS runs a light, bursty process on the efficiency cores or at a low
+clock, and a busy one fast. While a 20,000-character answer streams, Pi-Bolt executes 4.0 billion instructions in 2.8 billion
+cycles (an average 1.2 GHz), and Bun 49 billion in 16.8 billion cycles (2.3 GHz): a sixth of the work, in a third of the CPU time.
+Linux, on a server CPU at a fixed clock, shows the work more directly (half the CPU of Bun, and 6-7% of a core while streaming).
+
+**Every runtime uses more CPU for streaming here than on Linux.** On the same benchmark Bun takes 880 ms on macOS against 493 ms on
+the EPYC, and Node 952 against 580: a terminal and timers that cost more per frame, and a model server whose pacing is coarser,
+so that a prompt takes 8.6 s rather than 6.5 s and draws 515 frames rather than 423.
+
+**What macOS adds at launch.** An executable with a prebuilt heap starts again once with ASLR off for its own code (about 3 ms of
+the 20 ms of `pi --version`; [ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)).
 
 ## Setup and method
 
