@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A fake OpenAI-compatible model that drives Pi through every core tool, for end-to-end correctness checks (e2e-tools.sh).
 
-One scripted step per model turn: ls, find, grep, write, edit, bash, read, then a final answer that quotes what the last tool
+One scripted step per model turn: ls, find, grep, write, edit, bash, read, codemode, then a final answer that quotes what the last tool
 returned, so a wrong tool result changes the transcript. Usage: fake_model_tools.py PORT."""
 
 import json
@@ -16,6 +16,9 @@ STEPS = [
     ("edit", {"path": "out/notes.md", "edits": [{"oldText": "beta = 2", "newText": "beta = 20"}, {"oldText": "gamma = 3", "newText": "gamma = 30\ndelta = 40"}]}),
     ("bash", {"command": "cd out && sha256sum notes.md && wc -l notes.md && node -e 'console.log(JSON.stringify({sum: [1,2,3].reduce((a,b)=>a+b)}))' 2>/dev/null || echo no-node"}),
     ("read", {"path": "out/notes.md"}),
+    # A script in the QuickJS worker (WebAssembly, SharedArrayBuffer and Atomics) that calls a tool back.
+    ("codemode", {"code": "const text = await tools.read({ path: 'out/notes.md' });\nlet h = 0;\nfor (const c of text) h = (h * 31 + c.charCodeAt(0)) >>> 0;\n"
+                          "return JSON.stringify({ lines: text.split('\\n').filter(Boolean).length, hash: h, sum: [1, 2, 3, 4].reduce((a, b) => a + b) });"}),
 ]
 
 

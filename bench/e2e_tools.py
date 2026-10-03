@@ -18,13 +18,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness import FIXTURES, MODEL_ARGS, fake_model, parse_builds, pi_env, pi_home
 
+# The tools fake_model_tools.py calls (codemode is not active unless asked for).
+TOOLS = "ls,find,grep,write,edit,bash,read,codemode"
+
 
 def run(build, port, root):
     work = root / build.name / "work"
     work.mkdir(parents=True)
     shutil.copytree(FIXTURES, work / "fixture")
     with pi_home(port) as home:
-        p = subprocess.run([*build.argv, "-p", "--no-session", *MODEL_ARGS, "Exercise the tools"], cwd=work, env=pi_env(home, {"TERM": "dumb"}),
+        p = subprocess.run([*build.argv, "-p", "--no-session", *MODEL_ARGS, "--tools", TOOLS, "Exercise the tools"], cwd=work, env=pi_env(home, {"TERM": "dumb"}),
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     (root / build.name / "transcript.txt").write_bytes(p.stdout + f"\nexit {p.returncode}\n".encode())
     return root / build.name
