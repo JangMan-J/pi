@@ -70,6 +70,16 @@ const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
 const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
+/** Rows that scrolling must save over drawing the changed rows, for it to be done. */
+const MIN_ROWS_SAVED_BY_SCROLLING = 3;
+
+interface MovedRows {
+	/** First and last row of the part of the screen that moved. */
+	top: number;
+	bottom: number;
+	/** How many rows it moved up; negative when it moved down. */
+	up: number;
+}
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
@@ -1668,6 +1678,57 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return result;
 	}
 
+	/**
+	 * The rows that only moved since the last frame. When the transcript grows by a line or is scrolled, every row of
+	 * its viewport changes, though all but a few only move. Scrolling those rows in the terminal and drawing what differs
+	 * afterwards writes a fraction of what drawing every row does: less for the terminal to parse, and for a multiplexer
+	 * (tmux, zmx) or an ssh connection between Pi and the screen to carry and draw again. Returns undefined when it would
+	 * not save rows. PI_TUI_SCROLL_ROWS=0 turns it off.
+	 */
+	private findMovedRows(screen: readonly string[], height: number): MovedRows | undefined {
+		const previous = this.previousScreen;
+		let top = 0;
+		while (top < height && screen[top] === previous[top]) top++;
+		let bottom = height - 1;
+		while (bottom > top && screen[bottom] === previous[bottom]) bottom--;
+		const span = bottom - top + 1;
+		if (span <= MIN_ROWS_SAVED_BY_SCROLLING) return undefined;
+		let changed = 0;
+		for (let row = top; row <= bottom; row++) {
+			const line = screen[row]!;
+			if (line === previous[row]) continue;
+			changed++;
+			// Images are placed and deleted by their own sequences: frames with one are drawn row by row.
+			if (isImageLine(line) || isImageLine(previous[row] ?? "")) return undefined;
+		}
+		if (changed <= MIN_ROWS_SAVED_BY_SCROLLING) return undefined;
+
+		// The distance at which most rows are what another row was. Rows that are the same after moving need not be drawn.
+		let best = 0;
+		let up = 0;
+		for (let distance = 1; span - distance > best; distance++) {
+			let sameUp = 0;
+			let sameDown = 0;
+			for (let row = top; row + distance <= bottom; row++) {
+				if (screen[row] === previous[row + distance]) sameUp++;
+				if (screen[row + distance] === previous[row]) sameDown++;
+			}
+			if (sameUp > best) {
+				best = sameUp;
+				up = distance;
+			}
+			if (sameDown > best) {
+				best = sameDown;
+				up = -distance;
+			}
+		}
+		if (changed - (span - best) < MIN_ROWS_SAVED_BY_SCROLLING) return undefined;
+		for (let row = top; row <= bottom; row++) {
+			if (isImageLine(previous[row] ?? "")) return undefined;
+		}
+		return { top, bottom, up };
+	}
+
 	protected override doRender(): void {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
@@ -1733,8 +1794,30 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			}
 		}
 
+		// Rows that only moved are scrolled: a scroll region around them, then line feeds at its bottom (they move up) or
+		// reverse line feeds at its top (down), which every terminal has. The rows scrolled in are empty.
+		const moved =
+			fullRedraw || redrawImages || process.env.PI_TUI_SCROLL_ROWS === "0"
+				? undefined
+				: this.findMovedRows(screen, height);
+		if (moved) {
+			buffer += `\x1b[${moved.top + 1};${moved.bottom + 1}r`;
+			buffer +=
+				moved.up > 0
+					? `\x1b[${moved.bottom + 1};1H${"\n".repeat(moved.up)}`
+					: `\x1b[${moved.top + 1};1H${"\x1bM".repeat(-moved.up)}`;
+			buffer += "\x1b[r";
+		}
+
 		for (let row = 0; row < height; row++) {
-			if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
+			if (!fullRedraw && !imagesNeedRedraw) {
+				let shown: string | undefined = this.previousScreen[row];
+				if (moved && row >= moved.top && row <= moved.bottom) {
+					const from = row + moved.up;
+					shown = from >= moved.top && from <= moved.bottom ? this.previousScreen[from] : undefined;
+				}
+				if (screen[row] === shown) continue;
+			}
 			buffer += `\x1b[${row + 1};1H${clearRowsBeforeKittyImages ? "" : "\x1b[2K"}${preparedKittyScreen.lines[row] ?? ""}`;
 		}
 

@@ -165,6 +165,38 @@ export class VirtualTerminal implements Terminal {
 	}
 
 	/**
+	 * The viewport with every cell's style: one string per cell (its characters, colors and attributes), for comparing
+	 * what two terminals show.
+	 */
+	getStyledViewport(): string[][] {
+		const buffer = this.xterm.buffer.active;
+		const rows: string[][] = [];
+		for (let y = 0; y < this.xterm.rows; y++) {
+			const line = buffer.getLine(buffer.viewportY + y);
+			const cells: string[] = [];
+			for (let x = 0; line && x < this.xterm.cols; x++) {
+				const cell = line.getCell(x);
+				if (!cell) continue;
+				const flags = [
+					cell.isBold(),
+					cell.isItalic(),
+					cell.isDim(),
+					cell.isUnderline(),
+					cell.isInverse(),
+					cell.isStrikethrough(),
+				]
+					.map((flag) => (flag ? "1" : "0"))
+					.join("");
+				cells.push(
+					`${cell.getChars() || " "}|${cell.getFgColorMode()}:${cell.getFgColor()}|${cell.getBgColorMode()}:${cell.getBgColor()}|${flags}`,
+				);
+			}
+			rows.push(cells);
+		}
+		return rows;
+	}
+
+	/**
 	 * Get the entire scroll buffer
 	 */
 	getScrollBuffer(): string[] {
