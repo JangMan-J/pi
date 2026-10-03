@@ -49,7 +49,7 @@ with fake_model(pace_ms=1, script="fake_model_stress.py") as port, pi_home(port)
     assert tty.wait_for("fake-model", 0, deadline), "the TUI did not start"
     tty.settle(0.2, deadline)
     training = Path(__file__).resolve().parent / "training.md"
-    for scenario, done in ((f"mdfile:{training}", "Done: mdfile."), ("train", "Done: train."), (f"mdfile:{training}", "Done: mdfile.")):
+    for scenario, done in ((f"mdfile:{training}", "Done: mdfile, answer 1."), ("train", "Done: train."), (f"mdfile:{training}", "Done: mdfile, answer 3.")):
         start = len(tty.buf)
         tty.send(f"SCENARIO {scenario} CWD {cwd}".encode() + b"\r")
         assert tty.wait_for(done, start, deadline), f"no answer to {scenario}"

@@ -151,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
         req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         path = self.path.split("?", 1)[0]
         api = "anthropic" if path.endswith("/messages") else "responses" if path.endswith("/responses") else "completions"
-        scenario, cwd, turn, results = read_conversation(api, req)
+        scenario, cwd, turn, results, prompts = read_conversation(api, req)
 
         if scenario in ("http500", "http429"):
             body = json.dumps({"error": {"message": "fake failure", "type": "server_error"}}).encode()
@@ -180,7 +180,7 @@ class Handler(BaseHTTPRequestHandler):
             # The Markdown file named, a few characters at a time (scripts/lib/train_session.py).
             with open(scenario[7:], encoding="utf-8") as f:
                 body = f.read()
-            return self.stream(encode(turn, [intro] + [body[i:i + 24] for i in range(0, len(body), 24)] + ["\n\nDone: mdfile."], None, 0))
+            return self.stream(encode(turn, [intro] + [body[i:i + 24] for i in range(0, len(body), 24)] + [f"\n\nDone: mdfile, answer {prompts}."], None, 0))
         if scenario.startswith("md:"):
             # A Markdown answer of about N characters, a few words at a time: what the TUI lays out again as it grows.
             size = int(scenario[3:])
@@ -191,7 +191,7 @@ class Handler(BaseHTTPRequestHandler):
                 body += MARKDOWN.replace("{n}", str(n))
             body = body[:size]
             texts = [intro] + [body[i:i + 24] for i in range(0, len(body), 24)]
-            return self.stream(encode(turn, texts + [f"\n\nDigest: {hashlib.sha256(body.encode()).hexdigest()[:16]}. Done: md."], None, 0))
+            return self.stream(encode(turn, texts + [f"\n\nDigest: {hashlib.sha256(body.encode()).hexdigest()[:16]}. Done: md, answer {prompts}."], None, 0))
         if scenario in ("stream", "drop"):
             body = "".join(f"Paragraph {i}: {'lorem ipsum dolor sit amet ' * 3}\n" for i in range(25000))[:2_000_000]
             texts = [intro] + [body[i:i + 100] for i in range(0, len(body), 100)]
@@ -219,11 +219,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def read_conversation(api, req):
-    """What a request says of the conversation: (scenario, cwd, turns of tool calls made since the prompt, their results)."""
-    scenario, cwd, turn, results = "light", "", 0, []
+    """What a request says of the conversation: (scenario, cwd, turns of tool calls made since the prompt, their results, how
+    many prompts there have been). A long answer ends with the number of its prompt, so that whoever waits for its end on a
+    screen that still shows the answer before it can tell them apart."""
+    scenario, cwd, turn, results, prompts = "light", "", 0, [], 0
 
     def prompt(text):
-        nonlocal scenario, cwd, turn, results
+        nonlocal scenario, cwd, turn, results, prompts
+        prompts += 1
         if "SCENARIO " in text:
             words = text[text.index("SCENARIO "):].replace('"', " ").replace("\\", " ").split()
             scenario = words[1]
@@ -251,7 +254,7 @@ def read_conversation(api, req):
             elif item.get("role") == "user":
                 content = item.get("content")
                 prompt(content if isinstance(content, str) else json.dumps(content))
-        return scenario, cwd, turn, results
+        return scenario, cwd, turn, results, prompts
     for m in req.get("messages", []):
         content = m.get("content")
         parts = content if isinstance(content, list) else []
@@ -266,7 +269,7 @@ def read_conversation(api, req):
                 result(part.get("content"))
             if not tool_results:
                 prompt(content if isinstance(content, str) else json.dumps(content))
-    return scenario, cwd, turn, results
+    return scenario, cwd, turn, results, prompts
 
 
 def encode_completions(turn, texts, calls, step):

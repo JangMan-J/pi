@@ -8,10 +8,12 @@ throwaway Pi home, so runs are isolated from your Pi configuration and from each
 |---|---|
 | `benchmark.py` | Startup (`--version`), headless (`-p`) and interactive (TUI on a pseudo-terminal) scenarios. Fresh processes, interleaved round-robin. Reports wall, CPU and peak memory. |
 | `long_session.py` | One interactive process, many prompts (default 40; 75 makes about 2.7M tokens). Reports time and CPU per prompt, memory and request size as the session grows. |
+| `long_answer.py` | The CPU it takes to stream Markdown answers of 5,000 to 60,000 characters in the TUI at the pace of a fast model: what a chunk costs must not grow with the length of the answer. |
 | `tmux_check.py` | Pi in a real tmux pane against a model streaming at human pace: time to interactive, keystroke latency, paste, streaming CPU and frames, resize, Escape to abort, idle CPU, memory. |
 | `ui_check.py` | Functional check of the TUI: trust prompt, commands, `/hotkeys`, `/session`, `!` bash, a model turn with tool calls, `/model`, `/quit`. Exit status 1 on any failure. |
 | `e2e_tools.py` | Drives every core Pi tool through a scripted model. The transcript and files must be byte-identical to a reference build's. |
 | `stress.py` | Load and failure: N Pi processes at once doing large tool work (whose tool results and requests must equal a reference build's), a 2 MB streamed answer, tool arguments a few bytes at a time, a connection cut mid-answer, HTTP 500/429, a stream that is not JSON, SIGINT/SIGTERM while a tool runs, stdout closed early, and a soak of many prompts in one RPC session whose memory floor must not rise. Exit status 1 on any failure. |
+| `e2e_screen.py` | A long answer with every kind of Markdown and code block streams into the TUI in tmux. The whole scrollback, text and colors, must be what the reference build shows. |
 | `plugin_bench.py` | A Pi extension compiled into the executable vs loaded at run time: launch time and the plugin's hot loop. |
 | `run-suite.sh` | Runs all of the benchmarks above into one results folder, then `report.py`: what the README and docs/BENCHMARKS.md show. |
 | `report.py` | Draws the charts (light and dark SVG) and prints the tables, from a results folder. |
