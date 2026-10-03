@@ -122,3 +122,26 @@ export function parseStreamingJson<T = Record<string, unknown>>(partialJson: str
 		}
 	}
 }
+
+const lengthsParsedWhileStreaming = new WeakMap<object, number>();
+
+/**
+ * Arguments of a tool call that are still streaming in, for showing them as they arrive: parsed again on every delta while
+ * shorter than 1 KB, and after that once they have grown by an eighth since `block`'s were last parsed; otherwise `current` is
+ * kept. Parsing all that
+ * has arrived on every delta made streaming a large argument, such as a whole file passed to a write tool, quadratic in its size.
+ * The final arguments are parsed with parseStreamingJson() once the tool call is complete.
+ */
+export function parseStreamingJsonWhileStreaming<T = Record<string, unknown>>(
+	block: object,
+	partialJson: string | undefined,
+	current: T | undefined,
+): T {
+	const length = partialJson?.length ?? 0;
+	const parsed = lengthsParsedWhileStreaming.get(block);
+	if (current !== undefined && parsed !== undefined && length - parsed < (parsed < 1024 ? 1 : parsed >> 3)) {
+		return current;
+	}
+	lengthsParsedWhileStreaming.set(block, length);
+	return parseStreamingJson<T>(partialJson);
+}
