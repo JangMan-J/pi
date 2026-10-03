@@ -105,6 +105,7 @@ export { type RenderLatexOptions, renderLatex } from "./latex.ts";
 // Native platform integration
 export { getNativeClipboard, type NativeClipboard } from "./native-platform.ts";
 export { oklabToOkhslLightness } from "./oklab.ts";
+export { invalidateRenderedMarkdown } from "./rendered-markdown.ts";
 // Input buffering for batch splitting
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations
