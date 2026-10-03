@@ -212,6 +212,15 @@ def main():
     a = ap.parse_args()
     builds = a.builds.split(",")
     a.images.mkdir(parents=True, exist_ok=True)
+    # The versions the results were taken with, where the run says (environment.txt): "bun: 1.4.2", "node: v26.10.0".
+    env = a.results / "environment.txt"
+    if env.exists():
+        for line in env.read_text().splitlines():
+            key, _, value = line.partition(": ")
+            if key == "bun" and value:
+                LABELS["bun"] = f"Bun {value.strip()}"
+            elif key == "node" and value:
+                LABELS["node"] = f"Node {value.strip().lstrip('v').split('.')[0]}"
 
     long_hero(a.results, a.images, builds)
     if not (a.results / "benchmark.jsonl").exists():
