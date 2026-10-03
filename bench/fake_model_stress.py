@@ -216,7 +216,7 @@ class Handler(BaseHTTPRequestHandler):
         sent = json.dumps(req, sort_keys=True, ensure_ascii=False)
         if cwd:
             sent = sent.replace(cwd, "<CWD>").replace(json.dumps(cwd)[1:-1], "<CWD>")
-        sent = re.sub(r"/tmp/[^\s\"')\]\\]+", "<TMP>", sent)
+        sent = re.sub(r"(?:/tmp|/private/var/folders|/var/folders)/[^\s\"')\]\\]+", "<TMP>", sent)  # (macOS: $TMPDIR)
         sent = re.sub(r"/[^\s\"']+/(README\.md|docs|examples|CHANGELOG\.md)\b", r"<PI>/\1", sent)  # Where Pi is installed.
         sent = re.sub(r"\d{4}-\d\d-\d\d[T ]?[\d:.]*Z?|\b\d{1,2}:\d\d(:\d\d)?( ?[AP]M)?|\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,? [A-Z][a-z]+ \d{1,2},? \d{4}", "<DATE>", sent)
         sent = re.sub(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", "<ID>", sent)  # The session's.
@@ -247,7 +247,7 @@ def read_conversation(api, req):
         text = content if isinstance(content, str) else json.dumps(content)
         text = text.replace(cwd, "<CWD>") if cwd else text
         # Where Pi saves the whole of a truncated output: a new temporary name every time.
-        results.append(re.sub(r"/tmp/[^\s\"')\]]+", "<TMP>", text))
+        results.append(re.sub(r"(?:/tmp|/private/var/folders|/var/folders)/[^\s\"')\]]+", "<TMP>", text))
 
     if api == "responses":
         calling = False

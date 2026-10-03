@@ -53,7 +53,7 @@ def screen(build, width, pace_ms):
         time.sleep(0.5)
         tmux("kill-server")
     # The working directory is in the footer, with a name of its own each time.
-    return done, re.sub(r"/tmp/pibolt-work-\w+", "<work>", text)
+    return done, re.sub(r"[^\s\x1b]*/pibolt-work-\w+", "<work>", text)  # (/tmp/... on Linux, /private/var/folders/... on macOS)
 
 
 def main():

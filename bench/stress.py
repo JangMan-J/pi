@@ -163,7 +163,7 @@ def signals(build, port, root):
         # Output closed early: `pi -p ... | head -c 200`.
         cwd = new_workdir(root, f"{build.name}-pipe")
         r = subprocess.run(f"{' '.join(build.argv)} -p --no-session {' '.join(MODEL_ARGS)} 'SCENARIO stream CWD {cwd}' 2>&1 | head -c 200 >/dev/null; echo ${{PIPESTATUS[0]}}",
-                           shell=True, executable="/bin/bash", cwd=cwd, env=pi_env(home, {"TERM": "dumb"}), capture_output=True, timeout=300)
+                           shell=True, executable="/bin/bash", cwd=cwd, env=pi_env(home, {"TERM": "dumb"}), stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
         code = int(r.stdout.strip() or 0)
         if code > 128 and code - 128 not in (signal.SIGPIPE,):
             fail(build.name, f"stdout closed early: killed by signal {code - 128}")

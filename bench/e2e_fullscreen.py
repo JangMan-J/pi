@@ -191,7 +191,7 @@ def screens(host, terminal_class, build, width, pace_ms, scroll):
         finally:
             terminal.close()
     # The working directory is in the footer, with a name of its own each time.
-    return [(name, re.sub(r"(?:/tmp|~)/pibolt-work-\w+", "<work>", text)) for name, text in shown]
+    return [(name, re.sub(r"(?:/tmp|~|/private/var/folders/[^\s\x1b]*|/var/folders/[^\s\x1b]*)/pibolt-work-\w+", "<work>", text)) for name, text in shown]
 
 
 def main():
