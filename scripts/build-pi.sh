@@ -8,7 +8,8 @@
 #                     JIT-compiled) or off (least memory; the default)
 #   --cpu native|baseline
 #                     native: code for this CPU's instruction set (AVX2 class); on a CPU without it the executable falls back to
-#                     bytecode. baseline: code for any x86-64 CPU Bun runs on (Nehalem). Default: native
+#                     bytecode. baseline: code for any x86-64 CPU Bun runs on (Nehalem). Default: native. (x86-64 only: on
+#                     ARM64 the code is for every CPU with what Apple's M1 has.)
 #   --profile DIR     the training profile (bytecode order + regular expressions). Default: profiles/pi-<version> if there is one
 #   --plugins FILE    compile Pi extensions into the executable: FILE is a manifest module whose default export is the list of
 #                     extension factories (see docs/PLUGINS.md and examples/plugins/plugins.ts). Its folder is built along with it.
@@ -40,13 +41,15 @@ while [ $# -gt 0 ]; do
 done
 [ "$JIT" = on ] || [ "$JIT" = off ] || die "--jit takes on or off"
 [ "$CPU" = native ] || [ "$CPU" = baseline ] || die "--cpu takes native or baseline"
+# (On ARM64 there is one build: every Apple silicon CPU has what the compiler uses, and the executable checks it at launch.)
+[ "$CPU" = native ] || [ "$PIBOLT_ARCH" = x64 ] || die "--cpu baseline is for x86-64 only"
 
 AGENT="$(pi_agent_dir "$PI_DIR")"
 VERSION="$(pi_version "$AGENT")"
 PIBOLT_VERSION="$(cat "$PIBOLT_ROOT/VERSION")"
-CPU_VARIANT=x64; [ "$CPU" = baseline ] && CPU_VARIANT=x64-baseline; [ "$JIT" = on ] && CPU_VARIANT=x64-jit
-OUT="$(realpath -m "${OUT:-$PIBOLT_ROOT/out/pi-bolt}")"
-PROFILE="$(realpath -m "${PROFILE:-$PIBOLT_ROOT/profiles/pi-$VERSION}")"
+CPU_VARIANT=$PIBOLT_ARCH; [ "$CPU" = baseline ] && CPU_VARIANT=$PIBOLT_ARCH-baseline; [ "$JIT" = on ] && CPU_VARIANT=$PIBOLT_ARCH-jit
+OUT="$(abspath "${OUT:-$PIBOLT_ROOT/out/pi-bolt}")"
+PROFILE="$(abspath "${PROFILE:-$PIBOLT_ROOT/profiles/pi-$VERSION}")"
 
 ENTRY=""
 if [ -n "$PLUGINS" ]; then
@@ -65,14 +68,14 @@ stage_assets() {
 	local dir="$1" root
 	root="$(realpath "$PI_DIR")"
 	cp "$AGENT/package.json" "$AGENT/README.md" "$AGENT/CHANGELOG.md" "$dir/"
-	mkdir -p "$dir/theme" "$dir/assets" "$dir/export-html/vendor" "$dir/native/linux/prebuilds"
+	mkdir -p "$dir/theme" "$dir/assets" "$dir/export-html/vendor" "$dir/native/$PIBOLT_OS/prebuilds"
 	cp "$AGENT"/src/modes/interactive/theme/*.json "$dir/theme/"
 	cp "$AGENT"/src/modes/interactive/assets/* "$dir/assets/"
 	cp "$AGENT/src/core/export-html/template.html" "$dir/export-html/"
 	[ -f "$AGENT/src/core/export-html/template.css" ] && cp "$AGENT/src/core/export-html/template.css" "$AGENT/src/core/export-html/template.js" "$dir/export-html/"
 	cp "$AGENT"/src/core/export-html/vendor/*.js "$dir/export-html/vendor/" 2>/dev/null || true
 	cp "$root/node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm" "$dir/"
-	cp -R "$root/packages/tui/native/linux/prebuilds/linux-x64" "$dir/native/linux/prebuilds/"
+	cp -R "$root/packages/tui/native/$PIBOLT_OS/prebuilds/$PIBOLT_PLATFORM" "$dir/native/$PIBOLT_OS/prebuilds/"
 }
 
 rm -rf "$OUT" && mkdir -p "$OUT"
@@ -80,7 +83,7 @@ if [ -n "$STABLE" ]; then
 	BUN="${PIBOLT_STABLE_BUN:-bun}"
 	need "$BUN"
 	log "Pi $VERSION with stock Bun $("$BUN" --version) (bytecode, no AOT) -> $OUT"
-	(cd "$AGENT" && "$BUN" build --compile --no-compile-autoload-bunfig --target=bun-linux-x64 --bytecode --format=esm \
+	(cd "$AGENT" && "$BUN" build --compile --no-compile-autoload-bunfig --target="bun-$PIBOLT_PLATFORM" --bytecode --format=esm \
 		"${ENTRIES[@]}" --outfile "$OUT/pi" >/dev/null)
 	stage_assets "$OUT"
 	log "done: $OUT/pi"
@@ -115,12 +118,12 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 	export BUN_JSC_useImmutableIntrinsics="${BUN_JSC_useImmutableIntrinsics:-1}"
 	[ -n "$REGEXPS" ] && export BUN_JSC_aotRegExpsPath="$REGEXPS"
 	# What `pi --version` and `pi update` know themselves by (packages/coding-agent/src/pi-bolt.ts).
-	"$BUN" build --compile --no-compile-autoload-bunfig --target=bun-linux-x64 --bytecode --format=esm "${ORDER_ARGS[@]}" \
+	"$BUN" build --compile --no-compile-autoload-bunfig --target="bun-$PIBOLT_PLATFORM" --bytecode --format=esm "${ORDER_ARGS[@]}" \
 		--define "PIBOLT_BUILD=\"$PIBOLT_VERSION $CPU_VARIANT jit-$JIT\"" \
 		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | tee "${PIBOLT_BUILD_LOG:-/dev/null}" | grep -v "^AOT: " | tail -3
 )
 stage_assets "$OUT"
-printf 'Pi-Bolt %s (Pi %s), linux-%s, JIT %s, built %s\n' "$PIBOLT_VERSION" "$VERSION" "$CPU_VARIANT" "$JIT" "$(date -u +%Y-%m-%d)" >"$OUT/pi-bolt.txt"
+printf 'Pi-Bolt %s (Pi %s), %s-%s, JIT %s, built %s\n' "$PIBOLT_VERSION" "$VERSION" "$PIBOLT_OS" "$CPU_VARIANT" "$JIT" "$(date -u +%Y-%m-%d)" >"$OUT/pi-bolt.txt"
 
 check=$(BUN_STATIC_HEAP_VERBOSE=1 "$OUT/pi" --version 2>&1)
 grep -q "image registered: true" <<<"$check" || die "the executable does not use its compiled code:"$'\n'"$check"

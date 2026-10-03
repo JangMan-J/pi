@@ -14,6 +14,26 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"; }
 
+# The platform, as builds and release files are named: linux-x64, darwin-arm64.
+case "$(uname -s)" in
+Linux) PIBOLT_OS=linux ;;
+Darwin) PIBOLT_OS=darwin ;;
+*) PIBOLT_OS="$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
+esac
+case "$(uname -m)" in
+x86_64 | amd64) PIBOLT_ARCH=x64 ;;
+arm64 | aarch64) PIBOLT_ARCH=arm64 ;;
+*) PIBOLT_ARCH="$(uname -m)" ;;
+esac
+# shellcheck disable=SC2034 # for the scripts that source this
+PIBOLT_PLATFORM="$PIBOLT_OS-$PIBOLT_ARCH"
+
+# abspath PATH: PATH made absolute with symbolic links resolved, whether or not it exists (GNU realpath -m; macOS has no -m).
+abspath() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+
+# sha256 [ARGS]: sha256sum, or shasum -a 256 where there is none (older macOS). Same output and -c.
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+
 # source_field <component> <field>: a value from sources.json.
 source_field() {
 	python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]].get(sys.argv[3], ""))' "$PIBOLT_ROOT/sources.json" "$1" "$2"
