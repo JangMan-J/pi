@@ -6,6 +6,9 @@
 # (scripts/build-pi.sh --plugins examples/plugins/plugins.ts --out out/pi-bolt-plugins, and --jit on --out out/pi-bolt-plugins-jit),
 # the stock-Bun build (scripts/build-pi.sh --stable --out out/pi-stable) and, for Node, the Pi of this repository, built
 # (scripts/prepare-pi.sh).
+# Environment: PIBOLT_PI (the Pi tree Node runs; default this repository), PIBOLT_STABLE_PI (the stock-Bun executable; default
+# out/pi-stable/pi). Pi-Bolt's tree has changes to Pi of its own: to compare with Pi as released, point both at a build of the
+# upstream tag (scripts/build-pi.sh --stable --pi <Pi checkout> --out out/pi-stable-upstream).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$(realpath -m "${1:?results directory}")"; shift
@@ -13,6 +16,7 @@ CPUS=40-47
 [ "${1:-}" = --cpus ] && CPUS="$2"
 PI="${PIBOLT_PI:-$ROOT}"
 NODE="node $PI/packages/coding-agent/dist/bundle/cli.js"
+STABLE="${PIBOLT_STABLE_PI:-out/pi-stable/pi}"
 mkdir -p "$OUT"
 cd "$ROOT"
 {
@@ -25,15 +29,15 @@ cd "$ROOT"
 } >"$OUT/environment.txt"
 
 python3 bench/benchmark.py --runs 21 --warmup 3 --cpus "$CPUS" --out "$OUT/benchmark.jsonl" \
-	--build pi-bolt=out/pi-bolt/pi --build bun=out/pi-stable/pi --build "node=$NODE" --build pi-bolt-jit=out/pi-bolt-jit/pi --baseline bun
+	--build pi-bolt=out/pi-bolt/pi --build bun="$STABLE" --build "node=$NODE" --build pi-bolt-jit=out/pi-bolt-jit/pi --baseline bun
 for _ in 1 2 3; do
 	python3 bench/long_session.py --prompts 75 --every 25 --cpus "$CPUS" --out "$OUT/long.jsonl" \
-		--build pi-bolt=out/pi-bolt/pi --build bun=out/pi-stable/pi --build "node=$NODE"
+		--build pi-bolt=out/pi-bolt/pi --build bun="$STABLE" --build "node=$NODE"
 done
 python3 bench/tmux_check.py --prompts 4 --rounds 5 --cpus "$CPUS" --out "$OUT/tmux.jsonl" \
-	--build pi-bolt=out/pi-bolt/pi --build bun=out/pi-stable/pi --build "node=$NODE" >/dev/null
+	--build pi-bolt=out/pi-bolt/pi --build bun="$STABLE" --build "node=$NODE" >/dev/null
 python3 bench/plugin_bench.py --runs 5 --cpus "$CPUS" --out "$OUT/plugins.jsonl" \
 	--compiled pi-bolt=out/pi-bolt-plugins/pi --compiled pi-bolt-jit=out/pi-bolt-plugins-jit/pi \
-	--runtime pi-bolt=out/pi-bolt/pi --runtime pi-bolt-jit=out/pi-bolt-jit/pi --runtime bun=out/pi-stable/pi \
-	--none pi-bolt=out/pi-bolt/pi --none bun=out/pi-stable/pi
+	--runtime pi-bolt=out/pi-bolt/pi --runtime pi-bolt-jit=out/pi-bolt-jit/pi --runtime bun="$STABLE" \
+	--none pi-bolt=out/pi-bolt/pi --none bun="$STABLE"
 python3 bench/report.py "$OUT" --images docs/images --builds pi-bolt,bun,node | tee "$OUT/summary.md"

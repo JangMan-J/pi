@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import MODEL_ARGS, Tty, done, fake_model, parse_builds, pi_env, pi_home
+from harness import DONE, MODEL_ARGS, Tty, fake_model, parse_builds, pi_env, pi_home
 
 
 def run(build, project):
@@ -45,7 +45,7 @@ def run(build, project):
         step("! bash command", b"!echo pi-bolt-ok-$((6*7))\r", ["pi-bolt-ok-42"], 15)
         step("keystroke echo", b"zqxjkvbw", ["zqxjkvbw"], 5, 0.05)
         tty.send(b"\x15"); tty.settle(0.2, time.perf_counter() + 2)
-        step("model turn with 4 tool calls", b"Read the four fixture files\r", [done(1)], 30)
+        step("model turn with 4 tool calls", b"Read the four fixture files\r", [DONE + " (prompt "], 30)
         step("/model selector opens", b"/model\r", ["fake-model"], 10)
         tty.send(b"\x1b"); tty.settle(0.3, time.perf_counter() + 2)
         status, _ = tty.quit()
