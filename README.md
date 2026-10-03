@@ -117,6 +117,22 @@ against a local model server that streams a scripted conversation. The figures t
 network or a model. Bun 1.4.2 runs Pi built with Pi's own `bun build --compile` command plus `--bytecode`, which makes stock Bun
 faster. Node 22 runs Pi's npm package.
 
+### Long answers and large files
+
+|  | Pi-Bolt | Bun 1.4.2 | Node 22 |
+|---|---:|---:|---:|
+| Streaming a 20,000-character answer: CPU | **1.2 s** | 10.3 s | 8.4 s |
+| Streaming a 60,000-character answer: CPU | **4.8 s** | 44.3 s | 43.7 s |
+| Share of a core while it streams | **10%** | 88% | 87% |
+| Writing a 50 KB file through a tool call | **0.3 s** | 2.0 s | 2.9 s |
+| Writing a 200 KB file through a tool call | **0.9 s** | 29.7 s | 43.5 s |
+
+Pi renders an answer again each time a few more words arrive, and re-reads a tool call's arguments each time a few more
+characters arrive. On Pi as released the cost of each grows with what has arrived so far, so a long answer keeps a core busy
+and a large file takes half a minute before the tool runs. Pi-Bolt renders again only the end of an answer, and re-reads
+arguments only as they grow by an eighth. Answers stream at
+1,200 characters a second, tool-call arguments 16 characters at a time; Bun and Node run Pi 1.0.0 as released.
+
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has every figure, the method, and the raw data. It also answers
 [why run-time plugins are slow on the default build](docs/BENCHMARKS.md#why-is-a-run-time-plugins-loop-1080-ms-on-pi-bolt-and-38-ms-on-bun)
 and [how the streaming CPU gap was closed](docs/BENCHMARKS.md#how-was-the-streaming-gap-closed). To reproduce everything, run

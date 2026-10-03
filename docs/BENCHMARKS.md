@@ -7,6 +7,7 @@ Pi-Bolt compared with the same Pi release on stock Bun and on Node.js. Every fig
 - [Results](#results)
 - [Setup and method](#setup-and-method)
 - [In a real terminal (tmux)](#in-a-real-terminal-tmux)
+- [Long answers and large files](#long-answers-and-large-files)
 - [Plugins](#plugins)
 - [Questions](#questions)
   - [Why is a run-time plugin's loop 1,080 ms on Pi-Bolt and 38 ms on Bun?](#why-is-a-run-time-plugins-loop-1080-ms-on-pi-bolt-and-38-ms-on-bun)
@@ -99,6 +100,32 @@ Medians of 7 rounds of 4 prompts each, taken while the machine was quiet (load 1
 [`load-during-tmux-and-plugins.txt`](../bench/results/2026-10-02-pi-1.0.0/load-during-tmux-and-plugins.txt)). Keystroke
 latency is the terminal's own round trip and is the same everywhere. Pi-Bolt uses 9% less CPU than Bun's warmed-up JIT while
 replies stream, and less than half of Bun's private memory. Node uses the least CPU at the idle prompt.
+
+## Long answers and large files
+
+| | Pi-Bolt | Bun 1.4.2 | Node 22 |
+|---|---:|---:|---:|
+| Streaming a 20,000-character answer: CPU | **1.2 s** | 10.3 s | 8.4 s |
+| Streaming a 60,000-character answer: CPU | **4.8 s** | 44.3 s | 43.7 s |
+| Share of a core while it streams (60,000 characters) | **10%** | 88% | 87% |
+| Writing a 50 KB file through a tool call | **0.3 s** | 2.0 s | 2.9 s |
+| Writing a 200 KB file through a tool call | **0.9 s** | 29.7 s | 43.5 s |
+| Writing a 200 KB file through a tool call: CPU | **0.6 s** | 71.6 s | 44.5 s |
+
+`bench/long_answer.py` streams Markdown answers (headings, lists, code blocks in several languages, tables) into the TUI at 1,200
+characters a second, 24 at a time, and measures the CPU Pi uses until the answer has been drawn. `bench/large_write.py` has the
+model write a file of TypeScript through the `write` tool, its arguments streaming 16 characters at a time (about one token),
+and measures `pi -p` from start to exit. Means of two runs, which differed by at most 5%; pinned to 8 cores. Bun and Node run
+Pi 1.0.0 as released (`v1.0.0`): Bun built with `scripts/build-pi.sh --stable --pi <Pi 1.0.0>`, Node from Pi's npm bundle.
+Raw data: [`bench/results/2026-10-03-long-answers-large-writes`](../bench/results/2026-10-03-long-answers-large-writes).
+
+Both come from Pi's own code, not from the runtime. Pi draws a message again each time a few more words arrive, with a new
+component that lexes the whole Markdown text, renders and wraps every block and highlights every code block, so the cost of each
+redraw grows with the length of the answer. Pi-Bolt keeps what it lexed and rendered, and does again only the last two blocks
+(where a block ends depends on the line after it); highlighted code is kept by language and text. What is drawn is the same, line
+for line and color for color (`bench/e2e_screen.py`). Pi also parses all of a tool call's arguments each time a few more
+characters arrive; Pi-Bolt parses them again only once they have grown by an eighth while they stream, and in full when the call
+is complete.
 
 ## Plugins
 
@@ -201,6 +228,8 @@ scripts/build-pi.sh --stable --out out/pi-stable
 scripts/build-pi.sh --plugins examples/plugins/plugins.ts --out out/pi-bolt-plugins
 scripts/build-pi.sh --plugins examples/plugins/plugins.ts --jit on --out out/pi-bolt-plugins-jit
 bench/run-suite.sh bench/results/my-run --cpus 8-15   # about an hour; then charts and tables from bench/report.py
+python3 bench/long_answer.py --cpus 8-15 --build pi-bolt=out/pi-bolt/pi --build bun=out/pi-stable/pi --sizes 20000,60000
+python3 bench/large_write.py --cpus 8-15 --build pi-bolt=out/pi-bolt/pi --build bun=out/pi-stable/pi --sizes 50,200
 ```
 
 Each tool also runs on its own, with any builds given as `--build name=command`. See [`bench/README.md`](../bench/README.md).
