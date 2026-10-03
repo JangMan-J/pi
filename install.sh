@@ -373,7 +373,7 @@ plan_download() {
 		return
 	fi
 	ext=tar.gz
-	if command -v xz >/dev/null 2>&1 && grep -q " $NAME.tar.xz\$" "$TMP/SHA256SUMS"; then ext=tar.xz; fi
+	if can_unxz && grep -q " $NAME.tar.xz\$" "$TMP/SHA256SUMS"; then ext=tar.xz; fi
 	where=""
 	if [ "$ext" = tar.xz ] && [ "${PIBOLT_SOURCE:-auto}" != github ] && [ -z "${PIBOLT_DOWNLOAD_BASE:-}" ]; then
 		case "$SHOWN_VERSION" in
@@ -387,6 +387,9 @@ plan_download() {
 	[ -n "$where" ] || where="github $(probe "$BASE/$NAME.$ext")"
 	printf '%s\n' "${where%% *} $ext ${where#* }" >"$TMP/plan.part" && mv "$TMP/plan.part" "$TMP/plan"
 }
+
+# Whether a .tar.xz can be unpacked: with xz, or with a tar that reads it itself (bsdtar with liblzma: macOS's tar).
+can_unxz() { command -v xz >/dev/null 2>&1 || tar --version 2>/dev/null | grep -q liblzma; }
 
 # The npm package that holds this release's .tar.xz.
 npm_url() { printf '%s/%s/-/%s-%s.tgz' "$NPM_REGISTRY" "$NAME" "$NAME" "$SHOWN_VERSION"; }
@@ -456,6 +459,12 @@ verify_signature() {
 		return 0
 	fi
 	printf '%s\n' "$RELEASE_KEY" >"$TMP/release.pub"
+	# An openssl that cannot read Ed25519 keys (LibreSSL, which macOS has as /usr/bin/openssl) cannot check it: then the checksums
+	# alone are, as without openssl, and that is said.
+	if ! openssl pkey -pubin -in "$TMP/release.pub" -noout >/dev/null 2>&1; then
+		NOVERIFY=1
+		return 0
+	fi
 	openssl pkeyutl -verify -pubin -inkey "$TMP/release.pub" -rawin -in "$TMP/SHA256SUMS" -sigfile "$TMP/SHA256SUMS.sig" >/dev/null 2>&1 ||
 		fail "the release's signature does not verify: the download is not Pi-Bolt's. Nothing was installed."
 	SIGNED=1
@@ -502,7 +511,7 @@ download() {
 }
 
 install_release() {
-	SIGNED="" UNSIGNED=""
+	SIGNED="" UNSIGNED="" NOVERIFY=""
 	TMP="$(mktemp -d)"
 	PIDS=""
 	trap 'kill $PIDS 2>/dev/null; rm -rf "$TMP"; finish_progress; exit 130' INT TERM
@@ -552,7 +561,11 @@ install_release() {
 		fail "checksum mismatch: the download is corrupt or incomplete"
 	verify_signature
 	if [ "$ext" = tar.xz ]; then
-		(xz -T0 -dc "$TMP/$NAME.$ext" 2>/dev/null || xz -dc "$TMP/$NAME.$ext") | tar -C "$TMP" -xf - &
+		if command -v xz >/dev/null 2>&1; then
+			(xz -T0 -dc "$TMP/$NAME.$ext" 2>/dev/null || xz -dc "$TMP/$NAME.$ext") | tar -C "$TMP" -xf - &
+		else
+			tar -C "$TMP" -xf "$TMP/$NAME.$ext" &
+		fi
 	else
 		tar -C "$TMP" -xzf "$TMP/$NAME.$ext" &
 	fi
@@ -575,6 +588,7 @@ install_release() {
 	finish_progress
 	printf '  %s%s%s install complete %s(%s, %s MB from %s%s)%s\n' "$green" "$CHECK" "$reset" "$dim" "$PLATFORM-$VARIANT" "$(mb "${total:-0}")" "$FROM" "${SIGNED:+, signature verified}" "$reset"
 	[ -z "$UNSIGNED" ] || printf '  %snote: this release is not signed (it is from before Pi-Bolt signed releases); its checksum was verified%s\n' "$dim" "$reset"
+	[ -z "$NOVERIFY" ] || printf '  %snote: this openssl cannot check the release'"'"'s signature (install OpenSSL 3 to have it checked); its checksum was verified%s\n' "$dim" "$reset"
 }
 
 uninstall() {
