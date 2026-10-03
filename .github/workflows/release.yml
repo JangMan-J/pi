@@ -111,6 +111,13 @@ jobs:
           git config user.email "323596076+opensec-intelligence@users.noreply.github.com"
           scripts/publish-installer.sh origin
 
+      - name: npm builds
+        # pi-bolt-linux-{x64,x64-baseline,x64-jit}: the release's .tar.xz files, which the installer downloads from npm.
+        run: |
+          scripts/publish-npm-builds.sh "dist/$(cat VERSION)" -- --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: npm
         run: |
           cd npm && npm publish --access public --provenance

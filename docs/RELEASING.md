@@ -31,7 +31,7 @@ GitHub Actions must be allowed for the repository in the organization's settings
 | Secret | What |
 |---|---|
 | `PIBOLT_SIGNING_KEY` | The Ed25519 private key that signs `SHA256SUMS` (see [Signing](#signing)) |
-| `NPM_TOKEN` | A granular npm access token with publish rights on `pi-bolt`, so `npm publish --provenance` can run |
+| `NPM_TOKEN` | A granular npm access token with publish rights on `pi-bolt`, `pi-bolt-linux-x64`, `pi-bolt-linux-x64-baseline` and `pi-bolt-linux-x64-jit`, so `npm publish --provenance` can run |
 
 ## A release, step by step
 
@@ -43,8 +43,12 @@ GitHub Actions must be allowed for the repository in the organization's settings
    the Actions tab with the tag as input: every step is safe to repeat.
 
 To release by hand instead, run the same steps as the workflow: `scripts/package-release.sh`, `tests/aot/run.sh`, the
-end-to-end checks, `scripts/sign-release.sh --key ... dist/X.Y.Z`, `gh release create`, `scripts/publish-installer.sh` and
-`npm publish --access public` in `npm/`.
+end-to-end checks, `scripts/sign-release.sh --key ... dist/X.Y.Z`, `gh release create`, `scripts/publish-installer.sh`,
+`scripts/publish-npm-builds.sh dist/X.Y.Z` and `npm publish --access public` in `npm/`.
+
+The installer downloads the executable from npm (`pi-bolt-linux-<variant>@X.Y.Z`, the release's `.tar.xz` in a package), a
+CDN that is fast where GitHub's release downloads are slow, and from GitHub if npm does not have it or the download fails.
+The checksums always come from the GitHub release. Publish the npm builds before announcing a release.
 
 ## A new Pi version
 

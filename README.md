@@ -50,7 +50,8 @@ curl -fsSL https://pi-bolt.opensec.in/install.sh | sh
 The installer:
 
 - picks the build for your CPU;
-- checks its SHA-256 checksum;
+- downloads it from the npm registry's CDN, or from GitHub if that fails (`PIBOLT_SOURCE=github` to use GitHub only);
+- checks its SHA-256 checksum against the GitHub release;
 - installs it to `~/.pi-bolt`;
 - links the `pi-bolt` command into `~/.local/bin`.
 
