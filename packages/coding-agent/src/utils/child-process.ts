@@ -10,6 +10,8 @@ import {
 	type StdioNull,
 	type StdioPipe,
 } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import type { Readable } from "node:stream";
 import crossSpawn from "cross-spawn";
 
@@ -33,6 +35,26 @@ export function spawnProcessSync(
 	return process.platform === "win32"
 		? crossSpawn.sync(command, args, options)
 		: nodeSpawnSync(command, args, options);
+}
+
+/** The first executable file named `command` in the PATH directories, or undefined. Does not run it. */
+export function findExecutableOnPath(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const pathValue = env.PATH ?? env.Path ?? "";
+	const extensions =
+		process.platform === "win32" ? ["", ...(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)] : [""];
+	for (const dir of pathValue.split(delimiter)) {
+		if (!dir) continue;
+		for (const extension of extensions) {
+			const candidate = join(dir, command + extension);
+			try {
+				accessSync(candidate, constants.X_OK);
+				if (statSync(candidate).isFile()) return candidate;
+			} catch {
+				// Not here; keep looking.
+			}
+		}
+	}
+	return undefined;
 }
 
 /**

@@ -37,8 +37,8 @@ import type { Readable } from "node:stream";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
-import { CONFIG_DIR_NAME } from "../config.ts";
-import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
+import { CONFIG_DIR_NAME, isBunBinary } from "../config.ts";
+import { findExecutableOnPath, spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
@@ -46,6 +46,15 @@ import { isStdoutTakenOver } from "./output-guard.ts";
 import { type PiManifest, readPiManifest } from "./pi-manifest.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
+
+/** How package installs run: argv-style, plus environment for the package manager process. */
+interface NpmCommand {
+	command: string;
+	args: string[];
+	env?: Record<string, string>;
+	/** The bun package manager built into a compiled Bun executable (process.execPath with BUN_BE_BUN=1). */
+	builtin?: boolean;
+}
 
 const NETWORK_TIMEOUT_MS = 10000;
 const UPDATE_CHECK_CONCURRENCY = 4;
@@ -816,6 +825,7 @@ export class DefaultPackageManager implements PackageManager {
 	private builtinExtensions: string[];
 	private globalNpmRoot: string | undefined;
 	private globalNpmRootCommandKey: string | undefined;
+	private npmOnPath: boolean | undefined;
 	private progressCallback: ProgressCallback | undefined;
 
 	constructor(options: PackageManagerOptions) {
@@ -1186,7 +1196,11 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		try {
-			const targetVersion = await this.getLatestNpmVersion(source.version ? source.spec : source.name, source.range);
+			const targetVersion = await this.getLatestNpmVersion(
+				source.version ? source.spec : source.name,
+				source.range,
+				scope,
+			);
 			return gt(targetVersion, installedVersion);
 		} catch {
 			// Preserve existing update behavior when version lookup fails.
@@ -1247,7 +1261,7 @@ export class DefaultPackageManager implements PackageManager {
 					if (!existsSync(installedPath)) {
 						return undefined;
 					}
-					const hasUpdate = await this.npmHasAvailableUpdate(parsed, installedPath);
+					const hasUpdate = await this.npmHasAvailableUpdate(parsed, installedPath, entry.scope);
 					if (!hasUpdate) {
 						return undefined;
 					}
@@ -1512,7 +1526,11 @@ export class DefaultPackageManager implements PackageManager {
 		return source.range ? satisfies(installedVersion, source.range) : true;
 	}
 
-	private async npmHasAvailableUpdate(source: NpmSource, installedPath: string): Promise<boolean> {
+	private async npmHasAvailableUpdate(
+		source: NpmSource,
+		installedPath: string,
+		scope: InstalledSourceScope,
+	): Promise<boolean> {
 		if (isOfflineModeEnabled()) {
 			return false;
 		}
@@ -1523,7 +1541,11 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		try {
-			const targetVersion = await this.getLatestNpmVersion(source.version ? source.spec : source.name, source.range);
+			const targetVersion = await this.getLatestNpmVersion(
+				source.version ? source.spec : source.name,
+				source.range,
+				scope,
+			);
 			return gt(targetVersion, installedVersion);
 		} catch {
 			return false;
@@ -1542,13 +1564,24 @@ export class DefaultPackageManager implements PackageManager {
 		}
 	}
 
-	private async getLatestNpmVersion(packageSpec: string, range?: string): Promise<string> {
+	private async getLatestNpmVersion(
+		packageSpec: string,
+		range?: string,
+		scope: InstalledSourceScope = "user",
+	): Promise<string> {
 		const npmCommand = this.getNpmCommand();
-		const stdout = await this.runCommandCapture(
-			npmCommand.command,
-			[...npmCommand.args, "view", packageSpec, "version", "--json"],
-			{ cwd: this.cwd, timeoutMs: NETWORK_TIMEOUT_MS },
-		);
+		let viewArgs = ["view", packageSpec, "version", "--json"];
+		if (this.getPackageManagerName() === "bun") {
+			// bun has no `view` command; `bun pm view` needs a package.json in its working directory.
+			const installRoot = this.getNpmInstallRoot(scope, false);
+			this.ensureNpmProject(installRoot);
+			viewArgs = ["pm", ...viewArgs, "--cwd", installRoot];
+		}
+		const stdout = await this.runCommandCapture(npmCommand.command, [...npmCommand.args, ...viewArgs], {
+			cwd: this.cwd,
+			timeoutMs: NETWORK_TIMEOUT_MS,
+			...(npmCommand.env ? { env: npmCommand.env } : {}),
+		});
 		const raw = stdout.trim();
 		if (!raw) throw new Error("Empty response from npm view");
 		const parsed = JSON.parse(raw) as unknown;
@@ -1778,9 +1811,14 @@ export class DefaultPackageManager implements PackageManager {
 		}
 	}
 
-	private getNpmCommand(): { command: string; args: string[] } {
+	private getNpmCommand(): NpmCommand {
 		const configuredCommand = this.settingsManager.getNpmCommand();
 		if (!configuredCommand || configuredCommand.length === 0) {
+			// A compiled Bun executable is the bun CLI when started with BUN_BE_BUN=1, so it always carries a package
+			// manager. Use it where npm is not installed; npm on PATH keeps lifecycle scripts, npm config and lockfiles.
+			if (isBunBinary && !this.isNpmOnPath()) {
+				return { command: process.execPath, args: [], env: { BUN_BE_BUN: "1" }, builtin: true };
+			}
 			return { command: "npm", args: [] };
 		}
 		const [command, ...args] = configuredCommand;
@@ -1790,8 +1828,14 @@ export class DefaultPackageManager implements PackageManager {
 		return { command, args };
 	}
 
+	private isNpmOnPath(): boolean {
+		this.npmOnPath ??= findExecutableOnPath("npm", getEnv()) !== undefined;
+		return this.npmOnPath;
+	}
+
 	private getPackageManagerName(): string {
 		const npmCommand = this.getNpmCommand();
+		if (npmCommand.builtin) return "bun";
 		const normalizeCommandName = (command: string): string => basename(command).replace(/\.(cmd|exe)$/i, "");
 		const supportedPackageManagers = new Set(["npm", "pnpm", "bun"]);
 		const directCommand = normalizeCommandName(npmCommand.command);
@@ -1815,7 +1859,11 @@ export class DefaultPackageManager implements PackageManager {
 
 	private async runNpmCommand(args: string[], options?: { cwd?: string }): Promise<void> {
 		const npmCommand = this.getNpmCommand();
-		await this.runCommand(npmCommand.command, [...npmCommand.args, ...args], options);
+		await this.runCommand(
+			npmCommand.command,
+			[...npmCommand.args, ...args],
+			npmCommand.env ? { ...options, env: npmCommand.env } : options,
+		);
 	}
 
 	private getGitDependencyInstallArgs(): string[] {
@@ -1839,7 +1887,10 @@ export class DefaultPackageManager implements PackageManager {
 
 	private runNpmCommandSync(args: string[]): string {
 		const npmCommand = this.getNpmCommand();
-		return this.runCommandSync(npmCommand.command, [...npmCommand.args, ...args]);
+		const commandArgs = [...npmCommand.args, ...args];
+		return npmCommand.env
+			? this.runCommandSync(npmCommand.command, commandArgs, npmCommand.env)
+			: this.runCommandSync(npmCommand.command, commandArgs);
 	}
 
 	private getNpmInstallArgs(specs: string[], installRoot: string): string[] {
@@ -1878,7 +1929,8 @@ export class DefaultPackageManager implements PackageManager {
 		}
 		const packageManagerName = this.getPackageManagerName();
 		if (packageManagerName === "bun") {
-			await this.runNpmCommand(["uninstall", source.name, "--cwd", installRoot]);
+			// bun reinstalls the remaining packages on uninstall, peers included unless told otherwise.
+			await this.runNpmCommand(["uninstall", source.name, "--cwd", installRoot, "--omit=peer"]);
 			return;
 		}
 		const args = ["uninstall", source.name, "--prefix", installRoot];
@@ -2135,6 +2187,8 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private getLegacyGlobalNpmInstallPath(source: NpmSource): string | undefined {
+		// Legacy global installs were made with npm; the built-in bun's global folder never held Pi packages.
+		if (this.getNpmCommand().builtin) return undefined;
 		try {
 			return this.getPnpmGlobalPackagePath(source.name) ?? join(this.getGlobalNpmRoot(), source.name);
 		} catch {
@@ -2662,8 +2716,13 @@ export class DefaultPackageManager implements PackageManager {
 		};
 	}
 
-	private spawnCommand(command: string, args: string[], options?: { cwd?: string }): ChildProcess {
-		const env = getEnv();
+	private spawnCommand(
+		command: string,
+		args: string[],
+		options?: { cwd?: string; env?: Record<string, string> },
+	): ChildProcess {
+		const baseEnv = getEnv();
+		const env = options?.env ? { ...baseEnv, ...options.env } : baseEnv;
 		return spawnProcess(command, args, {
 			cwd: options?.cwd,
 			stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
@@ -2729,7 +2788,11 @@ export class DefaultPackageManager implements PackageManager {
 		});
 	}
 
-	private runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void> {
+	private runCommand(
+		command: string,
+		args: string[],
+		options?: { cwd?: string; env?: Record<string, string> },
+	): Promise<void> {
 		return new Promise((resolvePromise, reject) => {
 			const child = this.spawnCommand(command, args, options);
 			child.on("error", reject);
@@ -2743,8 +2806,9 @@ export class DefaultPackageManager implements PackageManager {
 		});
 	}
 
-	private runCommandSync(command: string, args: string[]): string {
-		const env = getEnv();
+	private runCommandSync(command: string, args: string[], extraEnv?: Record<string, string>): string {
+		const baseEnv = getEnv();
+		const env = extraEnv ? { ...baseEnv, ...extraEnv } : baseEnv;
 		const result = spawnProcessSync(command, args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			encoding: "utf-8",
