@@ -102,9 +102,13 @@ def fake_model(pace_ms: float = 0, script: str = "fake_model.py", log_sizes: str
 def pi_home(port: int):
     """A Pi agent directory with only the fake model configured."""
     home = Path(tempfile.mkdtemp(prefix="pibolt-home-"))
-    (home / "models.json").write_text(json.dumps({"providers": {"fake": {
-        "baseUrl": f"http://127.0.0.1:{port}/v1", "api": "openai-completions", "apiKey": "fake",
-        "models": [{"id": "fake-model", "contextWindow": 200000, "maxTokens": 8192}]}}}, indent=2))
+    models = [{"id": "fake-model", "contextWindow": 200000, "maxTokens": 8192}]
+    # (The other two speak the other APIs: fake_model_stress.py answers all three.)
+    (home / "models.json").write_text(json.dumps({"providers": {
+        "fake": {"baseUrl": f"http://127.0.0.1:{port}/v1", "api": "openai-completions", "apiKey": "fake", "models": models},
+        "fake-anthropic": {"baseUrl": f"http://127.0.0.1:{port}", "api": "anthropic-messages", "apiKey": "fake", "models": models},
+        "fake-responses": {"baseUrl": f"http://127.0.0.1:{port}/v1", "api": "openai-responses", "apiKey": "fake", "models": models},
+    }}, indent=2))
     # A changelog seen far in the future: no "what's new" screen on start.
     (home / "settings.json").write_text(json.dumps({"lastChangelogVersion": "9999.0.0", "theme": "dark"}))
     (home / "auth.json").write_text("{}")

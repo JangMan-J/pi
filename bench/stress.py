@@ -31,8 +31,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import FIXTURES, MODEL_ARGS, fake_model, parse_builds, pi_env, pi_home
+from harness import FIXTURES, fake_model, parse_builds, pi_env, pi_home
 
+# Which of the model server's APIs Pi talks to it with (--api).
+MODEL_ARGS = ["--model", "fake/fake-model"]
 CRASH = re.compile(rb"panic|has crashed|Segmentation fault|SIGSEGV|SIGILL|SIGBUS|Illegal instruction|core dumped|ASSERTION FAILED")
 DIGEST = re.compile(rb"(\d+) tool results, (\d+) characters, digest ([0-9a-f]{16}), sent ([0-9a-f]{16})\. Done: (\w+)\.")
 failures = []
@@ -260,7 +262,9 @@ def soak(build, port, root, prompts):
         span = samples[-1][0] - samples[quarter][0]
         per100 = 100 * (late - early) / max(span, 1)
         print(f"  floor of memory: {early:.0f} MB in the second quarter, {late:.0f} MB in the last ({per100:+.1f} MB per 100 prompts)", flush=True)
-        if late - early > 50:
+        # (Memory stays up for some tens of prompts after each heavy one, every fiftieth: a quarter of a short run can lie
+        # wholly within that, and says nothing.)
+        if late - early > 50 and prompts >= 400:
             fail(build.name, f"soak: memory keeps growing, its floor {early:.0f} -> {late:.0f} MB")
 
 
@@ -271,7 +275,10 @@ def main():
     ap.add_argument("--concurrency", type=int, default=16)
     ap.add_argument("--soak", type=int, default=200, help="prompts in the soak test (0: none)")
     ap.add_argument("--only", default="concurrent,faults,signals,soak")
+    ap.add_argument("--api", default="completions", choices=["completions", "anthropic", "responses"],
+                    help="the API Pi talks to the model with: OpenAI chat completions (default), Anthropic messages, OpenAI responses")
     a = ap.parse_args()
+    MODEL_ARGS[1] = {"completions": "fake/fake-model", "anthropic": "fake-anthropic/fake-model", "responses": "fake-responses/fake-model"}[a.api]
     only = set(a.only.split(","))
     root = Path(tempfile.mkdtemp(prefix="pibolt-stress-"))
     reference_digest = None
