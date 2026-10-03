@@ -34,6 +34,11 @@ with a prebuilt JavaScript heap, so at launch nothing is parsed, interpreted or 
   <img alt="Pi-Bolt vs Bun 1.4.2 vs Node 22: ready to type 83 / 123 / 296 ms; CPU per session 395 / 831 / 1,237 ms; CPU while streaming 482 / 531 / 618 ms; memory after a long session 126 / 289 / 474 MB" src="docs/images/bench-hero-light.svg">
 </picture>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-long-dark.svg">
+  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.2 / 10.3 / 8.4 s; a 60,000-character answer 4.8 / 44.3 / 43.7 s; share of a core while streaming 10 / 88 / 87%; writing a 200 KB file through a tool call 0.9 / 29.7 / 43.5 s" src="docs/images/bench-long-light.svg">
+</picture>
+
 ## Getting started
 
 Install the latest release:
@@ -119,13 +124,10 @@ faster. Node 22 runs Pi's npm package.
 
 ### Long answers and large files
 
-|  | Pi-Bolt | Bun 1.4.2 | Node 22 |
-|---|---:|---:|---:|
-| Streaming a 20,000-character answer: CPU | **1.2 s** | 10.3 s | 8.4 s |
-| Streaming a 60,000-character answer: CPU | **4.8 s** | 44.3 s | 43.7 s |
-| Share of a core while it streams | **10%** | 88% | 87% |
-| Writing a 50 KB file through a tool call | **0.3 s** | 2.0 s | 2.9 s |
-| Writing a 200 KB file through a tool call | **0.9 s** | 29.7 s | 43.5 s |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-long-dark.svg">
+  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.2 / 10.3 / 8.4 s; a 60,000-character answer 4.8 / 44.3 / 43.7 s; share of a core while streaming 10 / 88 / 87%; writing a 200 KB file through a tool call 0.9 / 29.7 / 43.5 s" src="docs/images/bench-long-light.svg">
+</picture>
 
 Pi renders an answer again each time a few more words arrive, and re-reads a tool call's arguments each time a few more
 characters arrive. On Pi as released the cost of each grows with what has arrived so far, so a long answer keeps a core busy

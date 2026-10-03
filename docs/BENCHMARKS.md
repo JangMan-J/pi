@@ -103,6 +103,11 @@ replies stream, and less than half of Bun's private memory. Node uses the least 
 
 ## Long answers and large files
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/bench-long-dark.svg">
+  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.2 / 10.3 / 8.4 s; a 60,000-character answer 4.8 / 44.3 / 43.7 s; share of a core while streaming 10 / 88 / 87%; writing a 200 KB file through a tool call 0.9 / 29.7 / 43.5 s" src="images/bench-long-light.svg">
+</picture>
+
 | | Pi-Bolt | Bun 1.4.2 | Node 22 |
 |---|---:|---:|---:|
 | Streaming a 20,000-character answer: CPU | **1.2 s** | 10.3 s | 8.4 s |
@@ -117,7 +122,8 @@ characters a second, 24 at a time, and measures the CPU Pi uses until the answer
 model write a file of TypeScript through the `write` tool, its arguments streaming 16 characters at a time (about one token),
 and measures `pi -p` from start to exit. Means of two runs, which differed by at most 5%; pinned to 8 cores. Bun and Node run
 Pi 1.0.0 as released (`v1.0.0`): Bun built with `scripts/build-pi.sh --stable --pi <Pi 1.0.0>`, Node from Pi's npm bundle.
-Raw data: [`bench/results/2026-10-03-long-answers-large-writes`](../bench/results/2026-10-03-long-answers-large-writes).
+Raw data: [`bench/results/2026-10-03-long-answers-large-writes`](../bench/results/2026-10-03-long-answers-large-writes). The chart is
+`bench/report.py bench/results/2026-10-03-long-answers-large-writes --images docs/images`.
 
 Both come from Pi's own code, not from the runtime. Pi draws a message again each time a few more words arrive, with a new
 component that lexes the whole Markdown text, renders and wraps every block and highlights every code block, so the cost of each
