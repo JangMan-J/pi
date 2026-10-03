@@ -2,7 +2,7 @@
  * Pi-Bolt: Pi compiled ahead of time (https://github.com/opensec-git/Pi-Bolt).
  *
  * scripts/build-pi.sh defines PIBOLT_BUILD when it compiles this tree ("0.3.1 x64 jit-off": the Pi-Bolt version, the CPU
- * variant, and whether the JIT is on). In every other build it is undefined and nothing here changes what Pi does.
+ * variant (x64, x64-baseline, x64-jit, arm64), and whether the JIT is on). In every other build it is undefined and nothing here changes what Pi does.
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -41,12 +41,12 @@ export function piBoltVersionOfTag(tag: unknown): string | undefined {
  */
 export function piBoltInstallMethod(): "npm" | "installer" {
 	if (process.env.PIBOLT_NPM === "1") return "npm";
-	return /\/npm\/\d+\.\d+\.\d+\/pi-bolt-linux-/.test(process.execPath) ? "npm" : "installer";
+	return /\/npm\/\d+\.\d+\.\d+\/pi-bolt-(linux|darwin)-/.test(process.execPath) ? "npm" : "installer";
 }
 
 /** The environment that makes the installer replace this installation with the latest release, keeping its variant and place. */
 export function piBoltUpdateEnvironment(): NodeJS.ProcessEnv {
-	// ~/.pi-bolt/pi-bolt-linux-x64/pi -> ~/.pi-bolt
+	// ~/.pi-bolt/pi-bolt-linux-x64/pi (or pi-bolt-darwin-arm64/pi) -> ~/.pi-bolt
 	const installDir = join(process.execPath, "..", "..");
 	return {
 		...process.env,

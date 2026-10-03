@@ -633,7 +633,7 @@ export async function main(args: string[], options?: MainOptions) {
 	if (parsed.version) {
 		console.log(
 			PIBOLT
-				? `${VERSION} (Pi-Bolt ${PIBOLT.version}, linux-${PIBOLT.variant}, JIT ${PIBOLT.jit ? "on" : "off"})`
+				? `${VERSION} (Pi-Bolt ${PIBOLT.version}, ${process.platform}-${PIBOLT.variant}, JIT ${PIBOLT.jit ? "on" : "off"})`
 				: VERSION,
 		);
 		process.exit(0);
