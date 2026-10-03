@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 04:56:26 +0530
+Subject: [PATCH] macOS: the static heap's check for pointers into the system's
+ libraries counts only what can be one
+
+A word at a library's header (__dso_handle), or at a symbol of a library of the shared cache that the process has not loaded, is a number that happens to be such an address. Pi's heap then has none.
+---
+ src/jsc/bindings/ZigSourceProvider.cpp | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/jsc/bindings/ZigSourceProvider.cpp b/src/jsc/bindings/ZigSourceProvider.cpp
+index ee134562..05a3f732 100644
+--- a/src/jsc/bindings/ZigSourceProvider.cpp
++++ b/src/jsc/bindings/ZigSourceProvider.cpp
+@@ -471,10 +471,17 @@ static void checkPointersOutOfStaticHeap(std::span<const uint8_t> heap)
+         if (word < sharedCache || word >= sharedCache + sharedCacheSize || word % 4)
+             continue;
+         Dl_info info;
+-        if (!dladdr(reinterpret_cast<const void*>(word), &info) || reinterpret_cast<uintptr_t>(info.dli_saddr) != word)
++        // (A library's header, __dso_handle, is where nothing points: a round number that happens to be one. So is an address in a
++        // library of the cache that this process has not loaded.)
++        if (!dladdr(reinterpret_cast<const void*>(word), &info) || reinterpret_cast<uintptr_t>(info.dli_saddr) != word || info.dli_saddr == info.dli_fbase)
++            continue;
++        bool isLoaded = false;
++        for (uint32_t i = 0, count = _dyld_image_count(); i < count && !isLoaded; ++i)
++            isLoaded = _dyld_get_image_header(i) == info.dli_fbase;
++        if (!isLoaded)
+             continue;
+         if (intoSystem++ < 20)
+-            fprintf(stderr, "warning: the static heap points at %s in %s (at %zu); it moves at every boot\n", info.dli_sname ? info.dli_sname : "?", info.dli_fname ? info.dli_fname : "?", at);
++            fprintf(stderr, "warning: the static heap points at %s in %s (%llx, at %zu); it moves at every boot\n", info.dli_sname ? info.dli_sname : "?", info.dli_fname ? info.dli_fname : "?", static_cast<unsigned long long>(word), at);
+     }
+     if (getenv("BUN_STATIC_HEAP_VERBOSE") || intoSystem)
+         fprintf(stderr, "[static heap] %zu words point into the executable, %zu at the system's libraries\n", intoExecutable, intoSystem);
+-- 
+2.54.0 (Apple Git-157)
+
