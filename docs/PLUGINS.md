@@ -106,9 +106,9 @@ conflict for its tools and commands. Remove the run-time copy, or leave it out o
 
 ### 4. Optional: train a profile with your plugins
 
-The training profile is recorded during a scripted session: startup, a few prompts with tool calls, and some commands. It
-records which functions run, so the executable can lay them out together, and which regular expressions are built from strings
-at run time, so they can be compiled ahead of time. Code that only your plugin's own commands reach is not exercised by the
+The training profile is recorded during scripted sessions: startup, a few prompts with tool calls, some commands, and a long
+answer with every kind of Markdown and code block. It records which functions run, so the executable can lay them out
+together, and which regular expressions are built from strings at run time, so they can be compiled ahead of time. Code that only your plugin's own commands reach is not exercised by the
 session. With plugins that do a lot at startup, record a profile of your own:
 
 ```bash

@@ -49,6 +49,8 @@ These are read by the executable at run time.
 | `BUN_AOT=0` | Ignore the compiled code and static heap; run from bytecode. Use it to tell whether a problem is specific to the AOT code. |
 | `BUN_STATIC_HEAP_VERBOSE=1` | Report how the static heap and code image were mapped. |
 | `PI_TIMING=1` | Pi's own startup timings, including each extension's factory. |
+| `BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT=N` | How many seconds an idle connection to a server waits to be used again when the server does not say (default 4, as in Node). Longer saves a handshake after a pause; a connection that went dead while it waited makes the next request wait for its timeout. |
+| `JITI_FS_CACHE=false` | Do not keep the transformed source of run-time extensions (it is kept in `cache/jiti` of the agent directory). |
 
 Pi's own variables (`PI_CODING_AGENT_DIR`, `PI_OFFLINE`, ...) work as documented by Pi.
 
@@ -71,13 +73,25 @@ To rule a compiler optimization in or out of a problem, build with it off (each 
 `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
 
 **`GLIBC_2.xx not found` or `No such file or directory` when starting.** The system is musl-based (Alpine), or older than
-glibc 2.17. Pi-Bolt needs glibc 2.17 or later.
+glibc 2.17. Pi-Bolt needs glibc 2.17 or later (CentOS 7, Debian 8, Ubuntu 14.04 and anything newer).
+
+**`Illegal instruction` when starting.** The CPU has no SSE4.2 (older than Intel Nehalem, 2008, or AMD Bulldozer, 2011). No
+build runs on it; the installer says so since 0.5.1.
 
 **A theme, the HTML export or image tools are missing.** The executable was moved away from the files around it. Keep the whole
 folder together, and link or alias the executable instead of copying it.
 
 **A plugin works with stock Pi but not when compiled in.** See the [compatibility checklist](PLUGINS.md#compatibility-checklist):
 usually a dynamic import, or a file read from next to the plugin's source.
+
+**The build stops with "cannot be compiled ahead of time".** The compiler declined a function, and in a compiled executable a
+function that is not compiled cannot be relied on to run. The message names the function and says why; the usual way out is to
+change that function. `BUN_JSC_allowAOTDeclinedFunctions=1` builds anyway: the function then runs from bytecode if it uses no
+variables from outside itself, and stops the program when it is called if it does.
+
+**The first prompt after a pause hangs until it times out.** Up to 0.5.0 an idle connection to the model provider was kept for
+5 minutes, and one that a NAT, a load balancer or a suspended laptop had dropped in the meantime was used again. Update; from
+0.5.1 a connection waits 4 seconds (or as long as the server says it may), as in Node.
 
 **A run-time plugin is slow.** On the default build, plugins loaded at run time are interpreted. Compile them in
 ([PLUGINS.md](PLUGINS.md)) or use the `linux-x64-jit` build.
