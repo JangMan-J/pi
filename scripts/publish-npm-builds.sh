@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Publishes each build of a release to npm as pi-bolt-linux-VARIANT@VERSION: a package that holds the release's .tar.xz, byte
-# for byte. The installer downloads it from the npm registry, a CDN that is fast where GitHub's release downloads are slow,
-# and checks it against the release's SHA256SUMS on GitHub, as it does a download from GitHub.
+# Publishes each build of a release to npm as pi-bolt-PLATFORM-VARIANT@VERSION (pi-bolt-linux-x64, pi-bolt-darwin-arm64, ...):
+# a package that holds the release's .tar.xz, byte for byte. The installer downloads it from the npm registry, a CDN that is
+# fast where GitHub's release downloads are slow, and checks it against the release's SHA256SUMS on GitHub, as it does a
+# download from GitHub.
 #
 # Usage: scripts/publish-npm-builds.sh DIST [--pack OUT] [-- NPM PUBLISH OPTIONS]
 #   DIST     dist/<version>, as package-release.sh makes it (the .tar.xz files and SHA256SUMS)
 #   --pack   only make the packages (.tgz) in OUT, to test them
 # A version that npm already has is skipped, so running it again is safe.
 source "$(dirname "$0")/lib/common.sh"
-need sha256sum
 
 DIST="${1:?usage: scripts/publish-npm-builds.sh DIST [--pack OUT] [-- npm publish options]}"
 shift
 PACK=""
 if [ "${1:-}" = --pack ]; then
-	PACK="$(realpath -m "${2:?--pack needs a folder}")"
+	PACK="$(abspath "${2:?--pack needs a folder}")"
 	shift 2
 fi
 [ "${1:-}" != -- ] || shift
@@ -25,11 +25,21 @@ need npm
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
-for variant in x64 x64-baseline x64-jit; do
-	name="pi-bolt-linux-$variant"
+# Every build in DIST: those of each platform, put together for the release.
+builds=()
+for file in "$DIST"/pi-bolt-*.tar.xz; do
+	[ -f "$file" ] && builds+=("$(basename "$file" .tar.xz)")
+done
+[ ${#builds[@]} -gt 0 ] || die "no pi-bolt-*.tar.xz in $DIST"
+for name in "${builds[@]}"; do
 	file="$name.tar.xz"
-	[ -f "$DIST/$file" ] || die "no $file in $DIST"
-	(cd "$DIST" && grep " $file\$" SHA256SUMS | sha256sum -c --quiet -) || die "$file does not match SHA256SUMS"
+	platform="${name#pi-bolt-}"
+	case "$platform" in
+	linux-*) os=linux cpu=x64 ;;
+	darwin-*) os=darwin cpu=arm64 ;;
+	*) die "$file: not a build of a known platform" ;;
+	esac
+	(cd "$DIST" && grep " $file\$" SHA256SUMS | sha256 -c --quiet -) || die "$file does not match SHA256SUMS"
 	if [ -z "$PACK" ] && [ "$(npm view "$name@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
 		log "npm already has $name@$VERSION"
 		continue
@@ -41,7 +51,7 @@ for variant in x64 x64-baseline x64-jit; do
 {
 	"name": "$name",
 	"version": "$VERSION",
-	"description": "The Pi-Bolt $VERSION executable (linux-$variant) for its installer. Install Pi-Bolt with the pi-bolt package or install.sh.",
+	"description": "The Pi-Bolt $VERSION executable ($platform) for its installer. Install Pi-Bolt with the pi-bolt package or install.sh.",
 	"homepage": "https://github.com/opensec-git/Pi-Bolt",
 	"repository": {
 		"type": "git",
@@ -49,8 +59,8 @@ for variant in x64 x64-baseline x64-jit; do
 	},
 	"license": "MIT",
 	"author": "OpenSec",
-	"os": ["linux"],
-	"cpu": ["x64"],
+	"os": ["$os"],
+	"cpu": ["$cpu"],
 	"files": ["$file"]
 }
 EOF

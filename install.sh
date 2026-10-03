@@ -9,7 +9,8 @@
 #
 # Environment:
 #   PIBOLT_VERSION   a release tag such as bolt-v0.2.0 (default: the latest release)
-#   PIBOLT_VARIANT   x64, x64-baseline or x64-jit (default: x64 on CPUs with AVX2, x64-baseline otherwise)
+#   PIBOLT_VARIANT   on Linux x64, x64-baseline or x64-jit (default: x64 on CPUs with AVX2, x64-baseline otherwise); on macOS
+#                    arm64 (Apple silicon)
 #   PIBOLT_INSTALL   where to install (default: ~/.pi-bolt)
 #   PIBOLT_BIN_DIR   where to link the `pi-bolt` command (default: ~/.local/bin)
 #   PIBOLT_YES=1     do not ask: take the default action and do not offer to start Pi-Bolt
@@ -30,6 +31,7 @@ NPM_REGISTRY="${PIBOLT_NPM_REGISTRY:-https://registry.npmjs.org}"
 
 main() {
 	set -eu
+	if [ "$(uname -s)" = Darwin ]; then PLATFORM=darwin; else PLATFORM=linux; fi
 	VERSION="${PIBOLT_VERSION:-latest}"
 	INSTALL="${PIBOLT_INSTALL:-$HOME/.pi-bolt}"
 	BIN_DIR="${PIBOLT_BIN_DIR:-$HOME/.local/bin}"
@@ -60,17 +62,19 @@ main() {
 
 	VARIANT="${PIBOLT_VARIANT:-}"
 	if [ -z "$VARIANT" ]; then
-		if grep -qw avx2 /proc/cpuinfo 2>/dev/null; then VARIANT=x64; else VARIANT=x64-baseline; fi
+		if [ "$PLATFORM" = darwin ]; then VARIANT=arm64
+		elif grep -qw avx2 /proc/cpuinfo 2>/dev/null; then VARIANT=x64; else VARIANT=x64-baseline; fi
 	fi
-	case "$VARIANT" in
-	x64 | x64-baseline | x64-jit) ;;
+	case "$PLATFORM-$VARIANT" in
+	linux-x64 | linux-x64-baseline | linux-x64-jit | darwin-arm64) ;;
+	darwin-*) fail "PIBOLT_VARIANT must be arm64 on macOS" ;;
 	*) fail "PIBOLT_VARIANT must be x64, x64-baseline or x64-jit" ;;
 	esac
 	case "${PIBOLT_SOURCE:-auto}" in
 	auto | npm | github) ;;
 	*) fail "PIBOLT_SOURCE must be auto, npm or github" ;;
 	esac
-	NAME="pi-bolt-linux-$VARIANT"
+	NAME="pi-bolt-$PLATFORM-$VARIANT"
 	if [ "$VERSION" = latest ]; then BASE="$REPO/releases/latest/download"; else BASE="$REPO/releases/download/$VERSION"; fi
 	BASE="${PIBOLT_DOWNLOAD_BASE:-$BASE}"
 
@@ -203,7 +207,7 @@ spinner() {
 		5) printf '⠴' ;; 6) printf '⠦' ;; 7) printf '⠧' ;; 8) printf '⠇' ;; *) printf '⠏' ;;
 		esac
 	else
-		case $(($1 % 4)) in 0) printf '-' ;; 1) printf '\\' ;; 2) printf '|' ;; *) printf '/' ;; esac
+		case $(($1 % 4)) in 0) printf '-' ;; 1) printf '%s' "\\" ;; 2) printf '|' ;; *) printf '/' ;; esac
 	fi
 }
 
@@ -272,7 +276,38 @@ fail() {
 
 preflight() {
 	status=0
-	[ "$(uname -s)" = Linux ] || { printf 'error: Pi-Bolt runs on Linux only (this is %s).\n' "$(uname -s)"; status=1; }
+	case "$(uname -s)" in
+	Linux) preflight_linux ;;
+	Darwin) preflight_macos ;;
+	*) printf 'error: Pi-Bolt runs on Linux (x86-64) and macOS (Apple silicon) only (this is %s).\n' "$(uname -s)"; status=1 ;;
+	esac
+	command -v tar >/dev/null 2>&1 || { printf 'error: tar is required.\n'; status=1; }
+	if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+		printf 'error: sha256sum or shasum is required.\n'
+		status=1
+	fi
+	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+		printf 'error: curl or wget is required.\n'
+		status=1
+	fi
+	[ "$status" -eq 0 ] || printf '\n'
+	return "$status"
+}
+
+preflight_macos() {
+	# An ARM64 Mac, also from a shell that runs under Rosetta (the executable runs natively all the same).
+	if [ "$(uname -m)" != arm64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" != 1 ]; then
+		printf 'error: Pi-Bolt runs on Macs with Apple silicon (M1 or later) only; this Mac has an Intel CPU.\n'
+		status=1
+	fi
+	macos=$(sw_vers -productVersion 2>/dev/null || echo 0)
+	if [ "${macos%%.*}" -lt 13 ] 2>/dev/null; then
+		printf 'error: Pi-Bolt needs macOS 13 (Ventura) or later (this Mac has %s).\n' "$macos"
+		status=1
+	fi
+}
+
+preflight_linux() {
 	[ "$(uname -m)" = x86_64 ] || { printf 'error: Pi-Bolt runs on x86-64 only (this is %s).\n' "$(uname -m)"; status=1; }
 	if ldd --version 2>&1 | grep -qi musl; then
 		printf 'error: Pi-Bolt needs glibc; musl-based systems such as Alpine are not supported.\n'
@@ -288,15 +323,16 @@ preflight() {
 		printf 'error: Pi-Bolt needs a CPU with SSE4.2: Intel Nehalem (2008) or later, AMD Bulldozer (2011) or later.\n'
 		status=1
 	fi
-	for tool in tar sha256sum; do
-		command -v "$tool" >/dev/null 2>&1 || { printf 'error: %s is required.\n' "$tool"; status=1; }
-	done
-	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-		printf 'error: curl or wget is required.\n'
-		status=1
+}
+
+# check_sum FILE: whether FILE (in the current folder) matches its line in SHA256SUMS. (shasum where there is no sha256sum: macOS
+# before 15.)
+check_sum() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		grep " $1\$" SHA256SUMS | sha256sum -c --quiet - >/dev/null 2>&1
+	else
+		grep " $1\$" SHA256SUMS | shasum -a 256 -c --status -
 	fi
-	[ "$status" -eq 0 ] || printf '\n'
-	return "$status"
 }
 
 fetch() { # fetch FILE URL
@@ -330,7 +366,7 @@ npm_probe() {
 
 # What to download, worked out in the background while the bar moves: the checksums, then the smaller .tar.xz if the release
 # has one and xz is installed (otherwise .tar.gz), where from and how big it is. The .tar.xz is also published on npm, as the
-# package pi-bolt-linux-VARIANT of the same version: that is tried first. Writes "SOURCE EXT FINAL SIZE RANGES" to $TMP/plan.
+# package pi-bolt-PLATFORM-VARIANT (pi-bolt-linux-x64, pi-bolt-darwin-arm64, ...) of the same version: that is tried first. Writes "SOURCE EXT FINAL SIZE RANGES" to $TMP/plan.
 plan_download() {
 	if ! fetch "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null; then
 		echo fail >"$TMP/plan"
@@ -393,8 +429,10 @@ all_succeeded() { # true if every process in $PIDS succeeded
 # shellcheck disable=SC2012 # the installer's own file names
 received() { ls -ln "$TMP"/part.* 2>/dev/null | awk '{ n += $5 } END { print n + 0 }'; }
 
-# Hundredths of a second since boot (Linux).
-centiseconds() { awk '{ printf "%d", $1 * 100 }' /proc/uptime 2>/dev/null || echo 0; }
+# Hundredths of a second since boot (Linux), or since the epoch (elsewhere: what counts is the difference).
+centiseconds() {
+	awk '{ printf "%d", $1 * 100 }' /proc/uptime 2>/dev/null || perl -MTime::HiRes=time -e 'printf "%d", time * 100' 2>/dev/null || echo 0
+}
 
 # rate_and_eta GOT TOTAL CENTISECONDS: "3.2 MB/s, 12s left", from the average so far.
 rate_and_eta() {
@@ -491,7 +529,7 @@ install_release() {
 		if download "$final" "$final" "$total" "$ranges" "$TMP/npm.tgz" &&
 			tar -C "$TMP" -xzf "$TMP/npm.tgz" "package/$NAME.$ext" 2>/dev/null &&
 			mv "$TMP/package/$NAME.$ext" "$TMP/$NAME.$ext" &&
-			(cd "$TMP" && grep " $NAME.$ext\$" SHA256SUMS | sha256sum -c --quiet - >/dev/null 2>&1); then
+			(cd "$TMP" && check_sum "$NAME.$ext"); then
 			FROM=npm
 		else
 			[ "${PIBOLT_SOURCE:-auto}" != npm ] || fail "download failed: $final"
@@ -510,7 +548,7 @@ install_release() {
 		[ -z "${PIBOLT_DOWNLOAD_BASE:-}" ] || FROM="$PIBOLT_DOWNLOAD_BASE"
 	fi
 	draw_progress "$step" 10000 "${dim}verifying checksum$reset"
-	(cd "$TMP" && grep " $NAME.$ext\$" SHA256SUMS | sha256sum -c --quiet - >/dev/null 2>&1) ||
+	(cd "$TMP" && check_sum "$NAME.$ext") ||
 		fail "checksum mismatch: the download is corrupt or incomplete"
 	verify_signature
 	if [ "$ext" = tar.xz ]; then
@@ -535,12 +573,12 @@ install_release() {
 	rm -rf "$INSTALL/$NAME.old" "$TMP"
 	trap - INT TERM
 	finish_progress
-	printf '  %s%s%s install complete %s(%s, %s MB from %s%s)%s\n' "$green" "$CHECK" "$reset" "$dim" "linux-$VARIANT" "$(mb "${total:-0}")" "$FROM" "${SIGNED:+, signature verified}" "$reset"
+	printf '  %s%s%s install complete %s(%s, %s MB from %s%s)%s\n' "$green" "$CHECK" "$reset" "$dim" "$PLATFORM-$VARIANT" "$(mb "${total:-0}")" "$FROM" "${SIGNED:+, signature verified}" "$reset"
 	[ -z "$UNSIGNED" ] || printf '  %snote: this release is not signed (it is from before Pi-Bolt signed releases); its checksum was verified%s\n' "$dim" "$reset"
 }
 
 uninstall() {
-	for dir in "$INSTALL"/pi-bolt-linux-*; do
+	for dir in "$INSTALL"/pi-bolt-linux-* "$INSTALL"/pi-bolt-darwin-*; do
 		[ -d "$dir" ] && rm -rf "$dir"
 	done
 	target=$(readlink "$BIN_DIR/pi-bolt" 2>/dev/null || true)
@@ -576,10 +614,11 @@ choose_action() {
 	case "$VARIANT" in
 	x64) cpu="for CPUs with AVX2" ;;
 	x64-baseline) cpu="for any x86-64 CPU" ;;
+	arm64) cpu="for Apple silicon" ;;
 	*) cpu="with the JIT on" ;;
 	esac
 	printf '%sInstallation:%s\n\n' "$bold" "$reset"
-	printf '  %sPi-Bolt %s%s, linux-%s build %s\n' "$amber" "$SHOWN_VERSION" "$reset" "$VARIANT" "$cpu"
+	printf '  %sPi-Bolt %s%s, %s-%s build %s\n' "$amber" "$SHOWN_VERSION" "$reset" "$PLATFORM" "$VARIANT" "$cpu"
 	printf '  %sinstalls to%s  %s\n' "$dim" "$reset" "$(tilde "$INSTALL/$NAME")"
 	printf '  %scommand%s      %s\n\n' "$dim" "$reset" "$(tilde "$BIN_DIR/pi-bolt")"
 	printf '%sChoose an action:%s\n\n' "$bold" "$reset"

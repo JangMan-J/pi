@@ -4,11 +4,14 @@
 # Usage: scripts/package-release.sh [--pi DIR] [--no-build]
 #   --pi DIR      the built Pi tree (default: this repository)
 #   --no-build    package the builds already in out/ instead of building them
-# Archives (the names stay the same from release to release, so that releases/latest/download/<name> always works):
+# Archives (the names stay the same from release to release, so that releases/latest/download/<name> always works), of what
+# this machine builds:
 #   pi-bolt-linux-x64.tar.gz           JIT off, code for AVX2-class CPUs (falls back to bytecode on others)
 #   pi-bolt-linux-x64-baseline.tar.gz  JIT off, code for any x86-64 CPU
 #   pi-bolt-linux-x64-jit.tar.gz       JIT on, for code loaded at run time
 #   pi-bolt-runtime-linux-x64.tar.gz   the Pi-Bolt Bun runtime, to build Pi with plugins (docs/PLUGINS.md)
+#   pi-bolt-darwin-arm64.tar.gz        on macOS: JIT off, for Apple silicon (M1 and later)
+#   pi-bolt-runtime-darwin-arm64.tar.gz
 # The Pi archives also come as .tar.xz, about 40% smaller, which install.sh prefers where xz is installed.
 source "$(dirname "$0")/lib/common.sh"
 
@@ -22,7 +25,6 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-need sha256sum
 need xz
 VERSION="$(cat "$PIBOLT_ROOT/VERSION")"
 # The npm launcher downloads the release of its own version: the two have to agree.
@@ -31,7 +33,14 @@ NPM_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["
 grep -q "^VERSION=$VERSION\$" "$PIBOLT_ROOT/npm/bin/pi-bolt" || die "npm/bin/pi-bolt does not download version $VERSION"
 DIST="$PIBOLT_ROOT/dist/$VERSION"
 PI_ROOT="$(realpath "$PI_DIR")"
-TARGETS=("linux-x64:pi-bolt:" "linux-x64-baseline:pi-bolt-baseline:--cpu baseline" "linux-x64-jit:pi-bolt-jit:--jit on")
+case "$PIBOLT_PLATFORM" in
+linux-x64) TARGETS=("linux-x64:pi-bolt:" "linux-x64-baseline:pi-bolt-baseline:--cpu baseline" "linux-x64-jit:pi-bolt-jit:--jit on") ;;
+darwin-arm64) TARGETS=("darwin-arm64:pi-bolt:") ;;
+*) die "no release is built on $PIBOLT_PLATFORM" ;;
+esac
+# Archives whose files belong to nobody in particular, and on macOS without AppleDouble (._*) files of extended attributes.
+TAR=(tar --owner=0 --group=0 --numeric-owner)
+[ "$PIBOLT_OS" = darwin ] && TAR=(env COPYFILE_DISABLE=1 tar --uid 0 --gid 0 --numeric-owner --no-xattrs --no-mac-metadata)
 
 if [ -n "$BUILD" ]; then
 	for target in "${TARGETS[@]}"; do
@@ -59,16 +68,16 @@ for target in "${TARGETS[@]}"; do
 	cp -R "$build" "$dir"
 	notices "$dir"
 	log "pi-bolt-$name.tar.gz (Pi $("$build/pi" --version))"
-	tar -C "$STAGE" --owner=0 --group=0 --numeric-owner -czf "$DIST/pi-bolt-$name.tar.gz" "pi-bolt-$name"
-	tar -C "$STAGE" --owner=0 --group=0 --numeric-owner -cf - "pi-bolt-$name" | xz -T0 -9e >"$DIST/pi-bolt-$name.tar.xz" # (-T0 writes blocks, which xz -T0 can decompress in parallel)
+	"${TAR[@]}" -C "$STAGE" -czf "$DIST/pi-bolt-$name.tar.gz" "pi-bolt-$name"
+	"${TAR[@]}" -C "$STAGE" -cf - "pi-bolt-$name" | xz -T0 -9e >"$DIST/pi-bolt-$name.tar.xz" # (-T0 writes blocks, which xz -T0 can decompress in parallel)
 done
 
 runtime="$(runtime_bun)"
-dir="$STAGE/pi-bolt-runtime-linux-x64"
+dir="$STAGE/pi-bolt-runtime-$PIBOLT_PLATFORM"
 mkdir -p "$dir" && cp "$runtime" "$dir/bun" && notices "$dir"
-log "pi-bolt-runtime-linux-x64.tar.gz (Bun $("$runtime" --version))"
-tar -C "$STAGE" --owner=0 --group=0 --numeric-owner -czf "$DIST/pi-bolt-runtime-linux-x64.tar.gz" pi-bolt-runtime-linux-x64
+log "pi-bolt-runtime-$PIBOLT_PLATFORM.tar.gz (Bun $("$runtime" --version))"
+"${TAR[@]}" -C "$STAGE" -czf "$DIST/pi-bolt-runtime-$PIBOLT_PLATFORM.tar.gz" "pi-bolt-runtime-$PIBOLT_PLATFORM"
 
-(cd "$DIST" && sha256sum -- *.tar.gz *.tar.xz >SHA256SUMS)
+(cd "$DIST" && sha256 -- *.tar.gz *.tar.xz >SHA256SUMS)
 log "release $VERSION in $DIST:"
 (cd "$DIST" && ls -lh -- * | awk '{print "    " $5 "  " $9}')

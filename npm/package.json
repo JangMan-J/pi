@@ -1,7 +1,7 @@
 {
 	"name": "pi-bolt",
 	"version": "0.5.2",
-	"description": "Pi, the coding agent, compiled ahead of time to native code: one Linux executable, ready in 74 ms, less than half the CPU",
+	"description": "Pi, the coding agent, compiled ahead of time to native code: one executable for Linux x86-64 and macOS on Apple silicon, ready in 74 ms, less than half the CPU",
 	"keywords": [
 		"pi",
 		"coding-agent",
@@ -28,10 +28,12 @@
 		"README.md"
 	],
 	"os": [
-		"linux"
+		"linux",
+		"darwin"
 	],
 	"cpu": [
-		"x64"
+		"x64",
+		"arm64"
 	],
 	"scripts": {
 		"prepack": "cp ../install.sh install.sh"
