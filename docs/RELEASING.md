@@ -31,7 +31,7 @@ GitHub Actions must be allowed for the repository in the organization's settings
 | Secret | What |
 |---|---|
 | `PIBOLT_SIGNING_KEY` | The Ed25519 private key that signs `SHA256SUMS` (see [Signing](#signing)) |
-| `NPM_TOKEN` | A granular npm access token with publish rights on `pi-bolt`, `pi-bolt-linux-x64`, `pi-bolt-linux-x64-baseline` and `pi-bolt-linux-x64-jit`, so `npm publish --provenance` can run |
+| `NPM_TOKEN` | A granular npm access token with publish rights on `pi-bolt`, `pi-bolt-linux-x64`, `pi-bolt-linux-x64-baseline`, `pi-bolt-linux-x64-jit`, `pi-bolt-darwin-arm64` and `pi-bolt-darwin-arm64-jit`, so `npm publish --provenance` can run |
 
 ## A release, step by step
 
@@ -46,9 +46,28 @@ To release by hand instead, run the same steps as the workflow: `scripts/package
 end-to-end checks, `scripts/sign-release.sh --key ... dist/X.Y.Z`, `gh release create`, `scripts/publish-installer.sh`,
 `scripts/publish-npm-builds.sh dist/X.Y.Z` and `npm publish --access public` in `npm/`.
 
-The installer downloads the executable from npm (`pi-bolt-linux-<variant>@X.Y.Z`, the release's `.tar.xz` in a package), a
+The installer downloads the executable from npm (`pi-bolt-<platform>-<variant>@X.Y.Z`, the release's `.tar.xz` in a package), a
 CDN that is fast where GitHub's release downloads are slow, and from GitHub if npm does not have it or the download fails.
 The checksums always come from the GitHub release. Publish the npm builds before announcing a release.
+
+## The macOS builds
+
+The release workflow builds on the Linux runner. The macOS archives (`pi-bolt-darwin-arm64`, `pi-bolt-darwin-arm64-jit` and
+`pi-bolt-runtime-darwin-arm64`) are built on a Mac with Apple silicon: by hand, or on a self-hosted runner with the labels `macos`,
+`arm64` and `pi-bolt`. The same scripts do it there:
+
+1. `scripts/fetch-sources.sh` and `scripts/build-runtime.sh` (Xcode's SDK, macOS 13 and later; [BUILDING.md](BUILDING.md)).
+2. `scripts/prepare-pi.sh`, then `scripts/package-release.sh`: the two builds, the runtime and their `SHA256SUMS` in `dist/X.Y.Z`.
+3. The checks, as on Linux: `tests/aot/run.sh`, `tests/pi/run.sh`, `tests/runtime/run.sh`, and the end-to-end checks against
+   `scripts/build-pi.sh --stable --out out/pi-stable`.
+4. Put the archives of both platforms in one folder, run `sha256sum -- *.tar.gz *.tar.xz >SHA256SUMS` (or `shasum -a 256`) over
+   all of them, then `scripts/sign-release.sh`: one `SHA256SUMS` and one signature for the release.
+
+The executables are signed ad hoc, as `bun build --compile` signs them, which is what an install through `install.sh` or npm needs:
+neither quarantines what it downloads. A build downloaded with a browser is quarantined, and Gatekeeper only accepts a Developer
+ID signature that is notarized. Notarization requires the hardened runtime, under which the executable needs the entitlement
+`com.apple.security.cs.disable-library-validation` to map its compiled code from its own file (and the `-jit` build
+`com.apple.security.cs.allow-jit`); [ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port) says why.
 
 ## A new Pi version
 

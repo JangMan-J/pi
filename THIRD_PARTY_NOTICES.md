@@ -8,7 +8,7 @@ patches and redistributes the following projects, each under its own license.
 | [Pi](https://github.com/earendil-works/pi) (coding agent), © Mario Zechner | The application compiled by Pi-Bolt; the release executables contain it; `bench/fixtures/` holds four of its source files as test input | MIT |
 | [Bun](https://github.com/oven-sh/bun), © Oven | The runtime; `patches/bun/` modifies it | MIT (see Bun's `LICENSE.md` for the libraries it links) |
 | [WebKit / JavaScriptCore](https://github.com/oven-sh/WebKit) | The JavaScript engine; `patches/webkit/` modifies it | LGPL-2.0 and BSD-2-Clause (per file) |
-| [ICU](https://github.com/unicode-org/icu) | Unicode support, linked statically into the release runtime | Unicode License v3 |
+| [ICU](https://github.com/unicode-org/icu) | Unicode support, linked statically into the Linux release runtime (the macOS runtime uses the system's) | Unicode License v3 |
 | [GNU C Library](https://www.gnu.org/software/libc/) / [GCC libstdc++](https://gcc.gnu.org/) (Ubuntu 20.04 sysroot) | Build-time sysroot, so that the executables run on glibc 2.17 and later | LGPL-2.1 / GPL-3.0 with the GCC Runtime Library Exception |
 
 ## JavaScriptCore and the LGPL

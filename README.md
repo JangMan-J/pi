@@ -8,6 +8,7 @@
   <a href="https://www.npmjs.com/package/pi-bolt"><img alt="npm" src="https://img.shields.io/npm/v/pi-bolt?style=flat-square&logo=npm&logoColor=white&color=2a78d6" /></a>
   <a href="https://github.com/earendil-works/pi/releases/tag/v1.0.0"><img alt="Pi 1.0.0" src="https://img.shields.io/badge/pi-1.0.0-f0b03a?style=flat-square" /></a>
   <a href="#requirements"><img alt="Linux x86-64" src="https://img.shields.io/badge/linux-x86--64-444?style=flat-square&logo=linux&logoColor=white" /></a>
+  <a href="#requirements"><img alt="macOS Apple silicon" src="https://img.shields.io/badge/macOS-Apple%20silicon-444?style=flat-square&logo=apple&logoColor=white" /></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1baf7a?style=flat-square" /></a>
 </p>
 
@@ -17,12 +18,12 @@
 
 # Pi-Bolt
 
-Pi-Bolt is the [Pi](https://github.com/earendil-works/pi) coding agent compiled ahead of time to native code. It is one Linux
-executable, ready in 74 ms, using less than half the CPU of Pi on Bun, with no JIT.
+Pi-Bolt is the [Pi](https://github.com/earendil-works/pi) coding agent compiled ahead of time to native code. It is one
+executable, for Linux on x86-64 and macOS on Apple silicon, ready in 74 ms, using less than half the CPU of Pi on Bun, with no JIT.
 
 It runs the Pi you already use: the commands, keys, sessions, settings, extensions and providers are all Pi's. What differs is
-how Pi is executed. Every function is compiled to x86-64 machine code when the executable is built, and stored in it together
-with a prebuilt JavaScript heap, so at launch nothing is parsed, interpreted or JIT-compiled.
+how Pi is executed. Every function is compiled to machine code (x86-64 or ARM64) when the executable is built, and stored in it
+together with a prebuilt JavaScript heap, so at launch nothing is parsed, interpreted or JIT-compiled.
 
 * **[Getting started](#getting-started)**: install a release; there is nothing to compile
 * **[Benchmarks](docs/BENCHMARKS.md)**: Pi-Bolt vs Pi on Bun and on Node, with method and raw data
@@ -91,6 +92,9 @@ against `SHA256SUMS`, unpack it, and run `./pi` in the unpacked folder:
 | `pi-bolt-linux-x64-baseline.tar.xz` | Any x86-64 CPU |
 | `pi-bolt-linux-x64-jit.tar.xz` | Also JIT-compiles code loaded at run time, for heavy use of run-time plugins |
 | `pi-bolt-runtime-linux-x64.tar.gz` | The Pi-Bolt Bun runtime, to [compile plugins in](docs/PLUGINS.md) without building it |
+| `pi-bolt-darwin-arm64.tar.xz` | **macOS.** Macs with Apple silicon (M1 and later) |
+| `pi-bolt-darwin-arm64-jit.tar.xz` | macOS, with the JIT on for code loaded at run time |
+| `pi-bolt-runtime-darwin-arm64.tar.gz` | The Pi-Bolt Bun runtime for macOS |
 
 Each Pi-Bolt build is also there as a `.tar.gz`, about 60% bigger, for systems without `xz`. `pi-bolt --version` prints the Pi
 version and, in brackets, the Pi-Bolt version and build; `pi-bolt update` installs the latest release.
@@ -99,7 +103,10 @@ version and, in brackets, the Pi-Bolt version and build; `pi-bolt update` instal
 
 - Linux on x86-64 with glibc 2.17 or later. Tested on Ubuntu 20.04, 22.04 and 24.04, Debian 11 and 12, Rocky Linux 8 and 9,
   CentOS 7 and Amazon Linux 2. musl-based distributions such as Alpine are not supported.
-- macOS, Windows and ARM64 builds are not available yet.
+- macOS 13 (Ventura) or later on a Mac with Apple silicon (M1 or later). Intel Macs are not supported. Install with the installer
+  or npm: a build downloaded with a browser is quarantined, and macOS refuses to run it (see
+  [Troubleshooting](docs/TROUBLESHOOTING.md#macos)).
+- Windows and Linux on ARM64 are not available yet.
 
 ## Benchmarks
 
@@ -172,14 +179,14 @@ The default build has no JIT. A plugin loaded at run time is therefore interpret
 </picture>
 
 1. **Bun bundles Pi** and compiles it to JavaScriptCore bytecode.
-2. **The ahead-of-time compiler** turns every function into optimized x86-64 machine code, through B3, the back end of
+2. **The ahead-of-time compiler** turns every function into optimized machine code (x86-64 or ARM64), through B3, the back end of
    JavaScriptCore's top-tier JIT. It infers types from the program, guards its assumptions, and keeps generic paths for what it
    cannot prove.
 3. **The prebuilt heap** is Pi's modules, already loaded and evaluated. It is stored in the executable and mapped at launch.
 4. **A training profile**, recorded once per Pi version, orders the code so that startup touches as few pages as possible.
 
 The compiler comes from [oven-sh/WebKit#743](https://github.com/oven-sh/WebKit/pull/743), which targets ARM64. Pi-Bolt ports it
-to x86-64 and adds its own code-generation and runtime work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+to x86-64, brings it to macOS, and adds its own code-generation and runtime work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## The fork
 
@@ -217,7 +224,7 @@ Build everything from source:
 git clone https://github.com/opensec-git/Pi-Bolt.git
 cd Pi-Bolt
 scripts/fetch-sources.sh            # WebKit and Bun at the pinned commits, with Pi-Bolt's patches
-scripts/toolchain/make-sysroot.sh   # glibc 2.17 sysroot with static ICU, for portable executables
+scripts/toolchain/make-sysroot.sh   # glibc 2.17 sysroot with static ICU, for portable executables (Linux only)
 scripts/build-runtime.sh            # the Pi-Bolt Bun runtime
 scripts/prepare-pi.sh               # builds the Pi in this repository (1.0.0)
 scripts/build-pi.sh                 # out/pi-bolt/pi

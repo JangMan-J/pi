@@ -8,6 +8,7 @@ This document explains what a Pi-Bolt executable contains, how it is built, and 
 - [Launch](#launch)
 - [JIT off and JIT on](#jit-off-and-jit-on)
 - [The x86-64 port](#the-x86-64-port)
+- [The macOS ARM64 port](#the-macos-arm64-port)
 - [Limitations](#limitations)
 
 ## The executable
@@ -157,10 +158,46 @@ executable format.
   bytecode when it cannot.
 - Training profiles: function order output (`BUN_BYTECODE_ORDER_OUT`) and run-time regular-expression recording.
 
+## The macOS ARM64 port
+
+The compiler's ARM64 back end is upstream's; the macOS port is about the executable around it, and about what the x86-64 work
+had left x86-64 only. Pi-Bolt's patches from [webkit 0013](../patches/webkit) and [bun 0008](../patches/bun) on are this port's.
+
+**Where the image is.** Bun keeps a compiled program in the `__BUN` section of the Mach-O executable, which starts on a 16 KB
+page of the file, as the static heap and code image need. The executable asks the kernel which file and offset back the static
+heap's bytes (`proc_pidinfo` with `PROC_PIDREGIONPATHINFO`), opens that file and checks that it is the one mapped (device and
+inode): the equivalent of Linux's `/proc/self/exe`.
+
+**Executable code without a JIT.** On Apple silicon every executable page must be covered by a code signature. `bun build
+--compile` signs the whole executable, `__BUN` included (ad hoc), so the code image is mapped executable straight from the file,
+as on Linux: no writable code and no `MAP_JIT`. With the hardened runtime (which notarization requires) mapping a file's pages
+executable is subject to library validation: an ad hoc signature then needs
+`com.apple.security.cs.disable-library-validation`; `allow-jit` does not help. Without the hardened runtime, as released, nothing
+is needed.
+
+**One address for the executable.** The static heap holds pointers into the executable itself: native functions, what describes
+the engine's classes, the text of static strings. On Linux the runtime is linked without PIE, so those are good in every process.
+macOS loads an ARM64 executable at a different address each time, and refuses one that is not position independent. So an
+executable with a static heap starts again at once, from a constructor that runs before anything else, with ASLR turned off for
+the main executable (`posix_spawn` with `POSIX_SPAWN_SETEXEC`: the same process, about 3 ms). The system's libraries still move,
+at every boot; the build checks that the heap points at none of their functions or objects. A build with `BUN_STATIC_HEAP=1`
+does the same, and makes no static heap if it cannot. If the executable is not at its address after all, it runs from bytecode.
+
+**Fixed regions.** The static region (36 GB of address space at 0x200000000000) and the structures' 4 GB are free in every
+macOS process. macOS has no `RLIMIT_AS`, so the fallbacks for an address-space limit are not needed there.
+
+**Code generation.** The ARM64 code that the later x86-64 work changed compiles and passes the engine tests and the fuzzer. As on
+x86-64, a regular expression with the `u` or `v` flag now carries the surrogate-pair slow path in its own code, so it runs as
+machine code on 16-bit subjects too (87 of Pi's patterns had none on ARM64). The image records the ARM64 features the compiler
+uses (LSE, JSCVT, FP16, FRINTTS, SHA3, DotProd): every Apple silicon CPU has them, and a CPU without one runs from bytecode.
+
+**The runtime.** Built natively against Xcode's SDK, for macOS 13 and later and `-mcpu=apple-m1`, with ICU from the system
+(`libicucore`). With the JIT off and no sandbox policy given, JavaScriptCore on Darwin turns `SharedArrayBuffer` off, which Pi's
+codemode worker needs; Bun now says it is not sandboxed.
+
 ## Limitations
 
-- **Linux x86-64 only** for now. The engine's ARM64 back end exists upstream; Pi-Bolt does not build or test ARM64 executables
-  yet.
+- **Linux x86-64 and macOS on Apple silicon** only. Windows and Linux on ARM64 are not built yet.
 - **Code loaded at run time is not compiled ahead of time.** With the JIT off it is interpreted. Compile plugins in
   ([PLUGINS.md](PLUGINS.md)) or use the JIT-on build.
 - **No type feedback.** A warmed-up JIT specializes on the types it actually observes, and the AOT compiler can only use what

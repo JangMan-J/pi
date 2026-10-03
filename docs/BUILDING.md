@@ -32,12 +32,13 @@ out/pi-bolt/pi --version
 | Tool | Version | Notes |
 |---|---|---|
 | Linux x86-64 | | 32 GB of RAM or more; about 40 GB of disk |
+| or macOS on Apple silicon | 13 or later | Xcode (its SDK); 16 GB of RAM is enough with ThinLTO; about 40 GB of disk |
 | clang / LLVM | 23.1 | the version Bun's build pins (`scripts/build/ci-images/spec.ts` in Bun) |
 | CMake | 3.30 | |
 | Ninja | | |
 | Rust | stable | `cargo` on `PATH` |
 | Bun | 1.4.2 | runs Bun's build script |
-| Docker | | only for the portable sysroot (`make-sysroot.sh`) |
+| Docker | | Linux only: for the portable sysroot (`make-sysroot.sh`) |
 
 ### Steps
 
@@ -58,6 +59,16 @@ ICU, like official Bun builds.
 
 `scripts/build-runtime.sh --native` skips the sysroot and links against the host's libc and ICU. That is faster to set up, but
 the result runs only on systems like the build machine.
+
+On macOS there is no sysroot: the runtime is built against Xcode's SDK for macOS 13 and later (Bun's own floor), with
+`-mcpu=apple-m1`, and uses the system's ICU. LLVM 23 from Homebrew (`brew install llvm cmake ninja`), Rust and Bun 1.4.2 are what
+it needs besides Xcode. On an M5 MacBook Air (10 cores, 16 GB) the first build takes about 40 minutes and later ones a few;
+`scripts/build-runtime.sh --lto off -j8` builds without link-time optimization, for working on the engine.
+
+```bash
+scripts/fetch-sources.sh
+scripts/build-runtime.sh            # -> .work/runtime/bun (ThinLTO, as released)
+```
 
 ### Working on the engine
 
@@ -80,7 +91,7 @@ scripts/build-pi.sh [options]
 | `--pi DIR` | this repository | A built Pi tree (`scripts/prepare-pi.sh`). |
 | `--out DIR` | `out/pi-bolt` | Where the executable and its asset files go. |
 | `--jit on\|off` | `off` | `on` also JIT-compiles code loaded at run time, such as run-time plugins. |
-| `--cpu native\|baseline` | `native` | `native`: code for the build machine's instruction set (AVX2 class); on a CPU without it, the executable runs from bytecode. `baseline`: any x86-64 CPU. |
+| `--cpu native\|baseline` | `native` | `native`: code for the build machine's instruction set (AVX2 class); on a CPU without it, the executable runs from bytecode. `baseline`: any x86-64 CPU. On ARM64 there is one build, for every Apple silicon CPU. |
 | `--profile DIR` | `profiles/pi-<version>` | Training profile ([below](#training-profiles)). |
 | `--plugins FILE` | | Compile plugins in ([PLUGINS.md](PLUGINS.md)). |
 | `--plugin-worker PATH` | | A worker script a plugin starts. Repeatable. |
@@ -127,8 +138,9 @@ scripts/train-profile.sh [--pi DIR] [--plugins FILE] [--out DIR]
 scripts/package-release.sh [--pi DIR] [--no-build]
 ```
 
-This builds the three Pi targets (`linux-x64`, `linux-x64-baseline`, `linux-x64-jit`) and checks that each uses its compiled code.
-It writes them as `.tar.xz` and `.tar.gz`, the runtime and `SHA256SUMS` to `dist/<VERSION>/`. Each archive includes the license
+This builds the Pi targets of the machine it runs on (on Linux `linux-x64`, `linux-x64-baseline` and `linux-x64-jit`; on macOS
+`darwin-arm64` and `darwin-arm64-jit`) and checks that each uses its compiled code. It writes them as `.tar.xz` and `.tar.gz`, the
+runtime and `SHA256SUMS` to `dist/<VERSION>/`. A release puts the archives of both platforms together, with one `SHA256SUMS`. Each archive includes the license
 notices and a `pi-bolt.txt` naming the build. Publishing a release, by the release workflow or by hand, is described in
 [RELEASING.md](RELEASING.md).
 
@@ -147,7 +159,7 @@ notices and a `pi-bolt.txt` naming the build. Publishing a release, by the relea
 | `python3 bench/e2e_fullscreen.py --build pi-bolt=out/pi-bolt/pi` | The fullscreen TUI's scrolling of rows that only moved: after a long answer, paging and a resize, each screen (text and colors) must be what it is when every row is drawn, in tmux and in zmx. `--docker IMAGE` runs Pi and the terminals in a container. |
 | `python3 bench/pauses.py --build pi-bolt=out/pi-bolt/pi` | Large files written through a tool call in the TUI: the longest pause in drawing must not grow with the file. |
 | `python3 bench/long_answer.py --build pi-bolt=out/pi-bolt/pi` | The CPU it takes to stream answers of 5,000 to 60,000 characters: the share of a core must not grow with the length. |
-| `tests/compat/run.sh --builds DIR` | Other systems and CPUs, without root: the three builds in the userlands of CentOS 7 (glibc 2.17), Debian 9 and Amazon Linux 2 (bubblewrap), and on emulated Intel Haswell, Skylake, Sandy Bridge and Nehalem (qemu-user). |
+| `tests/compat/run.sh --builds DIR` | Linux only. Other systems and CPUs, without root: the three builds in the userlands of CentOS 7 (glibc 2.17), Debian 9 and Amazon Linux 2 (bubblewrap), and on emulated Intel Haswell, Skylake, Sandy Bridge and Nehalem (qemu-user). |
 | `python3 bench/tmux_check.py --build pi-bolt=out/pi-bolt/pi` | Pi in a real tmux pane: keystroke latency, paste, streaming, resize, Escape to abort, idle CPU, memory. |
 
 `out/pi-stable/pi` is the stock-Bun comparison build: `scripts/build-pi.sh --stable --out out/pi-stable`.

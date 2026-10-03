@@ -11,8 +11,8 @@
 
 # pi-bolt
 
-[Pi](https://github.com/earendil-works/pi), the coding agent, compiled ahead of time to native code. Pi-Bolt is one Linux
-executable that is ready in 74 ms and uses less than half the CPU of Pi on Bun, with no JIT.
+[Pi](https://github.com/earendil-works/pi), the coding agent, compiled ahead of time to native code. Pi-Bolt is one executable,
+for Linux on x86-64 and macOS on Apple silicon, that is ready in 74 ms and uses less than half the CPU of Pi on Bun, with no JIT.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/opensec-git/Pi-Bolt/HEAD/docs/images/bench-hero-dark.svg">
@@ -74,7 +74,7 @@ as Bun.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PIBOLT_VARIANT` | `x64` on CPUs with AVX2, otherwise `x64-baseline` | Which build to use: `x64`, `x64-baseline` (any x86-64 CPU), or `x64-jit` (also JIT-compiles plugins loaded at run time) |
+| `PIBOLT_VARIANT` | `x64` on CPUs with AVX2, otherwise `x64-baseline`; `arm64` on macOS | Which build to use: `x64`, `x64-baseline` (any x86-64 CPU), or `x64-jit` (also JIT-compiles plugins loaded at run time); on macOS `arm64` or `arm64-jit` |
 | `PIBOLT_HOME` | `~/.pi-bolt` | Where downloaded executables are kept |
 
 ## Update and uninstall
@@ -89,7 +89,8 @@ rm -rf ~/.pi-bolt/npm       # downloaded executables
 
 - Linux on x86-64, glibc 2.17 or later: Ubuntu 20.04+, Debian 11+, Rocky Linux 8+, CentOS 7, Amazon Linux 2 and others.
   Alpine and other musl-based systems are not supported.
-- `curl` or `wget`, `tar` and `sha256sum` for the first run.
+- Or macOS 13 or later on Apple silicon (M1 or later).
+- `curl` or `wget`, `tar` and `sha256sum` (or, on macOS, `shasum`) for the first run.
 
 ## Links
 
