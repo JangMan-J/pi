@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Correctness tests for the ahead-of-time engine. Each program is compiled ahead of time twice (JIT on, JIT off: the two kinds of
-# Pi build) and must print exactly what a stock Bun prints running its source.
+# Correctness tests for the ahead-of-time engine. Each program is compiled ahead of time three times (JIT on, JIT off: the two
+# kinds of Pi build; and JIT off with every operation compiled the compact way, as outside loops and in the generic copies of
+# loops) and must print exactly what a stock Bun prints running its source.
 #
 # Usage: tests/aot/run.sh [test.mjs...]      (default: every test)
 # Environment: PIBOLT_BUN (the Pi-Bolt runtime), PIBOLT_STABLE_BUN (the reference; default `bun`),
@@ -16,7 +17,7 @@ OUT="$PIBOLT_WORK/tests/aot"
 mkdir -p "$OUT"
 
 tests=("$@")
-[ ${#tests[@]} -eq 0 ] && tests=(liveness.mjs mapset.mjs realms.mjs workers.mjs spread-loops.mjs number-encoding.mjs helper-calls.mjs callbacks.mjs methods.mjs dictionaries.mjs variables.mjs polymorphic.mjs)
+[ ${#tests[@]} -eq 0 ] && tests=(liveness.mjs mapset.mjs realms.mjs workers.mjs spread-loops.mjs number-encoding.mjs helper-calls.mjs callbacks.mjs methods.mjs dictionaries.mjs variables.mjs polymorphic.mjs strings.mjs builtins.mjs)
 status=0
 for t in "${tests[@]}"; do
 	name=${t%.mjs}
@@ -27,9 +28,9 @@ for t in "${tests[@]}"; do
 	"$BUN" build --compile --bytecode --format=esm --target=bun-linux-x64 "$t" "${extra[@]}" --outfile "$OUT/$name-bytecode" >/dev/null 2>&1
 	rm -f "$OUT/$name.order"
 	BUN_BYTECODE_ORDER_OUT="$OUT/$name.order" "$OUT/$name-bytecode" >/dev/null 2>&1
-	for mode in jit-on jit-off; do
-		# shellcheck disable=SC2046,SC2086 # AOT_BUILD_ENV and the JIT setting are lists of words
-		env BUN_JSC_useAOTLoopSplitting=1 BUN_JSC_aotLoopSplittingPolicy=5 BUN_JSC_useImmutableIntrinsics=1 ${AOT_BUILD_ENV:-} $([ $mode = jit-off ] && echo BUN_AOT_JIT=0) BUN_JSC_useJIT=0 BUN_STATIC_HEAP=1 BUN_AOT=1 \
+	for mode in jit-on jit-off compact; do
+		# shellcheck disable=SC2046,SC2086 # AOT_BUILD_ENV and the mode's settings are lists of words
+		env BUN_JSC_useAOTLoopSplitting=1 BUN_JSC_aotLoopSplittingPolicy=5 BUN_JSC_useImmutableIntrinsics=1 ${AOT_BUILD_ENV:-} $([ $mode != jit-on ] && echo BUN_AOT_JIT=0) $([ $mode = compact ] && echo BUN_JSC_useAOTInlineFastPathsInLoops=0) BUN_JSC_useJIT=0 BUN_STATIC_HEAP=1 BUN_AOT=1 \
 			BUN_JSC_omitBytecodeFromStaticHeap=1 \
 			"$BUN" build --compile --bytecode --format=esm --target=bun-linux-x64 --bytecode-order="$OUT/$name.order" \
 			"$t" "${extra[@]}" --outfile "$OUT/$name-$mode" >/dev/null 2>&1
