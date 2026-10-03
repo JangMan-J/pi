@@ -17,7 +17,8 @@
 #   --keep-bytecode   keep the bytecode in the prebuilt heap (by default it is left out, which is what lets the compiler inline
 #                     Pi's own functions, and saves memory)
 #   --stable          build with a stock Bun instead (PIBOLT_STABLE_BUN, default `bun`): the comparison build, no AOT
-# Environment: PIBOLT_BUN (the Pi-Bolt runtime; default $PIBOLT_WORK/runtime/bun)
+# Environment: PIBOLT_BUN (the Pi-Bolt runtime; default $PIBOLT_WORK/runtime/bun); PIBOLT_BUILD_LOG (a file for everything the
+#              compiler prints, e.g. with BUN_JSC_verboseAOTCompilation=1)
 source "$(dirname "$0")/lib/common.sh"
 
 PI_DIR="$PIBOLT_PI"; OUT=""; JIT=off; CPU=native; PROFILE=""; PLUGINS=""; PLUGIN_WORKERS=(); KEEP_BYTECODE=""; STABLE=""
@@ -116,7 +117,7 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 	# What `pi --version` and `pi update` know themselves by (packages/coding-agent/src/pi-bolt.ts).
 	"$BUN" build --compile --no-compile-autoload-bunfig --target=bun-linux-x64 --bytecode --format=esm "${ORDER_ARGS[@]}" \
 		--define "PIBOLT_BUILD=\"$PIBOLT_VERSION $CPU_VARIANT jit-$JIT\"" \
-		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | grep -v "^AOT: " | tail -3
+		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | tee "${PIBOLT_BUILD_LOG:-/dev/null}" | grep -v "^AOT: " | tail -3
 )
 stage_assets "$OUT"
 printf 'Pi-Bolt %s (Pi %s), linux-%s, JIT %s, built %s\n' "$PIBOLT_VERSION" "$VERSION" "$CPU_VARIANT" "$JIT" "$(date -u +%Y-%m-%d)" >"$OUT/pi-bolt.txt"

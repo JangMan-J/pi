@@ -27,7 +27,9 @@ mapfile -t ENTRIES < <(pi_entries "$AGENT" "$ENTRY")
 
 log "a bytecode build of Pi $VERSION to train with"
 (cd "$AGENT" && "$BUN" build --compile --no-compile-autoload-bunfig --target=bun-linux-x64 --bytecode --format=esm "${ENTRIES[@]}" --outfile "$TMP/pi" >/dev/null)
-log "training session"
+# (What the session opens that reads files from beside the executable: the themes the settings list.)
+mkdir -p "$TMP/theme" && cp "$AGENT"/src/modes/interactive/theme/*.json "$TMP/theme/"
+log "training sessions"
 python3 "$PIBOLT_ROOT/scripts/lib/train_session.py" "$TMP/pi" "$TMP/bytecode.order" "$TMP/regexps.txt"
 mkdir -p "$OUT"
 cp "$TMP/bytecode.order" "$OUT/bytecode.order"
