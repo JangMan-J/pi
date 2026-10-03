@@ -50,6 +50,9 @@ These are read by the executable at run time.
 | `BUN_STATIC_HEAP_VERBOSE=1` | Report how the static heap and code image were mapped. |
 | `PI_TIMING=1` | Pi's own startup timings, including each extension's factory. |
 | `BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT=N` | How many seconds an idle connection to a server waits to be used again when the server does not say (default 4, as in Node). Longer saves a handshake after a pause; a connection that went dead while it waited makes the next request wait for its timeout. |
+| `PI_TUI_SCROLL_ROWS=0` | Fullscreen mode draws every row that changed instead of scrolling the rows that only moved (as up to 0.5.1). For a terminal that does not scroll a region of the screen correctly; tmux, zmx, xterm, kitty, Ghostty and VTE terminals do. |
+| `BUN_JSC_numberOfGCMarkers=N` | Threads that mark during a garbage collection (default 2, from 0.5.2; the engine's own default is up to 8). More shorten collections of a very large heap and cost wake-ups on every small one. |
+| `MIMALLOC_PURGE_HOLES_MIN_INTERVAL=N` | Milliseconds between two sweeps that give freed memory back to the system (default 250, from 0.5.2; the allocator's own default is 100). Lower gives memory back sooner for more CPU while Pi is busy. |
 | `JITI_FS_CACHE=false` | Do not keep the transformed source of run-time extensions (it is kept in `cache/jiti` of the agent directory). |
 
 Pi's own variables (`PI_CODING_AGENT_DIR`, `PI_OFFLINE`, ...) work as documented by Pi.
@@ -95,6 +98,11 @@ variables from outside itself, and stops the program when it is called if it doe
 
 **A run-time plugin is slow.** On the default build, plugins loaded at run time are interpreted. Compile them in
 ([PLUGINS.md](PLUGINS.md)) or use the `linux-x64-jit` build.
+
+**In a container (Docker).** Pi-Bolt needs nothing from the image but glibc 2.17 or later, and runs in tmux or zmx there as
+anywhere. With a memory limit, count the executable too: its code is file-backed memory that the kernel charges to the
+container and has to read again when the limit pushes it out. Pi-Bolt works from a limit of about 100 MB, at twice the CPU and
+with pauses of a second; 256 MB or more leaves it alone. A CPU limit (`--cpus`) lowers the number of threads Pi-Bolt starts.
 
 **Startup is slower than expected.** Check that the compiled code is used (above). Check `PI_TIMING=1` for slow extension
 factories. A cold page cache (the first start after boot or install) adds the time to read the executable from disk.
