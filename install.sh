@@ -10,7 +10,7 @@
 # Environment:
 #   PIBOLT_VERSION   a release tag such as bolt-v0.2.0 (default: the latest release)
 #   PIBOLT_VARIANT   on Linux x64, x64-baseline or x64-jit (default: x64 on CPUs with AVX2, x64-baseline otherwise); on macOS
-#                    arm64 (Apple silicon)
+#                    arm64 or arm64-jit (Apple silicon; default arm64)
 #   PIBOLT_INSTALL   where to install (default: ~/.pi-bolt)
 #   PIBOLT_BIN_DIR   where to link the `pi-bolt` command (default: ~/.local/bin)
 #   PIBOLT_YES=1     do not ask: take the default action and do not offer to start Pi-Bolt
@@ -66,8 +66,8 @@ main() {
 		elif grep -qw avx2 /proc/cpuinfo 2>/dev/null; then VARIANT=x64; else VARIANT=x64-baseline; fi
 	fi
 	case "$PLATFORM-$VARIANT" in
-	linux-x64 | linux-x64-baseline | linux-x64-jit | darwin-arm64) ;;
-	darwin-*) fail "PIBOLT_VARIANT must be arm64 on macOS" ;;
+	linux-x64 | linux-x64-baseline | linux-x64-jit | darwin-arm64 | darwin-arm64-jit) ;;
+	darwin-*) fail "PIBOLT_VARIANT must be arm64 or arm64-jit on macOS" ;;
 	*) fail "PIBOLT_VARIANT must be x64, x64-baseline or x64-jit" ;;
 	esac
 	case "${PIBOLT_SOURCE:-auto}" in

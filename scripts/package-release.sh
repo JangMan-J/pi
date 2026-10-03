@@ -11,6 +11,7 @@
 #   pi-bolt-linux-x64-jit.tar.gz       JIT on, for code loaded at run time
 #   pi-bolt-runtime-linux-x64.tar.gz   the Pi-Bolt Bun runtime, to build Pi with plugins (docs/PLUGINS.md)
 #   pi-bolt-darwin-arm64.tar.gz        on macOS: JIT off, for Apple silicon (M1 and later)
+#   pi-bolt-darwin-arm64-jit.tar.gz    on macOS: JIT on
 #   pi-bolt-runtime-darwin-arm64.tar.gz
 # The Pi archives also come as .tar.xz, about 40% smaller, which install.sh prefers where xz is installed.
 source "$(dirname "$0")/lib/common.sh"
@@ -35,7 +36,7 @@ DIST="$PIBOLT_ROOT/dist/$VERSION"
 PI_ROOT="$(realpath "$PI_DIR")"
 case "$PIBOLT_PLATFORM" in
 linux-x64) TARGETS=("linux-x64:pi-bolt:" "linux-x64-baseline:pi-bolt-baseline:--cpu baseline" "linux-x64-jit:pi-bolt-jit:--jit on") ;;
-darwin-arm64) TARGETS=("darwin-arm64:pi-bolt:") ;;
+darwin-arm64) TARGETS=("darwin-arm64:pi-bolt:" "darwin-arm64-jit:pi-bolt-jit:--jit on") ;;
 *) die "no release is built on $PIBOLT_PLATFORM" ;;
 esac
 # Archives whose files belong to nobody in particular, and on macOS without AppleDouble (._*) files of extended attributes.
