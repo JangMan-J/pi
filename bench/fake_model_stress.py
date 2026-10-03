@@ -170,10 +170,20 @@ class Handler(BaseHTTPRequestHandler):
         intro = f"Turn {turn + 1}. "
         steps = {"heavy": HEAVY, "light": LIGHT, "train": TRAIN, "seq": [[("bash", {"command": "seq 1 300000"})]], "sleep": [[("bash", {"command": "sleep 60; echo slept"})]],
                  "bigargs": [[("write", {"path": "args/big.txt", "content": "0123456789abcdef" * 12800})], [("bash", {"command": "sha256sum args/big.txt"})]]}.get(scenario, [])
+        if scenario.startswith("write:"):
+            # A file of N KB of source code written through a tool call whose arguments stream in 16 characters at a time, about
+            # what a model sends per token (bench/large_write.py).
+            size = int(scenario[6:]) * 1024
+            lines = []
+            while sum(len(line) + 1 for line in lines) < size:
+                n = len(lines)
+                lines.append(f"export function step{n}(input: number[]): number {{ return input.reduce((a, b) => a + b * {n % 97}, {n}); }}")
+            source = "\n".join(lines)[:size]
+            steps = [[("write", {"path": "big/source.ts", "content": source})], [("bash", {"command": "wc -c < big/source.ts"})]]
         if turn < len(steps):
             # The arguments in pieces, as models send them: a few bytes at a time for `bigargs`.
             calls = steps[turn]
-            step = 7 if scenario == "bigargs" else 4096 if max(len(json.dumps(a)) for _, a in calls) > 65536 else 97
+            step = 7 if scenario == "bigargs" else 16 if scenario.startswith("write:") else 4096 if max(len(json.dumps(a)) for _, a in calls) > 65536 else 97
             return self.stream(encode(turn, [intro], calls, step))
 
         if scenario.startswith("mdfile:") and turn == 0:
