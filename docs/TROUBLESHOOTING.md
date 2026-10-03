@@ -55,6 +55,16 @@ Pi's own variables (`PI_CODING_AGENT_DIR`, `PI_OFFLINE`, ...) work as documented
 Build-time variables (`BUN_STATIC_HEAP`, `BUN_AOT`, `BUN_AOT_JIT`, `BUN_AOT_CPU`, `BUN_JSC_*`) are set by `scripts/build-pi.sh`.
 See [ARCHITECTURE.md](ARCHITECTURE.md#build-pipeline).
 
+To rule a compiler optimization in or out of a problem, build with it off (each is on by default) and compare:
+
+| Build with | Turns off |
+|---|---|
+| `BUN_JSC_useAOTVariableNarrowing=0` | Module and closure variables taken for what they are written with, in loops |
+| `BUN_JSC_maximumAOTMethodCandidates=1` | Inlining of methods whose name several functions share |
+| `BUN_JSC_useAOTMethodInliningByName=0` | All inlining of methods by name |
+| `BUN_JSC_useAOTIntegerRemainderOfNumbers=0` | The integer fast path of `%` |
+| `BUN_JSC_useImmutableIntrinsics=0` | Inlining of array callbacks, and the freezing of the standard objects it needs |
+
 ## Common problems
 
 **`pi-bolt: command not found` after installing.** `~/.local/bin` is not on your `PATH`. Add

@@ -193,10 +193,12 @@ helpers held in module-level functions or constants, or that index arrays. How a
 
 - **Keep hot helpers at module level** and call them by name: `function isSpace(c) { ... }` or `const isSpace = (c) => ...`,
   never reassigned. Both are inlined into the loop. Or write small checks inline.
-- **Methods are inlined when their name is unique.** `helpers.isSpace(c)` or `this.isSpace(c)` is compiled into the loop when
-  the program defines exactly one method called `isSpace`, behind a check that the object's `isSpace` is that function (an object
-  with another function under that name takes the ordinary call). A name that several classes define (`area`, `render`) stays a
-  real call: give hot helpers distinct names, or move them to module level.
+- **Methods are inlined when their name is defined by few functions.** `helpers.isSpace(c)` or `shape.area()` in a loop is
+  compiled into the loop when the program defines that method name in up to six places (small ones), behind a check of which
+  function the object's method is; an object with another function under that name takes the ordinary call. A name that many
+  classes define (`render`, `toString`) stays a real call. Unique names are the cheapest: one check instead of several.
+- **Module-level constants are fine in loops.** `for (let i = 0; i < LIMIT; i++)` with `const LIMIT = 1000` at module level, or a
+  constant captured by a closure, is compared as a number.
 - These built-ins have fast paths and do not count as calls: `Math.sqrt/abs/floor/ceil/trunc/fround/min/max/imul`,
   `String.prototype.charCodeAt/charAt/codePointAt`, `Array.prototype.push/pop`, `Array.isArray`, and `Map`/`Set`
   `get/has/set/add`.

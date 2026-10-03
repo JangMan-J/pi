@@ -131,7 +131,8 @@ notices and a `pi-bolt.txt` naming the build. Publishing a release, by the relea
 
 | Command | What it checks |
 |---|---|
-| `tests/aot/run.sh` | Engine correctness. Programs that stress values held in registers across slow paths, `Map`/`Set` fast paths, realms and workers are compiled ahead of time (JIT on and off). Their output must equal stock Bun's. |
+| `tests/aot/run.sh` | Engine correctness. Programs that stress values held in registers across slow paths, `Map`/`Set` fast paths, realms and workers, inlined helpers, methods, callbacks and narrowed variables are compiled ahead of time (JIT on and off). Their output must equal stock Bun's. |
+| `tests/pi/run.sh` | Pi itself, under conditions that once crashed it: errors formatted at the end of a garbage collection. |
 | `python3 bench/e2e_tools.py --reference bun=out/pi-stable/pi --build pi-bolt=out/pi-bolt/pi` | Every Pi tool (`ls`, `find`, `grep`, `write`, `edit`, `bash`, `read`) driven by a scripted model. The transcript and resulting files must be byte-identical to the reference build's. |
 | `python3 bench/ui_check.py --project . --build pi-bolt=out/pi-bolt/pi` | The TUI on a pseudo-terminal: trust prompt, `/` commands, `/hotkeys`, `/session`, `!` bash, a model turn with tool calls, `/model`, `/quit`. |
 | `python3 bench/tmux_check.py --build pi-bolt=out/pi-bolt/pi` | Pi in a real tmux pane: keystroke latency, paste, streaming, resize, Escape to abort, idle CPU, memory. |
@@ -139,8 +140,9 @@ notices and a `pi-bolt.txt` naming the build. Publishing a release, by the relea
 `out/pi-stable/pi` is the stock-Bun comparison build: `scripts/build-pi.sh --stable --out out/pi-stable`.
 
 The engine itself was also checked against JavaScriptCore's own test suite, `JSTests/stress`. Each test runs with and without
-ahead-of-time compilation, and the outputs are compared. 4,779 of the 4,786 tests that run behave the same. The 7 that differ
-inspect engine internals that do not exist without a JIT, such as tier-up and reoptimization counters and sampling-profiler frames.
+ahead-of-time compilation, and the outputs are compared. 4,780 of the 4,786 tests that run behave the same. The 6 that differ
+inspect engine internals that do not exist without a JIT (tier-up and reoptimization counters, sampling-profiler frames), or run
+out of memory or stack at limits that differ by design.
 
 ## Where things go
 
