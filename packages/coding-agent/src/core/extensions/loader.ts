@@ -549,6 +549,20 @@ function isCurrentCacheToken(cacheToken: ExtensionCacheToken | undefined): cache
 	);
 }
 
+/**
+ * Where jiti keeps what it makes of an extension's TypeScript. Its own choice is a directory of the system's temporary
+ * directory, which is emptied when the machine restarts (every extension is then transformed again on the first start,
+ * seconds for a large one) and which other users of the machine can write to. A directory of the agent's own is neither.
+ * jiti takes a file from it only when it was made of the source as it is now. JITI_FS_CACHE and JITI_CACHE still say
+ * whether there is a cache at all.
+ */
+function extensionTransformCache(): { fsCache?: string } {
+	if (process.env.JITI_FS_CACHE !== undefined || process.env.JITI_CACHE !== undefined) {
+		return {};
+	}
+	return { fsCache: path.join(getAgentDir(), "cache", "jiti") };
+}
+
 async function loadExtensionModule(extensionPath: string, cacheToken?: ExtensionCacheToken) {
 	if (isCurrentCacheToken(cacheToken)) {
 		const cachedFactory = extensionCache.get(extensionPath);
@@ -569,6 +583,7 @@ async function loadExtensionModule(extensionPath: string, cacheToken?: Extension
 	const jiti = createJitiImpl(import.meta.url, {
 		moduleCache: false,
 		...resolutionOptions,
+		...extensionTransformCache(),
 	});
 
 	const module = await jiti.import(extensionPath, { default: true });

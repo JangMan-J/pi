@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Crash tests that need a built Pi (Pi's own ahead-of-time compiled code under an extension), not just the engine.
+# Tests that need a built Pi (Pi's own ahead-of-time compiled code under an extension), not just the engine: crashes, and
+# extensions that failed to load.
 #
 # Usage: tests/pi/run.sh [PI]     (default: out/pi-bolt/pi)
 # Each test runs several times: the crashes they guard against depended on when the collector ran.
@@ -15,7 +16,7 @@ run() {
 	for _ in $(seq "$runs"); do
 		out=$(env -i HOME="$home" PATH=/usr/bin:/bin PI_CODING_AGENT_DIR="$home/agent" DO_NOT_TRACK=1 BUN_ENABLE_CRASH_REPORTING=0 \
 			"$@" "$PI" -ne -e "./$name.js" --offline --no-session -p hi 2>&1 </dev/null)
-		[ $? -eq 0 ] && grep -q "^$name: " <<<"$out" || { failed=$((failed + 1)); last=$out; }
+		[ $? -eq 0 ] && grep -q "^$name: " <<<"$out" && ! grep -q "Failed to load extension" <<<"$out" || { failed=$((failed + 1)); last=$out; }
 	done
 	if [ "$failed" = 0 ]; then
 		echo "PASS $name ($runs runs${*:+, $*})"
@@ -27,4 +28,12 @@ run() {
 }
 run gc-end-stacks 5
 run gc-end-stacks 5 BUN_JSC_collectContinuously=1
+# (The first run transforms the extension; the others take it from the cache, which is the agent's own.)
+run capture-stack 3
+if ls "$home/agent/cache/jiti"/*capture-stack* >/dev/null 2>&1; then
+	echo "PASS the transformed extension is kept in the agent directory"
+else
+	echo "FAIL the transformed extension is not in $home/agent/cache/jiti"
+	status=1
+fi
 exit $status
