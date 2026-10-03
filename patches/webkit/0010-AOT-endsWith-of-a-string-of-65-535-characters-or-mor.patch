@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sat, 3 Oct 2026 05:34:41 +0000
+Subject: [PATCH] AOT: endsWith() of a string of 65,535 characters or more in
+ compact code
+
+In compact code, s.endsWith(literal) takes the characters and length of the
+string from Stub::NarrowCharacters, which saturates the length at 0xffff. The
+literal was then compared with the characters before that position instead
+of with the end of the string, so the answer for a longer string was wrong.
+Such a string now goes to operationStringEndsWith. (startsWith() needs no
+more than the length it was given; the other users of the stub compare the
+length with literals shorter than 0xffff.)
+
+Found by comparing Pi's tool results with a stock Bun's: the tail of a long
+command output kept an empty last line, since `text.endsWith("\n")` said no.
+---
+ Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp b/Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp
+index 8a4d3a1c0d..ed0c23c528 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp
+@@ -574,6 +574,13 @@ bool Lowering::lowerCallOfBuiltin(Node* node, Node* calleeNode, unsigned argc, u
+             Vector<ValueFromBlock, 2> lengthsOtherwise;
+             Vector<ValueFromBlock, 3> answers;
+             auto [characters, length] = narrowCharactersOf(thisValue, notForTheLooking, lengthsOtherwise);
++            if (!atStart && isCompact()) {
++                // In compact code the length is saturated at 0xffff (Stub::NarrowCharacters): where a longer string ends is not known.
++                LBasicBlock lengthIsKnown = m_out.newBlock();
++                lengthsOtherwise.append(m_out.anchor(length));
++                m_out.branch(m_out.aboveOrEqual(length, m_out.constInt32(0xffff)), rarely(notForTheLooking), usually(lengthIsKnown));
++                m_out.appendTo(lengthIsKnown);
++            }
+             LValue needed = m_out.constInt32(written->length());
+             answers.append(m_out.anchor(m_out.booleanFalse));
+             m_out.branch(m_out.aboveOrEqual(length, needed), unsure(isLongEnough), unsure(settled));
+-- 
+2.43.0
+

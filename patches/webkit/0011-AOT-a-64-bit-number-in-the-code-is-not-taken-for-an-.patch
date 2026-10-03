@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sat, 3 Oct 2026 05:57:08 +0000
+Subject: [PATCH] AOT: a 64-bit number in the code is not taken for an address
+ unless something is there
+
+After lowering, the compiler declines a function whose code holds a 64-bit
+constant between 4 GB and 2^47 that it did not put there as a number, taking
+it for an address of this process that a lowering wrote into the code by
+mistake. B3 makes such numbers of its own: x + 2147483648 with x 3000000000,
+folded, is 5147483648. The function was declined, and a caller that had
+been compiled to call it directly then stopped the image builder ("there is
+no code for ..., which something calls without asking"). Such a constant is
+now taken for an address only if it is inside a mapping of this process,
+where anything a lowering pointed at would be.
+
+Found by differential fuzzing (2 programs in 11,000), and in 0.4.0 too.
+---
+ Source/JavaScriptCore/aot/AOTCompiler.cpp | 26 ++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTCompiler.cpp b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+index 88cfa82125..44e658640c 100644
+--- a/Source/JavaScriptCore/aot/AOTCompiler.cpp
++++ b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+@@ -34,6 +34,30 @@
+ 
+ namespace JSC { namespace AOT {
+ 
++// Whether `address` is in memory this process has mapped. An address that a lowering put in the code by mistake is of something that
++// is there, so a 64-bit constant that is in none of the mappings is a number (what B3 made of two numbers, say: x + 2147483648 with x
++// 4294967295), not an address. Only asked of the few constants that look like addresses, so the mappings are read each time.
++static bool isMappedInThisProcess(uint64_t address)
++{
++#if OS(LINUX)
++    FILE* maps = fopen("/proc/self/maps", "r");
++    if (!maps)
++        return true;
++    bool found = false;
++    unsigned long long start = 0, end = 0;
++    char line[512];
++    while (!found && fgets(line, sizeof(line), maps)) {
++        if (sscanf(line, "%llx-%llx", &start, &end) == 2 && address >= start && address < end)
++            found = true;
++    }
++    fclose(maps);
++    return found;
++#else
++    UNUSED_PARAM(address);
++    return true;
++#endif
++}
++
+ static ScopeChain unknownScopeChain()
+ {
+     ScopeChain chain;
+@@ -340,7 +364,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+             continue;
+         uint64_t bits = value->asInt64();
+         // (But for where structures are, which is the same in every process: structureIDBaseOfImages.)
+-        if (bits >= 4 * GB && bits < (1ULL << 47) && bits != structureIDBaseOfImages && !graph.wideIntegerConstants.contains(static_cast<int64_t>(bits))) {
++        if (bits >= 4 * GB && bits < (1ULL << 47) && bits != structureIDBaseOfImages && !graph.wideIntegerConstants.contains(static_cast<int64_t>(bits)) && isMappedInThisProcess(bits)) {
+             graph.fail("an address in the code"_s);
+             return declined();
+         }
+-- 
+2.43.0
+

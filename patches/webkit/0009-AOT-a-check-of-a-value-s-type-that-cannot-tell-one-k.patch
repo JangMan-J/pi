@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sat, 3 Oct 2026 05:15:25 +0000
+Subject: [PATCH] AOT: a check of a value's type that cannot tell one kind of
+ string from another
+
+Lowering::exitUnlessOfType() stopped on a RELEASE_ASSERT when the type it was
+asked to check for held one kind of string and not another (an atom and not
+a long string, say): a check of the cell's type tells strings from what is
+not a string, not one kind from another. It is now treated like a function
+or an object layout it cannot tell apart: such a string does not pass, and
+the code leaves for its generic copy. Found by differential fuzzing: a loop
+re-entering its fast copy with a local that held a string literal and later
+something else stopped the compiler on about 1 program in 100.
+
+The check for a closure variable narrowed in a loop's fast copy checks for
+strings as a whole: that the variable holds no other kind of string is known
+from what the program writes to it.
+---
+ Source/JavaScriptCore/aot/AOTLowerGuards.cpp | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTLowerGuards.cpp b/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
+index 66d6df2a87..eadecef405 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
+@@ -79,6 +79,9 @@ void Lowering::exitUnlessOfType(LValue value, Type from, Type wanted)
+         wanted &= ~TFunction;
+     if ((from & wanted & TFinalObjectTag) && !isSubtype(from & TAnyLayoutNumber, wanted))
+         wanted &= ~TFinalObject;
++    // Nor which kind of string it is (an atom, a short or a long string).
++    if ((from & wanted & TString) && !isSubtype(from & TString, wanted))
++        wanted &= ~TString;
+     from &= TAllTags;
+     wanted &= TAllTags;
+     LBasicBlock pass = m_out.newBlock();
+@@ -1152,7 +1155,12 @@ bool Lowering::guardGetFromScope(Node* guard)
+             auto distance = m_graph.distanceOfEnvironmentAccessed(read);
+             value = m_out.load64(distance ? environmentAt(*distance) : lowCell(guard->use(bytecode.m_scope)), m_heaps.JSLexicalEnvironment_variables[bytecode.m_offset]);
+         }
+-        exitUnlessOfType(value, guard->typeOfVariableRead | TUndefined | TEmpty, guard->typeOfVariableRead);
++        // A check tells a string from what is not one, not one kind of string from another (an atom from a long string): that
++        // the variable holds no other kind is known from what the program writes to it, so the check is of strings as a whole.
++        Type checked = guard->typeOfVariableRead;
++        if (checked & TString)
++            checked |= TString;
++        exitUnlessOfType(value, checked | TUndefined | TEmpty, checked);
+         guard->lowered = value;
+         return true;
+     }
+-- 
+2.43.0
+

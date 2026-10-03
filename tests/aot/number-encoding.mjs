@@ -27,4 +27,11 @@ for (const v of values) {
 let x = 0.5;
 for (let i = 0; i < 1000; i++) x = (x + i / 2) % 97;
 log("loop", x);
+
+// Integers of more than 32 bits that the compiler adds up itself: the sum is a 64-bit constant in the code that looks like an
+// address (the compiler used to decline the function for it, and a direct call to it then had nowhere to go).
+function wideSum(n) { const a = 3000000000; let s = 0; for (let i = 0; i < n; i++) s += a + 2147483648; return s; }
+function wideCompare(n) { let big = 4294967295; for (let i = 0; i < n; i++) { if (i === big + 2147483648) return -1; } return n; }
+function wideBoth(n) { let p = 2147483648, q = 2147483648, s = 0; for (let i = 0; i < n; i++) s += (p + q) / 4294967296; return s; }
+log("wide constants", wideSum(10), wideCompare(10), wideBoth(10));
 console.log(out.join("\n"));
