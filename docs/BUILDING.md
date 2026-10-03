@@ -131,10 +131,12 @@ notices and a `pi-bolt.txt` naming the build. Publishing a release, by the relea
 
 | Command | What it checks |
 |---|---|
-| `tests/aot/run.sh` | Engine correctness. Programs that stress values held in registers across slow paths, `Map`/`Set` fast paths, realms and workers, inlined helpers, methods, callbacks and narrowed variables are compiled ahead of time (JIT on and off). Their output must equal stock Bun's. |
+| `tests/aot/run.sh` | Engine correctness. Programs that stress values held in registers across slow paths, `Map`/`Set` fast paths, realms and workers, inlined helpers, methods, callbacks, narrowed variables, and every built-in with a fast path on edge-case inputs (`builtins.mjs`, written by `gen-builtins.py`) are compiled ahead of time three ways: JIT on, JIT off, and JIT off with every operation compiled compactly (as outside loops). Their output must equal stock Bun's. |
+| `tests/aot/fuzz/run.sh --count 2000` | Differential fuzzing: random programs aimed at loops and their guards, compiled ahead of time (`--mode jit-off`, `jit-on`, `baseline` or `compact`), must print what the same bundle prints as bytecode. 0.5.0 was released after 32,000 programs (four rounds; the last 10,000, on its compiler, all passed). |
 | `tests/pi/run.sh` | Pi itself, under conditions that once crashed it: errors formatted at the end of a garbage collection. |
 | `python3 bench/e2e_tools.py --reference bun=out/pi-stable/pi --build pi-bolt=out/pi-bolt/pi` | Every Pi tool (`ls`, `find`, `grep`, `write`, `edit`, `bash`, `read`) driven by a scripted model. The transcript and resulting files must be byte-identical to the reference build's. |
 | `python3 bench/ui_check.py --project . --build pi-bolt=out/pi-bolt/pi` | The TUI on a pseudo-terminal: trust prompt, `/` commands, `/hotkeys`, `/session`, `!` bash, a model turn with tool calls, `/model`, `/quit`. |
+| `python3 bench/stress.py --reference bun=out/pi-stable/pi --build pi-bolt=out/pi-bolt/pi --concurrency 32 --soak 600` | Load and failures: 32 Pi processes at once doing large tool work (tool results and requests byte-identical to the reference's), streamed and cut-off answers, HTTP errors, signals, and 600 prompts in one RPC session with a flat memory floor. |
 | `python3 bench/tmux_check.py --build pi-bolt=out/pi-bolt/pi` | Pi in a real tmux pane: keystroke latency, paste, streaming, resize, Escape to abort, idle CPU, memory. |
 
 `out/pi-stable/pi` is the stock-Bun comparison build: `scripts/build-pi.sh --stable --out out/pi-stable`.
