@@ -31,6 +31,17 @@ PIBOLT_PLATFORM="$PIBOLT_OS-$PIBOLT_ARCH"
 # abspath PATH: PATH made absolute with symbolic links resolved, whether or not it exists (GNU realpath -m; macOS has no -m).
 abspath() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
 
+# timeout SECONDS COMMAND...: GNU timeout where there is one; on macOS a stand-in on PATH (an executable, so that `env ... timeout`
+# finds it too) with perl's alarm: killed by SIGALRM, status 142 instead of 124.
+if ! command -v timeout >/dev/null 2>&1; then
+	if [ ! -x "$PIBOLT_WORK/bin/timeout" ]; then
+		mkdir -p "$PIBOLT_WORK/bin"
+		printf '#!/usr/bin/perl\nalarm shift; exec @ARGV or exit 127;\n' >"$PIBOLT_WORK/bin/timeout"
+		chmod +x "$PIBOLT_WORK/bin/timeout"
+	fi
+	PATH="$PIBOLT_WORK/bin:$PATH"
+fi
+
 # sha256 [ARGS]: sha256sum, or shasum -a 256 where there is none (older macOS). Same output and -c.
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 

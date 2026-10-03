@@ -26,14 +26,14 @@ BUN="$(runtime_bun)"
 OUT="$PIBOLT_WORK/fuzz"
 mkdir -p "$OUT/work" "$OUT/fail"
 GEN="$(cd "$(dirname "$0")" && pwd)/gen.mjs"
-export BUN MODE OUT GEN AOT_BUILD_ENV
+export BUN MODE OUT GEN AOT_BUILD_ENV PIBOLT_PLATFORM
 
 one() {
 	local seed=$1 w
 	w=$(mktemp -d "$OUT/work/s$seed-XXXX") && cd "$w" || return
 	"$BUN" "$GEN" "$seed" >p.mjs
 	# The reference: the same bundle as bytecode, JIT on. (Bundling rewrites some source text that error messages quote.)
-	"$BUN" build --compile --bytecode --format=esm --target=bun-linux-x64 p.mjs --outfile p-bc >/dev/null 2>&1
+	"$BUN" build --compile --bytecode --format=esm --target="bun-$PIBOLT_PLATFORM" p.mjs --outfile p-bc >/dev/null 2>&1
 	if ! BUN_BYTECODE_ORDER_OUT=p.order timeout 60 ./p-bc >ref.txt 2>ref.err; then
 		echo "SKIP $seed"; rm -rf "$w"; return
 	fi
@@ -44,7 +44,7 @@ one() {
 	# shellcheck disable=SC2086 # AOT_BUILD_ENV is a list of words
 	env "${extra[@]}" ${AOT_BUILD_ENV:-} BUN_JSC_useAOTLoopSplitting=1 BUN_JSC_aotLoopSplittingPolicy=5 BUN_JSC_useImmutableIntrinsics=1 BUN_JSC_useJIT=0 \
 		BUN_STATIC_HEAP=1 BUN_AOT=1 BUN_JSC_omitBytecodeFromStaticHeap=1 \
-		timeout 300 "$BUN" build --compile --bytecode --format=esm --target=bun-linux-x64 --bytecode-order=p.order p.mjs --outfile p-aot >build.log 2>&1
+		timeout 300 "$BUN" build --compile --bytecode --format=esm --target="bun-$PIBOLT_PLATFORM" --bytecode-order=p.order p.mjs --outfile p-aot >build.log 2>&1
 	local why=""
 	if [ ! -x p-aot ]; then why="the compiler failed (see build.log)"
 	else
