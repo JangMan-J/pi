@@ -144,8 +144,49 @@ def pi_env(home: Path, extra: dict | None = None) -> dict:
     return env
 
 
+MACOS = sys.platform == "darwin"
+
+
 def pinned(argv: list[str], cpus: str | None) -> list[str]:
+    if cpus and MACOS:
+        # macOS cannot pin a process to cores: runs share the machine (interleaving still spreads its load evenly).
+        if not getattr(pinned, "warned", False):
+            print("note: --cpus is ignored on macOS", file=sys.stderr)
+            pinned.warned = True
+        return list(argv)
     return ["taskset", "-c", cpus, *argv] if cpus else list(argv)
+
+
+def maxrss_mb(ru) -> float:
+    """Peak resident memory from a wait4()/getrusage() result: Linux counts it in KiB, macOS in bytes."""
+    return ru.ru_maxrss / (1 << 20 if MACOS else 1024)
+
+
+def alive(pid: int) -> bool:
+    """Whether a process (not necessarily a child) still exists."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _rusage_macos(pid: int):
+    """proc_pid_rusage(RUSAGE_INFO_V4) as a list of its 64-bit fields after the UUID, or None if the process is gone."""
+    import ctypes
+    global _libproc, _ticks_ns
+    if "_libproc" not in globals():
+        _libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        timebase = (ctypes.c_uint32 * 2)()
+        libc.mach_timebase_info(timebase)
+        _ticks_ns = timebase[0] / timebase[1]  # ri_*_time are in Mach absolute time units (24 MHz ticks on Apple silicon)
+    buf = (ctypes.c_uint64 * 64)()
+    if _libproc.proc_pid_rusage(pid, 4, buf) != 0:
+        return None
+    return list(buf)[2:]
 
 
 class Tty:
@@ -214,7 +255,10 @@ class Tty:
 
 
 def cpu_ms(pid: int) -> float:
-    """CPU time of every thread of a live process, from schedstat (nanoseconds)."""
+    """CPU time of every thread of a live process: from schedstat (nanoseconds), on macOS from proc_pid_rusage."""
+    if MACOS:
+        ri = _rusage_macos(pid)
+        return (ri[0] + ri[1]) * _ticks_ns / 1e6 if ri else 0.0
     total = 0
     for tid in os.listdir(f"/proc/{pid}/task"):
         with contextlib.suppress(OSError):
@@ -223,7 +267,11 @@ def cpu_ms(pid: int) -> float:
 
 
 def memory_mb(pid: int) -> dict:
-    """Resident memory, and the process's own (private dirty) memory: what it costs beyond shared, droppable file pages."""
+    """Resident memory, and the process's own (private dirty) memory: what it costs beyond shared, droppable file pages. On
+    macOS "own" is the physical footprint (what Activity Monitor shows: dirty and compressed memory, without clean file pages)."""
+    if MACOS:
+        ri = _rusage_macos(pid)
+        return {"rss": round(ri[6] / (1 << 20), 1), "own": round(ri[7] / (1 << 20), 1)} if ri else {}
     out = {}
     with contextlib.suppress(OSError):
         for line in open(f"/proc/{pid}/smaps_rollup"):

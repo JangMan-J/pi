@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import FIXTURES, fake_model, parse_builds, pi_env, pi_home
+from harness import FIXTURES, MACOS, fake_model, maxrss_mb, memory_mb, parse_builds, pi_env, pi_home
 
 # Which of the model server's APIs Pi talks to it with (--api).
 MODEL_ARGS = ["--model", "fake/fake-model"]
@@ -67,7 +67,7 @@ def run_print(build, home, cwd: Path, scenario, timeout=600, extra_env=None):
         p.returncode = os.waitstatus_to_exitcode(status)
     finally:
         timer.cancel()
-    return p.returncode, out, ru.ru_maxrss / 1024, time.perf_counter() - start
+    return p.returncode, out, maxrss_mb(ru), time.perf_counter() - start
 
 
 def crashed(code, out):
@@ -171,6 +171,8 @@ def signals(build, port, root):
 
 
 def resident_mb(pid):
+    if MACOS:
+        return memory_mb(pid).get("rss", 0.0)
     try:
         for line in open(f"/proc/{pid}/status"):
             if line.startswith("VmRSS:"):

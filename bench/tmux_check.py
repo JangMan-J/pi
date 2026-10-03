@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import ANSI, MODEL_ARGS, PROMPT, cpu_ms, done, fake_model, median, memory_mb, parse_builds, pi_env, pi_home, workdir
+from harness import ANSI, MACOS, MODEL_ARGS, PROMPT, alive, cpu_ms, done, fake_model, median, memory_mb, parse_builds, pi_env, pi_home, workdir
 
 SOCKET = "pibolt-check"
 ERRORS = re.compile(r"TypeError|ReferenceError|RangeError|SyntaxError|panic\(|Segmentation fault|Bun has crashed|oh no:|Unhandled|uncaught", re.I)
@@ -77,7 +77,7 @@ def check(build, env, cwd, prompts, cpus, out_dir):
     out_file = out_dir / f"tmux-{build.name}.out"
     out_file.unlink(missing_ok=True)
     command = "exec env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in env.items() if not k.startswith("TMUX"))
-    command += (f" taskset -c {cpus} " if cpus else " ") + " ".join(shlex.quote(a) for a in [*build.argv, "--no-session", *MODEL_ARGS])
+    command += (f" taskset -c {cpus} " if cpus and not MACOS else " ") + " ".join(shlex.quote(a) for a in [*build.argv, "--no-session", *MODEL_ARGS])
     r = {"build": build.name}
     t0 = time.perf_counter()
     tmux("new-session", "-d", "-s", session, "-x", "160", "-y", "48", "-c", str(cwd), command, check=True)
@@ -173,9 +173,9 @@ def check(build, env, cwd, prompts, cpus, out_dir):
         tmux("send-keys", "-t", session, "-l", "/quit")
         tmux("send-keys", "-t", session, "Enter")
         end = time.perf_counter() + 10
-        while time.perf_counter() < end and os.path.exists(f"/proc/{pid}"):
+        while time.perf_counter() < end and alive(pid):
             time.sleep(0.05)
-        r["quit"] = "ok" if not os.path.exists(f"/proc/{pid}") else "still running"
+        r["quit"] = "ok" if not alive(pid) else "still running"
         return r
     finally:
         tmux("kill-session", "-t", session)

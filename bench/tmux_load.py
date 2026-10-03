@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import ANSI, MODEL_ARGS, cpu_ms, fake_model, memory_mb, parse_builds, pi_env, pi_home, workdir
+from harness import ANSI, MACOS, MODEL_ARGS, cpu_ms, fake_model, memory_mb, parse_builds, pi_env, pi_home, workdir
 
 
 def main():
@@ -45,7 +45,7 @@ def main():
             out = Path(f"/tmp/{socket}.out")
             env = pi_env(home, {"TERM": "tmux-256color"})
             command = "exec env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in env.items() if not k.startswith("TMUX"))
-            command += (f" taskset -c {a.cpus} " if a.cpus else " ") + " ".join(shlex.quote(x) for x in [*build.argv, "--no-session", *MODEL_ARGS])
+            command += (f" taskset -c {a.cpus} " if a.cpus and not MACOS else " ") + " ".join(shlex.quote(x) for x in [*build.argv, "--no-session", *MODEL_ARGS])
             tmux("-f", "/dev/null", "new-session", "-d", "-s", "s", "-x", "160", "-y", "48", "-c", str(cwd), command)
             tmux("pipe-pane", "-t", "s", "-o", f"cat >> {out}")
             pid = int(tmux("display", "-p", "-t", "s", "#{pane_pid}").stdout.strip())

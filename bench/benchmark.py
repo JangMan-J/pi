@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import DONE, MODEL_ARGS, PROMPT, Tty, done, fake_model, median, parse_builds, pi_env, pi_home, pinned, workdir
+from harness import DONE, MODEL_ARGS, PROMPT, Tty, done, fake_model, maxrss_mb, median, parse_builds, pi_env, pi_home, pinned, workdir
 
 
 def run_plain(build, args, env, cwd, cpus):
@@ -35,7 +35,7 @@ def run_plain(build, args, env, cwd, cpus):
     out = p.stdout.read()
     _, status, ru = os.wait4(p.pid, 0)
     return out, {"ok": os.waitstatus_to_exitcode(status) == 0, "wall_ms": (time.perf_counter() - t0) * 1e3,
-                 "cpu_ms": (ru.ru_utime + ru.ru_stime) * 1e3, "peak_mb": ru.ru_maxrss / 1024}
+                 "cpu_ms": (ru.ru_utime + ru.ru_stime) * 1e3, "peak_mb": maxrss_mb(ru)}
 
 
 def startup(build, env, cwd, cpus):
@@ -75,7 +75,7 @@ def interactive(build, env, cwd, cpus, prompts=5):
     r["ok"] = "turns_ms" in r and status == 0
     r["wall_ms"] = (time.perf_counter() - t0) * 1e3
     r["cpu_ms"] = (ru.ru_utime + ru.ru_stime) * 1e3
-    r["peak_mb"] = ru.ru_maxrss / 1024
+    r["peak_mb"] = maxrss_mb(ru)
     return r
 
 
