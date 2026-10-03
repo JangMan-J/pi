@@ -4,46 +4,46 @@
 <text x="20" y="50" font-size="13" fill="#52514e">Lower is better. Own memory = private dirty pages. Ratios compare Pi-Bolt with Bun.</text>
 <text x="20" y="86" font-size="13" font-weight="600" fill="#0b0b0b">Peak memory, interactive session</text>
 <text x="108" y="111" font-size="12" text-anchor="end" fill="#52514e">Pi-Bolt</text>
-<path d="M116,100 h145.63361989447662 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-145.63361989447662 z" fill="#2a78d6"/>
-<text x="271.6336198944766" y="111" font-size="12" fill="#0b0b0b">155 MB <tspan fill="#52514e">1.3× less</tspan></text>
+<path d="M116,100 h149.29788292521144 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-149.29788292521144 z" fill="#2a78d6"/>
+<text x="275.2978829252114" y="111" font-size="12" fill="#0b0b0b">159 MB <tspan fill="#52514e">1.3× less</tspan></text>
 <text x="108" y="135" font-size="12" text-anchor="end" fill="#52514e">Bun 1.4.2</text>
-<path d="M116,124 h190.09091244511677 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-190.09091244511677 z" fill="#eb6834"/>
-<text x="316.09091244511677" y="135" font-size="12" fill="#0b0b0b">201 MB</text>
+<path d="M116,124 h192.0276380520701 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-192.0276380520701 z" fill="#eb6834"/>
+<text x="318.0276380520701" y="135" font-size="12" fill="#0b0b0b">204 MB</text>
 <text x="108" y="159" font-size="12" text-anchor="end" fill="#52514e">Node 22</text>
 <path d="M116,148 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#1baf7a"/>
 <text x="326.0" y="159" font-size="12" fill="#0b0b0b">212 MB</text>
 <line x1="116" y1="96" x2="116" y2="166" stroke="#d9d8d3"/>
 <text x="450" y="86" font-size="13" font-weight="600" fill="#0b0b0b">Own memory, tmux session</text>
 <text x="538" y="111" font-size="12" text-anchor="end" fill="#52514e">Pi-Bolt</text>
-<path d="M546,100 h51.860816944024215 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-51.860816944024215 z" fill="#2a78d6"/>
-<text x="607.8608169440242" y="111" font-size="12" fill="#0b0b0b">36 MB <tspan fill="#52514e">2.5× less</tspan></text>
+<path d="M546,100 h46.23192771084337 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-46.23192771084337 z" fill="#2a78d6"/>
+<text x="602.2319277108434" y="111" font-size="12" fill="#0b0b0b">33 MB <tspan fill="#52514e">2.6× less</tspan></text>
 <text x="538" y="135" font-size="12" text-anchor="end" fill="#52514e">Bun 1.4.2</text>
-<path d="M546,124 h134.57186081694405 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-134.57186081694405 z" fill="#eb6834"/>
-<text x="690.5718608169441" y="135" font-size="12" fill="#0b0b0b">90 MB</text>
+<path d="M546,124 h126.57228915662648 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-126.57228915662648 z" fill="#eb6834"/>
+<text x="682.5722891566265" y="135" font-size="12" fill="#0b0b0b">85 MB</text>
 <text x="538" y="159" font-size="12" text-anchor="end" fill="#52514e">Node 22</text>
 <path d="M546,148 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#1baf7a"/>
-<text x="756.0" y="159" font-size="12" fill="#0b0b0b">132 MB</text>
+<text x="756.0" y="159" font-size="12" fill="#0b0b0b">133 MB</text>
 <line x1="546" y1="96" x2="546" y2="166" stroke="#d9d8d3"/>
-<text x="20" y="204" font-size="13" font-weight="600" fill="#0b0b0b">Own memory, end of 2.7M-token session</text>
+<text x="20" y="204" font-size="13" font-weight="600" fill="#0b0b0b">Own memory, end of 4.2M-token session</text>
 <text x="108" y="229" font-size="12" text-anchor="end" fill="#52514e">Pi-Bolt</text>
-<path d="M116,218 h50.23057432432432 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-50.23057432432432 z" fill="#2a78d6"/>
-<text x="176.23057432432432" y="229" font-size="12" fill="#0b0b0b">126 MB <tspan fill="#52514e">2.3× less</tspan></text>
+<path d="M116,218 h50.0192926045016 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-50.0192926045016 z" fill="#2a78d6"/>
+<text x="176.0192926045016" y="229" font-size="12" fill="#0b0b0b">140 MB <tspan fill="#52514e">1.6× less</tspan></text>
 <text x="108" y="253" font-size="12" text-anchor="end" fill="#52514e">Bun 1.4.2</text>
-<path d="M116,242 h120.57094594594594 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-120.57094594594594 z" fill="#eb6834"/>
-<text x="246.57094594594594" y="253" font-size="12" fill="#0b0b0b">289 MB</text>
+<path d="M116,242 h83.39549839228295 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-83.39549839228295 z" fill="#eb6834"/>
+<text x="209.39549839228295" y="253" font-size="12" fill="#0b0b0b">226 MB</text>
 <text x="108" y="277" font-size="12" text-anchor="end" fill="#52514e">Node 22</text>
 <path d="M116,266 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#1baf7a"/>
-<text x="326.0" y="277" font-size="12" fill="#0b0b0b">474 MB</text>
+<text x="326.0" y="277" font-size="12" fill="#0b0b0b">529 MB</text>
 <line x1="116" y1="214" x2="116" y2="284" stroke="#d9d8d3"/>
 <text x="450" y="204" font-size="13" font-weight="600" fill="#0b0b0b">Streaming replies (tmux), CPU</text>
 <text x="538" y="229" font-size="12" text-anchor="end" fill="#52514e">Pi-Bolt</text>
-<path d="M546,218 h155.15104419621173 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-155.15104419621173 z" fill="#2a78d6"/>
-<text x="711.1510441962117" y="229" font-size="12" fill="#0b0b0b">482 ms <tspan fill="#52514e">1.1× less</tspan></text>
+<path d="M546,218 h124.69963811821475 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-124.69963811821475 z" fill="#2a78d6"/>
+<text x="680.6996381182148" y="229" font-size="12" fill="#0b0b0b">366 ms <tspan fill="#52514e">1.3× less</tspan></text>
 <text x="538" y="253" font-size="12" text-anchor="end" fill="#52514e">Bun 1.4.2</text>
-<path d="M546,242 h171.26760563380282 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-171.26760563380282 z" fill="#eb6834"/>
-<text x="727.2676056338028" y="253" font-size="12" fill="#0b0b0b">531 ms</text>
+<path d="M546,242 h169.2752024814751 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-169.2752024814751 z" fill="#eb6834"/>
+<text x="725.2752024814752" y="253" font-size="12" fill="#0b0b0b">493 ms</text>
 <text x="538" y="277" font-size="12" text-anchor="end" fill="#52514e">Node 22</text>
 <path d="M546,266 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#1baf7a"/>
-<text x="756.0" y="277" font-size="12" fill="#0b0b0b">618 ms</text>
+<text x="756.0" y="277" font-size="12" fill="#0b0b0b">580 ms</text>
 <line x1="546" y1="214" x2="546" y2="284" stroke="#d9d8d3"/>
 </svg>

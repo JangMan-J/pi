@@ -20,24 +20,24 @@ and how to write plugin code that the ahead-of-time compiler handles well.
 of Pi.
 
 Measured with the example plugin in [`examples/plugins`](../examples/plugins): a `/words` command that scans a 16.8 MB file
-character by character. Pi 1.0.0, x86-64, medians of 7 sessions ([raw data](../bench/results/2026-10-02-pi-1.0.0)).
+character by character. Pi 1.0.0, x86-64, medians of 5 sessions ([raw data](../bench/results/2026-10-03-pi-bolt-0.5.2)).
 
 | How the plugin is loaded | Launch to ready | `/words` (hot loop) |
 |---|---:|---:|
-| **Compiled in**, Pi-Bolt (JIT off, the default) | **86 ms** | **54 ms** |
-| Compiled in, Pi-Bolt JIT on | 83 ms | 53 ms |
-| Loaded at run time (jiti), Pi-Bolt JIT off | 114 ms | 1,087 ms |
-| Loaded at run time (jiti), Pi-Bolt JIT on | 122 ms | 41 ms |
+| **Compiled in**, Pi-Bolt (JIT off, the default) | **78 ms** | **50 ms** |
+| Compiled in, Pi-Bolt JIT on | 76 ms | 49 ms |
+| Loaded at run time (jiti), Pi-Bolt JIT off | 109 ms | 1,105 ms |
+| Loaded at run time (jiti), Pi-Bolt JIT on | 109 ms | 38 ms |
 | Loaded at run time (jiti), Bun 1.4.2 | 194 ms | 38 ms |
-| *No plugin: Pi-Bolt / Bun* | *79 ms / 127 ms* | |
+| *No plugin: Pi-Bolt / Bun* | *75 ms / 128 ms* | |
 
 A compiled-in plugin:
 
-- **Costs little at startup**: about 7 ms. Loading the same plugin with jiti costs 35 ms on Pi-Bolt and 67 ms on Bun.
-- **Runs 20× faster than the interpreter** that run-time plugins get on the JIT-off build. The interpreter is why that row says
-  1,087 ms: the JIT is off and run-time code was never compiled
+- **Costs little at startup**: about 3 ms. Loading the same plugin with jiti costs 34 ms on Pi-Bolt and 66 ms on Bun.
+- **Runs 22× faster than the interpreter** that run-time plugins get on the JIT-off build. The interpreter is why that row says
+  1,105 ms: the JIT is off and run-time code was never compiled
   ([details](BENCHMARKS.md#why-is-a-run-time-plugins-loop-1080-ms-on-pi-bolt-and-38-ms-on-bun)).
-- **Stays within 1.4× of fully warmed-up JIT code**, without the JIT's warm-up, compiler threads or memory.
+- **Stays within 1.3× of fully warmed-up JIT code**, without the JIT's warm-up, compiler threads or memory.
 
 ## Three ways to run a plugin
 

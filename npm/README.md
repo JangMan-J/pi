@@ -12,11 +12,11 @@
 # pi-bolt
 
 [Pi](https://github.com/earendil-works/pi), the coding agent, compiled ahead of time to native code. Pi-Bolt is one Linux
-executable that is ready in 83 ms and uses half the CPU of Pi on Bun, with no JIT.
+executable that is ready in 74 ms and uses less than half the CPU of Pi on Bun, with no JIT.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/opensec-git/Pi-Bolt/HEAD/docs/images/bench-hero-dark.svg">
-  <img alt="Pi-Bolt vs Bun 1.4.2 vs Node 22: ready to type 83 / 123 / 296 ms; CPU per session 395 / 831 / 1,237 ms; CPU while streaming 482 / 531 / 618 ms; memory after a long session 126 / 289 / 474 MB" src="https://raw.githubusercontent.com/opensec-git/Pi-Bolt/HEAD/docs/images/bench-hero-light.svg">
+  <img alt="Pi-Bolt vs Bun 1.4.2 vs Node 22: ready to type 74 / 125 / 299 ms; CPU per session 336 / 823 / 1,205 ms; CPU while streaming 366 / 493 / 580 ms; memory after a long session 140 / 226 / 529 MB" src="https://raw.githubusercontent.com/opensec-git/Pi-Bolt/HEAD/docs/images/bench-hero-light.svg">
 </picture>
 
 ## Install

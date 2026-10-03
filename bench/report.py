@@ -231,6 +231,9 @@ def main():
     last_prompt = max((r["prompt"] for rs in long_rows.values() for r in rs), default=None)
     def lg(build, key):
         return med(r[key] for r in long_rows[build] if r["prompt"] == last_prompt)
+    # How large the conversation is at the end of the long session, for the labels ("4.2M-token session").
+    tokens = med(r.get("tokens_m") for rs in long_rows.values() for r in rs if r["prompt"] == last_prompt)
+    session = f"{tokens:.1f}M-token session" if tokens else "long session"
 
     tmux = defaultdict(list)
     for r in load(a.results / "tmux.jsonl"):
@@ -247,18 +250,18 @@ def main():
         ("Launch to interactive (TUI)", "ms", vals(lambda x: b(x, "interactive", "tti_ms"))),
         ("pi --version", "ms", vals(lambda x: b(x, "startup", "wall_ms"))),
         ("pi -p: one prompt, 4 tool calls", "ms", vals(lambda x: b(x, "headless", "wall_ms"))),
-        ("Time per prompt, 2.7M-token session", "ms", vals(lambda x: lg(x, "ms_per_prompt"))),
+        (f"Time per prompt, {session}", "ms", vals(lambda x: lg(x, "ms_per_prompt"))),
     ]
     cpu = [
         ("Interactive session: 5 prompts", "ms", vals(lambda x: b(x, "interactive", "cpu_ms"))),
         ("pi -p: one prompt", "ms", vals(lambda x: b(x, "headless", "cpu_ms"))),
         ("pi --version", "ms", vals(lambda x: b(x, "startup", "cpu_ms"))),
-        ("Per prompt, 2.7M-token session", "ms", vals(lambda x: lg(x, "cpu_ms_per_prompt"))),
+        (f"Per prompt, {session}", "ms", vals(lambda x: lg(x, "cpu_ms_per_prompt"))),
     ]
     memory = [
         ("Peak memory, interactive session", "MB", vals(lambda x: b(x, "interactive", "peak_mb"))),
         ("Own memory, tmux session", "MB", vals(tm_own)),
-        ("Own memory, end of 2.7M-token session", "MB", vals(lambda x: lg(x, "own_mb"))),
+        (f"Own memory, end of {session}", "MB", vals(lambda x: lg(x, "own_mb"))),
         ("Streaming replies (tmux), CPU", "ms", vals(lambda x: tm(x, "prompt_cpu_ms")), "amount"),
     ]
     for name, title, subtitle, panels in [
