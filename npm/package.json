@@ -1,6 +1,6 @@
 {
 	"name": "pi-bolt",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"description": "Pi, the coding agent, compiled ahead of time to native code: one Linux executable, ready in 83 ms, half the CPU",
 	"keywords": [
 		"pi",
