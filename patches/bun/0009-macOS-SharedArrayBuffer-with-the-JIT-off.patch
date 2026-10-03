@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 01:06:36 +0530
+Subject: [PATCH] macOS: SharedArrayBuffer with the JIT off
+
+With the JIT off and the mach exception handler sandbox policy unknown, JSC on Darwin takes the process for sandboxed and turns
+SharedArrayBuffer (and Wasm's fast memory) off: an ahead-of-time executable built with the JIT off had no SharedArrayBuffer,
+which Pi's codemode worker needs. Bun is not sandboxed; it now says so before JSC is initialized.
+---
+ src/jsc/bindings/ZigGlobalObject.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/jsc/bindings/ZigGlobalObject.cpp b/src/jsc/bindings/ZigGlobalObject.cpp
+index f8b692c4..bb219910 100644
+--- a/src/jsc/bindings/ZigGlobalObject.cpp
++++ b/src/jsc/bindings/ZigGlobalObject.cpp
+@@ -304,6 +304,12 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+         // Before any option is set: with the AOT engine, Options::notifyOptionsChanged() turns useJIT off for good if the compilers
+         // are not installed (CompilerHooks.h). This also installs the compiler of images for `bun build --compile`.
+         JSC::installCompilers();
++#if OS(DARWIN)
++        // Bun is no sandboxed process: mach exception handlers are allowed. Unknown, JSC takes a JIT turned off (as in an
++        // ahead-of-time executable) for a sign of a sandbox that blocks them, and turns SharedArrayBuffer and Wasm's fast
++        // memory off with it.
++        JSC::Options::machExceptionHandlerSandboxPolicy = JSC::Options::SandboxPolicy::Allow;
++#endif
+         Bun__ensureICUDefaultLocale();
+         JSC::Config::enableRestrictedOptions();
+         // JSC options come from BUN_JSC_* (applied in the callback below), not JSC_*.
+-- 
+2.54.0 (Apple Git-157)
+

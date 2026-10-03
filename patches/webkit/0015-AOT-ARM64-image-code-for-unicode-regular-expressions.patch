@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 02:53:29 +0530
+Subject: [PATCH] AOT: ARM64 image code for unicode regular expressions; a map
+ of where functions are
+
+Image code for a regular expression that decodes surrogate pairs (u and v flags,
+16-bit subjects) called the VM's tryReadUnicodeChar thunk, which an image has
+no VM to take from, so on ARM64 such patterns had no 16-bit code and ran in the
+interpreter for every subject that is not Latin-1 (text with box drawing,
+bullets or emoji): 87 of Pi's regular expressions. As on x86-64, the slow path
+is now emitted once into the pattern's own code; on ARM64 its calls are linked
+when the code is laid out, as code for an image is never finalized and a link
+task would not run. Patterns with backreferences to 16-bit subjects still have
+none, as on x86-64.
+
+BUN_AOT_MAP_OUT=path, when an image is built, writes where each function's
+code is ("offset size module start kind"), for profilers.
+---
+ Source/JavaScriptCore/aot/AOTImage.cpp |  9 +++++++++
+ Source/JavaScriptCore/yarr/YarrJIT.cpp | 22 ++++++++++++++++++----
+ 2 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTImage.cpp b/Source/JavaScriptCore/aot/AOTImage.cpp
+index 0792d42523..9420473960 100644
+--- a/Source/JavaScriptCore/aot/AOTImage.cpp
++++ b/Source/JavaScriptCore/aot/AOTImage.cpp
+@@ -1320,10 +1320,17 @@ Vector<uint8_t> ImageBuilder::finish()
+     Vector<uint32_t> functionInBucket;
+     functionInBucket.fill(0, capacity);
+     size_t recordAt = 0;
++    // BUN_AOT_MAP_OUT=path: where each function's code is, for profilers: "offset size module start kind" per line, the offset
++    // from the start of the image (which is mapped at StaticRegion::startOf(Arena::Image)), the function by its key.
++    FILE* map = nullptr;
++    if (const char* mapPath = getenv("BUN_AOT_MAP_OUT"))
++        map = fopen(mapPath, "w");
+     for (size_t index = 0; index < m_functions.size(); ++index) {
+         auto& function = m_functions[index];
+         auto& info = function.code.info;
+         auto [codeAt, stubsForThis] = placement[index];
++        if (map)
++            fprintf(map, "%zx %zx %u %u %u\n", static_cast<size_t>(header.codeOffset) + codeAt, function.code.bytes.size(), function.key.module, function.key.start, function.key.kind);
+ 
+         ImageFunction record { };
+         RELEASE_ASSERT(startsOfFunctions[index] == codeAt);
+@@ -1403,6 +1410,8 @@ Vector<uint8_t> ImageBuilder::finish()
+         for (auto& call : info.stubCalls)
+             retargetStubCall(code, codeAt + call.offset, stubsForThis + (call.thunk ? stubs.thunkOffsets[call.thunk - 1] : stubs.offsets[static_cast<unsigned>(call.stub)]), call.isTailCall);
+     }
++    if (map)
++        fclose(map);
+ 
+     // With every function in its place: the calls from one to another.
+     for (size_t index = 0; index < m_functions.size(); ++index) {
+diff --git a/Source/JavaScriptCore/yarr/YarrJIT.cpp b/Source/JavaScriptCore/yarr/YarrJIT.cpp
+index 77d4e3da96..7d4cf441a7 100644
+--- a/Source/JavaScriptCore/yarr/YarrJIT.cpp
++++ b/Source/JavaScriptCore/yarr/YarrJIT.cpp
+@@ -9482,9 +9482,9 @@ public:
+         // are used during generation.
+         opCompileBody(m_pattern.m_body);
+ 
+-        // Those call thunks, which are somewhere else. (Except, on x86-64, the one that decodes surrogate pairs: image code has its own
+-        // copy, see unicodeSlowPathCallsInCode().)
+-        if (m_forImage && (m_decode16BitForBackreferencesWithCalls || (m_decodeSurrogatePairs && !isX86_64())))
++        // Those call thunks, which are somewhere else. (Except, on x86-64 and ARM64, the one that decodes surrogate pairs: image code
++        // has its own copy, see unicodeSlowPathCallsInCode().)
++        if (m_forImage && (m_decode16BitForBackreferencesWithCalls || (m_decodeSurrogatePairs && !isX86_64() && !isARM64())))
+             m_failureReason = JITFailureReason::DecodeSurrogatePair;
+ #if !CPU(ARM64) && !CPU(X86_64)
+         // Code for an image refers to its tables and backtrack targets PC-relatively, which is written for ARM64 and x86-64 only.
+@@ -9629,6 +9629,15 @@ public:
+             for (auto& call : m_unicodeSlowPathCallsInCode)
+                 m_jit.m_assembler.linkJump(call.m_label, slowPath);
+         }
++#elif ENABLE(YARR_JIT_UNICODE_EXPRESSIONS) && CPU(ARM64)
++        if (!m_unicodeSlowPathCallsInCode.isEmpty()) {
++            // As on x86-64: the slow path in the code itself, entered by bl and left by ret, as the VM's thunk is. The calls are
++            // linked once the code is laid out (branch compaction moves it), below: code for an image is never finalized, so a link
++            // task would not run.
++            m_unicodeSlowPath = m_jit.label();
++            tryReadUnicodeCharSlowImpl(m_jit);
++            m_jit.ret();
++        }
+ #endif
+ 
+         if (m_disassembler)
+@@ -9665,6 +9674,10 @@ public:
+ 
+ #if CPU(ARM64) || CPU(X86_64)
+         if (m_forImage) {
++#if CPU(ARM64)
++            for (auto& call : m_unicodeSlowPathCallsInCode)
++                linkBuffer.link<NoPtrTag>(call, linkBuffer.locationOf<NoPtrTag>(*m_unicodeSlowPath));
++#endif
+             auto* start = static_cast<const uint8_t*>(linkBuffer.entrypoint<NoPtrTag>().untaggedPtr());
+             auto& bytes = m_forImage->bytes;
+             bytes.append(std::span { start, linkBuffer.size() });
+@@ -10089,9 +10102,10 @@ private:
+ public:
+     YarrCodeForImage* m_forImage { nullptr };
+     Vector<MacroAssembler::Call> m_unicodeSlowPathCallsInCode; // See tryReadUnicodeCharImpl().
++    std::optional<MacroAssembler::Label> m_unicodeSlowPath; // Where they go, on ARM64.
+     Vector<MacroAssembler::Call>* unicodeSlowPathCallsInCode()
+     {
+-#if CPU(X86_64)
++#if CPU(X86_64) || CPU(ARM64)
+         if (m_forImage)
+             return &m_unicodeSlowPathCallsInCode;
+ #endif
+-- 
+2.54.0 (Apple Git-157)
+
