@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sat, 3 Oct 2026 09:10:49 +0000
+Subject: [PATCH] The default Error.prepareStackTrace takes any object
+
+Error.captureStackTrace() takes any object, and a prepareStackTrace that
+wraps the default one (source-map support, Babel's, jiti's) hands it what it
+was given. The default threw "First argument must be an Error object" for an
+object that is not an Error, so a module that calls captureStackTrace() on a
+plain object when it is loaded (follow-redirects, and so axios) failed to load
+once such a wrapper was installed. V8 heads the stack of any object the same
+way, with its name and message.
+---
+ src/jsc/bindings/FormatStackTraceForJS.cpp | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/jsc/bindings/FormatStackTraceForJS.cpp b/src/jsc/bindings/FormatStackTraceForJS.cpp
+index 1fafc026..a49505f3 100644
+--- a/src/jsc/bindings/FormatStackTraceForJS.cpp
++++ b/src/jsc/bindings/FormatStackTraceForJS.cpp
+@@ -780,10 +780,13 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionDefaultErrorPrepareStackTrace, (JSGlobalObjec
+     auto scope = DECLARE_THROW_SCOPE(vm);
+     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
+ 
+-    auto errorObject = dynamicDowncast<JSC::ErrorInstance>(callFrame->argument(0));
++    // Any object: Error.captureStackTrace() takes any, and a prepareStackTrace that wraps this one (source-map
++    // support, Babel's) hands it what it was given. V8 heads the stack of an object that is not an Error the same
++    // way, with its `name` and `message`.
++    JSC::JSObject* errorObject = callFrame->argument(0).getObject();
+     auto callSites = dynamicDowncast<JSC::JSArray>(callFrame->argument(1));
+     if (!errorObject) {
+-        throwTypeError(lexicalGlobalObject, scope, "First argument must be an Error object"_s);
++        throwTypeError(lexicalGlobalObject, scope, "First argument must be an object"_s);
+         return {};
+     }
+     if (!callSites) {
+-- 
+2.43.0
+

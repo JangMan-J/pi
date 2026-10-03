@@ -1,0 +1,292 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sat, 3 Oct 2026 09:10:49 +0000
+Subject: [PATCH] AOT: the build of an image stops, and says why, when the
+ compiler declines a function
+
+A function that the compiler declines has its bytecode to run from, and the
+bytecode of an image has the variables of the module and of the functions
+around resolved in a way that only compiled code follows: called, such a
+function stops the program in CodeBlock::finishCreation(). When compiled code
+called one directly or had made it part of itself, the image builder stopped
+on an assertion instead ("there is no code for ..., which something calls
+without asking").
+
+Now the build stops with the name and place of each function declined and the
+compiler's reason, as it does for a function bigger than
+maximumAOTCandidateBytecodeSize. allowAOTDeclinedFunctions builds anyway: what
+would call such a function directly, make it part of itself or check a value
+for being it is then compiled again without knowing it
+(AOT::FunctionsWithoutCode), and the function runs from bytecode if it can.
+
+aotDeclineFunctionsNamed declines functions by name, for testing this.
+---
+ Source/JavaScriptCore/aot/AOTCompiler.cpp     |  6 +-
+ Source/JavaScriptCore/aot/AOTCompiler.h       |  3 +-
+ Source/JavaScriptCore/aot/AOTGraph.cpp        |  5 ++
+ Source/JavaScriptCore/aot/AOTImage.h          |  9 +++
+ Source/JavaScriptCore/aot/AOTInlining.cpp     |  2 +-
+ Source/JavaScriptCore/aot/AOTProgram.cpp      | 12 ++++
+ Source/JavaScriptCore/aot/AOTProgram.h        |  8 +++
+ Source/JavaScriptCore/runtime/CachedTypes.cpp | 64 ++++++++++++++++++-
+ Source/JavaScriptCore/runtime/OptionsList.h   |  2 +
+ 9 files changed, 107 insertions(+), 4 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTCompiler.cpp b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+index 44e658640c..f62eb5f42c 100644
+--- a/Source/JavaScriptCore/aot/AOTCompiler.cpp
++++ b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+@@ -551,13 +551,17 @@ Type inferReturnTypeForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const
+     return result;
+ }
+ 
+-bool compileForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, CompiledCode& result, const CalleeHints* hints, const ModuleLinkage* linkage, const FunctionSummary* summary, VariableSummaries* variableSummaries, const CodeOfProgram* program)
++bool compileForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, CompiledCode& result, const CalleeHints* hints, const ModuleLinkage* linkage, const FunctionSummary* summary, VariableSummaries* variableSummaries, const CodeOfProgram* program, ASCIILiteral* whyNot, OpcodeID* whyNotOpcode)
+ {
+     ASCIILiteral reason;
+     OpcodeID reasonOpcode = op_nop;
+     bool ok = compile(vm, unlinkedCodeBlock, hints, linkage, result, reason, reasonOpcode, summary, variableSummaries, program);
+     if (!ok && Options::verboseAOTCompilation()) [[unlikely]]
+         dataLogLn("AOT: declined: ", reason, " ", reasonOpcode != op_nop ? opcodeNames[reasonOpcode] : ""_s);
++    if (!ok && whyNot)
++        *whyNot = reason;
++    if (!ok && whyNotOpcode)
++        *whyNotOpcode = reasonOpcode;
+     return ok;
+ }
+ 
+diff --git a/Source/JavaScriptCore/aot/AOTCompiler.h b/Source/JavaScriptCore/aot/AOTCompiler.h
+index 43919e8406..bce45c02f8 100644
+--- a/Source/JavaScriptCore/aot/AOTCompiler.h
++++ b/Source/JavaScriptCore/aot/AOTCompiler.h
+@@ -29,7 +29,8 @@ struct CompiledCode;
+ JS_EXPORT_PRIVATE bool recordUsesOfKnownFunctionsForImage(VM&, UnlinkedCodeBlock*, const CalleeHints*, const ModuleLinkage*, const FunctionSummaryMap&, VariableSummaries*);
+ // See KnownFunction::returnType. Any thread, likewise.
+ JS_EXPORT_PRIVATE Type inferReturnTypeForImage(VM&, UnlinkedCodeBlock*, const CalleeHints*, const ModuleLinkage*, const FunctionSummary*, VariableSummaries*, unsigned summaryReader, Vector<const KnownFunction*>& calleesRead, Vector<const KnownFunction*>& calleesWithWidenedInputs, uint32_t& escapingParameters, const String& nameForLog = String());
+-JS_EXPORT_PRIVATE bool compileForImage(VM&, UnlinkedCodeBlock*, CompiledCode&, const CalleeHints* = nullptr, const ModuleLinkage* = nullptr, const FunctionSummary* = nullptr, VariableSummaries* = nullptr, const CodeOfProgram* = nullptr);
++// When it declines: `whyNot` is why, and `whyNotOpcode` the opcode it is about (op_nop if none).
++JS_EXPORT_PRIVATE bool compileForImage(VM&, UnlinkedCodeBlock*, CompiledCode&, const CalleeHints* = nullptr, const ModuleLinkage* = nullptr, const FunctionSummary* = nullptr, VariableSummaries* = nullptr, const CodeOfProgram* = nullptr, ASCIILiteral* whyNot = nullptr, OpcodeID* whyNotOpcode = nullptr);
+ // Whether inlineCalls() could pick it.
+ bool mayBecomePartOfAnother(UnlinkedCodeBlock*, const FunctionSummary*);
+ void noteEverySiteOf(Graph&);
+diff --git a/Source/JavaScriptCore/aot/AOTGraph.cpp b/Source/JavaScriptCore/aot/AOTGraph.cpp
+index 7394a24e53..557abf728d 100644
+--- a/Source/JavaScriptCore/aot/AOTGraph.cpp
++++ b/Source/JavaScriptCore/aot/AOTGraph.cpp
+@@ -652,6 +652,11 @@ const KnownFunction* Graph::knownCallee(const Node* node, bool* isExact) const
+             }
+         }
+     }
++    // (See FunctionsWithoutCode.)
++    if (known && hasNoCodeInImage(node->opcode == op_construct ? known->forConstruct : known->forCall)) {
++        known = nullptr;
++        proven = false;
++    }
+     if (isExact)
+         *isExact = proven;
+     return known;
+diff --git a/Source/JavaScriptCore/aot/AOTImage.h b/Source/JavaScriptCore/aot/AOTImage.h
+index b23e2bc498..4e942585eb 100644
+--- a/Source/JavaScriptCore/aot/AOTImage.h
++++ b/Source/JavaScriptCore/aot/AOTImage.h
+@@ -180,6 +180,15 @@ public:
+     void add(ImageKey, uint64_t rank, CompiledCode&&);
+     size_t numberOfFunctions() const { return m_functions.size(); }
+     void clear() { m_functions.clear(); } // Removes all functions.
++    // Every function that the code of a function added refers to by its key: one it calls directly, has made part of itself,
++    // or checks a value for being. finish() needs each of them to have been added too.
++    template<typename Functor> void forEachKnownCallee(const Functor& functor) const
++    {
++        for (auto& function : m_functions) {
++            for (auto& key : function.code.info.knownCallees)
++                functor(key);
++        }
++    }
+     void setEnvironments(Vector<ImageEnvironment>&& environments, uint32_t size) { m_environments = WTF::move(environments); m_environmentsSize = size; }
+     // `numbers` must stay valid until finish() returns. `number` is the highest identifier number plus one.
+     void setNumbersOfIdentifiersOfProgram(const NumbersOfIdentifiers* numbers, uint32_t number)
+diff --git a/Source/JavaScriptCore/aot/AOTInlining.cpp b/Source/JavaScriptCore/aot/AOTInlining.cpp
+index 175421dd57..89d174ec32 100644
+--- a/Source/JavaScriptCore/aot/AOTInlining.cpp
++++ b/Source/JavaScriptCore/aot/AOTInlining.cpp
+@@ -813,7 +813,7 @@ private:
+ 
+ bool mayBecomePartOfCallerInLoop(const KnownFunction& known)
+ {
+-    return known.forCall && Inliner::canBePartOfAnother(known.forCall) && Inliner::isProfitable(known.forCall, known.summary, true);
++    return known.forCall && !hasNoCodeInImage(known.forCall) && Inliner::canBePartOfAnother(known.forCall) && Inliner::isProfitable(known.forCall, known.summary, true);
+ }
+ 
+ Vector<const KnownFunction*, 4> methodCandidatesInLoop(UniquedStringImpl* name)
+diff --git a/Source/JavaScriptCore/aot/AOTProgram.cpp b/Source/JavaScriptCore/aot/AOTProgram.cpp
+index 992887b52d..f39918a262 100644
+--- a/Source/JavaScriptCore/aot/AOTProgram.cpp
++++ b/Source/JavaScriptCore/aot/AOTProgram.cpp
+@@ -83,6 +83,18 @@ const NumbersOfIdentifiers* numbersOfIdentifiersOfProgram()
+     return s_numbersOfIdentifiersOfProgram;
+ }
+ 
++static const FunctionsWithoutCode* s_functionsWithoutCode;
++
++void setFunctionsWithoutCode(const FunctionsWithoutCode* functions)
++{
++    s_functionsWithoutCode = functions;
++}
++
++bool hasNoCodeInImage(const UnlinkedCodeBlock* codeBlock)
++{
++    return s_functionsWithoutCode && codeBlock && s_functionsWithoutCode->contains(codeBlock);
++}
++
+ static const NumbersOfConstants* s_numbersOfConstantsOfProgram;
+ 
+ void setNumbersOfConstantsOfProgram(const NumbersOfConstants* numbers)
+diff --git a/Source/JavaScriptCore/aot/AOTProgram.h b/Source/JavaScriptCore/aot/AOTProgram.h
+index 29b41afada..accd06676e 100644
+--- a/Source/JavaScriptCore/aot/AOTProgram.h
++++ b/Source/JavaScriptCore/aot/AOTProgram.h
+@@ -518,6 +518,14 @@ Vector<FunctionAssignment> functionAssignmentsIn(UnlinkedCodeBlock*); // Any thr
+ const DeclaredNamesLink* declaredNamesFor(UnlinkedCodeBlock*); // Any thread. Valid until forgetDeclaredNames().
+ void forgetDeclaredNames();
+ 
++// The functions that the compiler declined when the program was compiled before, and that code was nevertheless compiled to
++// call directly or to have as part of itself: that code is told where the function's code is, or which function a frame of it is,
++// by what the image says of the function, and it says nothing of one without code. Compiled again, nothing takes such a function
++// for one it knows: it is called like any value, and runs however it would have run uncalled.
++using FunctionsWithoutCode = UncheckedKeyHashSet<const UnlinkedCodeBlock*>;
++JS_EXPORT_PRIVATE void setFunctionsWithoutCode(const FunctionsWithoutCode*); // Not during compilation.
++bool hasNoCodeInImage(const UnlinkedCodeBlock*);
++
+ // Bytecode refers to an identifier by index. Normally that is an index into the function's own identifier table. If the whole
+ // program's identifiers have been numbered, all functions share one table. The shared table is built by StaticHeap, so such code
+ // can only run with a static heap.
+diff --git a/Source/JavaScriptCore/runtime/CachedTypes.cpp b/Source/JavaScriptCore/runtime/CachedTypes.cpp
+index 5173ab608a..f93c70c87c 100644
+--- a/Source/JavaScriptCore/runtime/CachedTypes.cpp
++++ b/Source/JavaScriptCore/runtime/CachedTypes.cpp
+@@ -6743,10 +6743,18 @@ struct BytecodeLinkEncoder::Impl {
+         std::atomic<size_t> next { 0 };
+         Lock declinedLock;
+         UncheckedKeyHashSet<UnlinkedCodeBlock*> declined;
++        struct WhyNot {
++            ASCIILiteral reason;
++            OpcodeID opcode { op_nop };
++        };
++        UncheckedKeyHashMap<UnlinkedCodeBlock*, WhyNot> whyDeclined;
+         class CodeOfThisProgram final : public AOT::CodeOfProgram {
+         public:
+             std::optional<About> about(UnlinkedCodeBlock* codeBlock) const final
+             {
++                // (Nothing is made part of another function that there is no record of: AOT::FunctionsWithoutCode.)
++                if (AOT::hasNoCodeInImage(codeBlock))
++                    return std::nullopt;
+                 auto it = all.find(codeBlock);
+                 return it == all.end() ? std::nullopt : std::optional { it->value };
+             }
+@@ -6774,7 +6782,11 @@ struct BytecodeLinkEncoder::Impl {
+                     continue;
+                 }
+                 AOT::CompiledCode code;
+-                if (AOT::compileForImage(vm, jobs[index].codeBlock, code, hints[jobs[index].module].get(), linkages[jobs[index].module].get(), summariesByCodeBlock.get(jobs[index].codeBlock), variableSummaries, &codeOfProgram)) {
++                WhyNot whyNot { "it is declined for testing (aotDeclineFunctionsNamed)"_s };
++                bool isDeclinedForTesting = false;
++                if (const char* name = Options::aotDeclineFunctionsNamed()) [[unlikely]]
++                    isDeclinedForTesting = jobs[index].executable && jobs[index].executable->name().string() == String::fromUTF8(name);
++                if (!isDeclinedForTesting && AOT::compileForImage(vm, jobs[index].codeBlock, code, hints[jobs[index].module].get(), linkages[jobs[index].module].get(), summariesByCodeBlock.get(jobs[index].codeBlock), variableSummaries, &codeOfProgram, &whyNot.reason, &whyNot.opcode)) {
+                     // (A function's key says where its source starts, if it is a function that somebody wrote.)
+                     {
+                         auto kindOfFunction = static_cast<OrderFunctionKind>(jobs[index].key.kind >> 1);
+@@ -6803,6 +6815,7 @@ struct BytecodeLinkEncoder::Impl {
+                 else {
+                     Locker locker { declinedLock };
+                     declined.add(jobs[index].codeBlock);
++                    whyDeclined.set(jobs[index].codeBlock, whyNot);
+                 }
+             }
+         };
+@@ -6914,6 +6927,7 @@ struct BytecodeLinkEncoder::Impl {
+ 
+         // A call that passes no function object has nowhere to go but the function's code. If there turns out to be none, it is all
+         // done again with that known.
++        AOT::FunctionsWithoutCode functionsWithoutCode;
+         for (bool again = true; again;) {
+             Vector<Ref<Thread>> threads;
+             for (unsigned i = 1; i < numberOfThreads; ++i)
+@@ -6939,6 +6953,53 @@ struct BytecodeLinkEncoder::Impl {
+                     again = true;
+                 }
+             });
++            // A function that was declined has its bytecode to run from, and the bytecode of an image has the variables of the
++            // module and of the functions around resolved in a way that only compiled code follows: called, such a function
++            // stops the program (CodeBlock::finishCreation()). So the build stops here, with what was declined and why, as it
++            // does for a function that is too big to compile (maximumAOTCandidateBytecodeSize).
++            if (!declined.isEmpty() && !Options::allowAOTDeclinedFunctions()) {
++                unsigned shown = 0;
++                for (auto& job : jobs) {
++                    if (!declined.contains(job.codeBlock))
++                        continue;
++                    if (++shown > 20)
++                        break;
++                    WhyNot why = whyDeclined.get(job.codeBlock);
++                    String name = job.executable ? job.executable->name().string() : String();
++                    WTFLogAlways("AOT: %s%s%s (module %u, at %u of its source) cannot be compiled ahead of time: %s%s%s",
++                        job.executable ? "the function `" : "the top-level code of a module", name.utf8().data(), job.executable ? "`" : "",
++                        static_cast<unsigned>(job.key.module), static_cast<unsigned>(job.key.start), why.reason.characters() ? why.reason.characters() : "no reason given",
++                        why.opcode != op_nop ? ", at " : "", why.opcode != op_nop ? opcodeNames[why.opcode].characters() : "");
++                }
++                WTFLogAlways("AOT: %u function%s could not be compiled ahead of time, and in this executable a function that is not compiled cannot be relied on to run: the build stops. "
++                    "Change the code named above, or build with BUN_JSC_allowAOTDeclinedFunctions=1 to go on (such a function then runs from bytecode if it uses no variables from outside itself, and stops the program if it does).",
++                    declined.size(), declined.size() == 1 ? "" : "s");
++                exit(1);
++            }
++            // With that allowed: nothing can go to, be made of, or check for a function that was declined
++            // (AOT::FunctionsWithoutCode), so it is all done again with the function unknown to its callers.
++            if (!declined.isEmpty()) {
++                unsigned found = 0;
++                Vector<std::pair<AOT::ImageKey, UnlinkedCodeBlock*>> declinedJobs;
++                for (auto& job : jobs) {
++                    if (declined.contains(job.codeBlock))
++                        declinedJobs.append({ job.key, job.codeBlock });
++                }
++                builder.forEachKnownCallee([&](const AOT::ImageKey& key) {
++                    for (auto& [declinedKey, codeBlock] : declinedJobs) {
++                        if (declinedKey.sameFunction(key)) {
++                            if (functionsWithoutCode.add(codeBlock).isNewEntry)
++                                ++found;
++                            return;
++                        }
++                    }
++                });
++                if (found) {
++                    dataLogLn("AOT: ", found, " functions that code calls directly or has made part of itself were declined: compiling again without that");
++                    AOT::setFunctionsWithoutCode(&functionsWithoutCode);
++                    again = true;
++                }
++            }
+             dataLogLn("AOT: ", functionsNeverReached.load(), " closed functions that nothing reaches are left out (", bytecodeNeverReached.load(), " bytes of bytecode)");
+             if (again) {
+                 functionsNeverReached = 0;
+@@ -6954,6 +7015,7 @@ struct BytecodeLinkEncoder::Impl {
+             RELEASE_ASSERT_NOT_REACHED();
+         }
+         AOT::forgetDeclaredNames();
++        AOT::setFunctionsWithoutCode(nullptr);
+         AOT::setNumbersOfIdentifiersOfProgram(nullptr);
+         AOT::setNumbersOfConstantsOfProgram(nullptr);
+         for (auto& job : jobs) {
+diff --git a/Source/JavaScriptCore/runtime/OptionsList.h b/Source/JavaScriptCore/runtime/OptionsList.h
+index 8ac5b1b0e7..812cfdaf6f 100644
+--- a/Source/JavaScriptCore/runtime/OptionsList.h
++++ b/Source/JavaScriptCore/runtime/OptionsList.h
+@@ -146,6 +146,8 @@ bool hasCapacityToUseLargeGigacage();
+     v(Bool, dumpAOTGraph, false, Normal, "Dump the AOT compiler's IR."_s) \
+     v(Bool, dumpAOTB3Graph, false, Normal, "Dump the B3 procedure the AOT compiler generates."_s) \
+     v(Bool, dumpAOTDisassembly, false, Normal, "Dump the machine code the AOT compiler generates."_s) \
++    v(OptionString, aotDeclineFunctionsNamed, nullptr, Normal, "For testing: when compiling an image, the functions of this name are declined, as the compiler declines a function it cannot compile."_s) \
++    v(Bool, allowAOTDeclinedFunctions, false, Normal, "When compiling an image: go on when the compiler declines a function, instead of stopping with what it declined and why. The function is then run from its bytecode, which works for one that reads and writes no variables of its module or of the functions around it, and stops the program otherwise: the bytecode of an image has those resolved in a way that only compiled code follows."_s) \
+     v(OptionString, aotMapFilePath, nullptr, Normal, "When compiling: write a map of the image (the location and key of each function) to this file, for symbolicating profiles."_s) \
+     v(Bool, forceAOTVeneers, false, Normal, "For testing. Route every direct call between functions in an image through a veneer, as if the target were out of range."_s) \
+     v(OptionString, aotRecordRegExpsPath, nullptr, Normal, "Append to this file each regular expression that is compiled at run time because the image has no code for it (one per line: flags, a slash, the pattern with backslash, newline and carriage return escaped). For aotRegExpsPath."_s) \
+-- 
+2.43.0
+

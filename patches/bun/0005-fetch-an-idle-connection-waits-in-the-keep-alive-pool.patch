@@ -1,0 +1,278 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sat, 3 Oct 2026 09:10:49 +0000
+Subject: [PATCH] fetch: an idle connection waits in the keep-alive pool for 4
+ seconds, or as long as the server says
+
+A connection that a response had come back on was kept for 5 minutes, and
+used for the next request to the same host. One that has sat idle may be gone
+without a FIN or RST having come back (a NAT or a load balancer that forgot
+it, a network that went away while the machine slept), and a request written
+to it waits for an answer until it times out. Node closes an idle connection
+after 4 seconds, so programs written for it (Pi's model providers, its
+extensions) never met this.
+
+Now, as undici does it: 4 seconds, or what the response's `Keep-Alive:
+timeout=N` says less 2 seconds (at most 600); a fetch session's own idle
+timeout stands. BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT sets the default. And the
+pool does not hand out a socket that has been parked for longer than that by
+the wall clock: the idle timer's ticks are seconds apart and stand still while
+the machine sleeps. Preconnected sockets and HTTP/2 sessions keep 5 minutes.
+---
+ src/bun_core/env_var.rs         |  1 +
+ src/http/HTTPContext.rs         | 39 ++++++++++++++++++++++++++++-----
+ src/http/HTTPThread.rs          | 11 ++++++++++
+ src/http/HeaderValueIterator.rs | 20 +++++++++++++++++
+ src/http/InternalState.rs       |  4 ++++
+ src/http/lib.rs                 | 39 ++++++++++++++++++++++++++++++---
+ 6 files changed, 106 insertions(+), 8 deletions(-)
+
+diff --git a/src/bun_core/env_var.rs b/src/bun_core/env_var.rs
+index b5b37d98..4ecdc6e7 100644
+--- a/src/bun_core/env_var.rs
++++ b/src/bun_core/env_var.rs
+@@ -62,6 +62,7 @@ new!(pub BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS: unsigned, "BUN_CONFIG_DNS_TIME_TO_
+ // if it fires the request fails with `error.Timeout`. Covers the TLS
+ // handshake through the response body. 0 disables. See `src/http/lib.rs`.
+ new!(pub BUN_CONFIG_HTTP_IDLE_TIMEOUT: unsigned, "BUN_CONFIG_HTTP_IDLE_TIMEOUT", { default: 300 });
++new!(pub BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT: unsigned, "BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT", { default: 4 });
+ // Opening-handshake timeout for the `new WebSocket()` client, in seconds.
+ // A peer that accepts the TCP connection but never answers the upgrade fails
+ // with error + close(1006). 0 disables; uSockets' 4 s sweep rounds small values up.
+diff --git a/src/http/HTTPContext.rs b/src/http/HTTPContext.rs
+index 4f00a0c2..7a19b78d 100644
+--- a/src/http/HTTPContext.rs
++++ b/src/http/HTTPContext.rs
+@@ -242,8 +242,20 @@ pub struct PooledSocket<const SSL: bool> {
+     pub(crate) h2_session: Option<RefPtr<h2::ClientSession>>,
+     /// `PoolOptions::id` of the fetch session that opened it.
+     pub(crate) pool_id: u64,
+-    /// `PoolOptions::idle_timeout_seconds` of the session that parked it.
++    /// How long it may sit parked, in seconds: `PoolOptions::idle_timeout_seconds` as it was parked with.
+     pub(crate) idle_timeout_seconds: u32,
++    /// When it was parked ([`parked_clock_ms`]). The idle timer that closes a parked socket runs on the
++    /// event loop's ticks, which stand still while the machine sleeps; this does not.
++    pub(crate) parked_at_ms: u64,
++}
++
++/// Milliseconds on a clock that keeps going while the machine is suspended: the wall clock. (It can be set
++/// back, which only makes a parked socket look younger until the idle timer gets to it, or forward, which
++/// costs a new connection.)
++pub(crate) fn parked_clock_ms() -> u64 {
++    std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map_or(0, |d| d.as_millis() as u64)
+ }
+ 
+ /// `&mut` access to a pooled / found-slot HTTP/2 session, for the field
+@@ -687,6 +699,7 @@ impl<const SSL: bool> HTTPContext<SSL> {
+                 h2_session,
+                 pool_id: pool.id,
+                 idle_timeout_seconds: pool.idle_timeout_seconds,
++                parked_at_ms: parked_clock_ms(),
+             };
+             let parked = match transport {
+                 Transport::Tcp => Self::park(self.pending_sockets.get_or_init(), pooled, pool),
+@@ -774,12 +787,17 @@ impl<const SSL: bool> HTTPContext<SSL> {
+         None
+     }
+ 
+-    /// How long a parked socket may sit idle; 0 is the 5 minute default.
+-    fn arm_idle_timeout(socket: HTTPSocket<SSL>, idle_timeout_seconds: u32) {
+-        socket.set_timeout(match idle_timeout_seconds {
++    /// How long a parked socket may sit idle, in seconds. 0 is 5 minutes: what is parked without a response
++    /// to go by (a preconnected socket, an HTTP/2 session, which has its own pings).
++    fn idle_timeout_or_default(idle_timeout_seconds: u32) -> u32 {
++        match idle_timeout_seconds {
+             0 => 5 * 60,
+             seconds => seconds,
+-        });
++        }
++    }
++
++    fn arm_idle_timeout(socket: HTTPSocket<SSL>, idle_timeout_seconds: u32) {
++        socket.set_timeout(Self::idle_timeout_or_default(idle_timeout_seconds));
+     }
+ 
+     #[allow(clippy::too_many_arguments)]
+@@ -915,6 +933,17 @@ impl<const SSL: bool> HTTPContext<SSL> {
+                     continue;
+                 }
+ 
++                // Parked for longer than it may be: the idle timer has not got to it yet (its ticks are
++                // seconds apart, and none while the machine sleeps). What is at the other end by now is
++                // not known; a new connection is.
++                if parked_clock_ms().saturating_sub(socket.parked_at_ms)
++                    > u64::from(Self::idle_timeout_or_default(socket.idle_timeout_seconds)) * 1000
++                {
++                    bun_core::scoped_log!(HTTPContext, "Keep-Alive socket parked for too long, closing");
++                    Self::close_socket(http_socket);
++                    continue;
++                }
++
+                 if http_socket.is_shutdown() || http_socket.get_error() != 0 {
+                     Self::terminate_socket(http_socket);
+                     continue;
+diff --git a/src/http/HTTPThread.rs b/src/http/HTTPThread.rs
+index b4f2c2f2..4c9a4d3c 100644
+--- a/src/http/HTTPThread.rs
++++ b/src/http/HTTPThread.rs
+@@ -1239,6 +1239,17 @@ mod _event_loop_draft {
+             core::sync::atomic::Ordering::Relaxed,
+         );
+ 
++        crate::KEEP_ALIVE_POOL_TIMEOUT_SECONDS.store(
++            u32::try_from(
++                bun_core::env_var::BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT
++                    .get()
++                    .unwrap_or(4),
++            )
++            .unwrap_or(u32::MAX)
++            .clamp(1, 600),
++            core::sync::atomic::Ordering::Relaxed,
++        );
++
+         // Critical side effect: `init_global` calls
+         // `internal_loop_data.set_parent_raw(2 /* mini */, mini_ptr)` on this
+         // thread's uSockets loop. Without it, the macOS DNS cache-miss path
+diff --git a/src/http/HeaderValueIterator.rs b/src/http/HeaderValueIterator.rs
+index f6219fdd..10fd3d85 100644
+--- a/src/http/HeaderValueIterator.rs
++++ b/src/http/HeaderValueIterator.rs
+@@ -58,6 +58,26 @@ pub fn fold_transfer_encoding(value: &[u8], coding: &mut Encoding) -> crate::Res
+     Ok(())
+ }
+ 
++/// The `timeout` parameter of a `Keep-Alive` response header, in seconds: how long the server keeps an idle
++/// connection (`Keep-Alive: timeout=5, max=100`). `None` if there is none or it is not a number.
++pub fn keep_alive_header_timeout(value: &[u8]) -> Option<u32> {
++    for token in HeaderValueIterator::init(value) {
++        let Some(eq) = token.iter().position(|&c| c == b'=') else {
++            continue;
++        };
++        let name = strings::trim(&token[..eq], b" \t");
++        if !strings::eql_case_insensitive_ascii_check_length(name, b"timeout") {
++            continue;
++        }
++        let digits = strings::trim(&token[eq + 1..], b" \t");
++        if digits.is_empty() || digits.len() > 9 || !digits.iter().all(u8::is_ascii_digit) {
++            return None;
++        }
++        return Some(digits.iter().fold(0u32, |n, &d| n * 10 + u32::from(d - b'0')));
++    }
++    None
++}
++
+ /// `Some(false)` if any token is `close` (wins), `Some(true)` if `keep-alive`, else `None`.
+ pub fn connection_header_keep_alive(value: &[u8]) -> Option<bool> {
+     let mut keep_alive = None;
+diff --git a/src/http/InternalState.rs b/src/http/InternalState.rs
+index 041c611e..300b5055 100644
+--- a/src/http/InternalState.rs
++++ b/src/http/InternalState.rs
+@@ -45,6 +45,9 @@ pub struct InternalState<'a> {
+     /// Prefix of `compressed_body` the decoder has already taken.
+     compressed_body_consumed: usize,
+     pub(crate) content_length: Option<usize>,
++    /// `timeout` of the response's `Keep-Alive` header, in seconds; 0 if it had none. See
++    /// `HTTPClient::pool_for_release`.
++    pub(crate) keep_alive_timeout: u32,
+     pub(crate) total_body_received: usize,
+     // Self-borrow into `original_request_body.bytes`; `RawSlice` carries the
+     // outlives-holder invariant (the backing `original_request_body` is a
+@@ -133,6 +136,7 @@ impl Default for InternalState<'_> {
+             compressed_body: MutableString::init_empty(),
+             compressed_body_consumed: 0,
+             content_length: None,
++            keep_alive_timeout: 0,
+             total_body_received: 0,
+             request_body: bun_ptr::RawSlice::EMPTY,
+             original_request_body: HTTPRequestBody::Bytes(b""),
+diff --git a/src/http/lib.rs b/src/http/lib.rs
+index 265ba9db..ba2c306b 100644
+--- a/src/http/lib.rs
++++ b/src/http/lib.rs
+@@ -123,7 +123,7 @@ pub enum Protocol {
+ 
+ pub use bun_http_types::Encoding::Encoding;
+ pub use header_value_iterator::{
+-    HeaderValueIterator, connection_header_keep_alive, fold_transfer_encoding,
++    HeaderValueIterator, connection_header_keep_alive, fold_transfer_encoding, keep_alive_header_timeout,
+     upgrade_header_is_not_h2,
+ };
+ pub use init_error::InitError;
+@@ -312,6 +312,16 @@ pub static OVERRIDDEN_DEFAULT_USER_AGENT: std::sync::OnceLock<&'static [u8]> =
+ /// [`normalize_idle_timeout_seconds`]).
+ pub(crate) static IDLE_TIMEOUT_SECONDS: AtomicU32 = AtomicU32::new(300);
+ 
++/// How long a connection that a response has come back on waits in the keep-alive pool for the next request,
++/// in seconds, when neither the fetch session nor the server says (see `HTTPClient::pool_for_release`).
++/// Overridable via `BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT`. Default is 4 seconds, undici's.
++pub(crate) static KEEP_ALIVE_POOL_TIMEOUT_SECONDS: AtomicU32 = AtomicU32::new(4);
++
++#[inline]
++pub(crate) fn keep_alive_pool_timeout_seconds() -> u32 {
++    KEEP_ALIVE_POOL_TIMEOUT_SECONDS.load(Ordering::Relaxed).max(1)
++}
++
+ /// Safe accessor for [`IDLE_TIMEOUT_SECONDS`].
+ #[inline]
+ pub(crate) fn idle_timeout_seconds() -> c_uint {
+@@ -2684,7 +2694,7 @@ impl<'a> HTTPClient<'a> {
+                 0,
+                 None,
+                 self.unix_socket_path,
+-                self.pool,
++                self.pool_for_release(),
+             );
+         } else {
+             GenHttpContext::<IS_SSL>::close_socket(socket);
+@@ -4117,6 +4127,24 @@ impl<'a> HTTPClient<'a> {
+             .unwrap_or_else(idle_timeout_seconds)
+     }
+ 
++    /// The keep-alive pool options to park this request's socket with: the session's, with how long the
++    /// socket may wait there for the next request settled. A session's own `idle_timeout_seconds` stands.
++    /// Otherwise it is what the server said it keeps an idle connection for (`Keep-Alive: timeout=N`), less
++    /// the time a request takes to get there, and 4 seconds if it said nothing: as undici does
++    /// (`keepAliveTimeout`, `keepAliveTimeoutThreshold`, `keepAliveMaxTimeout`). A connection that has sat
++    /// longer may be gone without a FIN or RST having come back (a NAT that forgot it, a load balancer that
++    /// dropped it, a laptop that slept), and a request written to it waits for an answer until it times out.
++    pub(crate) fn pool_for_release(&self) -> PoolOptions {
++        let mut pool = self.pool;
++        if pool.idle_timeout_seconds == 0 {
++            pool.idle_timeout_seconds = match self.state.keep_alive_timeout {
++                0 => keep_alive_pool_timeout_seconds(),
++                hint => hint.saturating_sub(2).clamp(1, 600),
++            };
++        }
++        pool
++    }
++
+     pub(crate) fn set_timeout<S: SocketTimeout>(&self, socket: &S) {
+         // Values are pre-normalised (global: `HTTPThread::on_start`;
+         // per-request: `AsyncHTTP::init`) so this is a plain pass-through.
+@@ -4339,7 +4367,7 @@ impl<'a> HTTPClient<'a> {
+                     },
+                     None,
+                     self.unix_socket_path,
+-                    self.pool,
++                    self.pool_for_release(),
+                 );
+             } else {
+                 if self.proxy_tunnel.is_some() {
+@@ -4993,6 +5021,11 @@ impl<'a> HTTPClient<'a> {
+                         None => {}
+                     }
+                 }
++                h if h == hash_header_const(b"Keep-Alive") => {
++                    if let Some(seconds) = keep_alive_header_timeout(header.value()) {
++                        self.state.keep_alive_timeout = seconds;
++                    }
++                }
+                 h if h == hash_header_const(b"Last-Modified") => {
+                     pretend_304 = self.flags.force_last_modified
+                         && response.status_code > 199
+-- 
+2.43.0
+
