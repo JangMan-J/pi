@@ -126,6 +126,9 @@ it the executable runs from bytecode, with one notice. The `-jit` build also nee
 **ASLR.** An executable with a prebuilt heap runs with address space layout randomization off for its own code, as the Linux build
 is linked without it. The system's libraries, the heap and the stacks are randomized as usual.
 
+**`pi` and `pi-bin`.** In a macOS build `pi` is a small launcher, and `pi-bin` beside it the Pi-Bolt executable, which runs
+from either. `BUN_STATIC_HEAP_VERBOSE=1 pi --version` reports on `pi-bin`. Re-sign `pi-bin` (above); the launcher needs nothing.
+
 ## Reporting a problem
 
 Please [open an issue](https://github.com/opensec-git/Pi-Bolt/issues/new) with:

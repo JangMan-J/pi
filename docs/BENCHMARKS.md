@@ -105,8 +105,9 @@ Linux, on a server CPU at a fixed clock, shows the work more directly (half the 
 the EPYC, and Node 952 against 580: a terminal and timers that cost more per frame, and a model server whose pacing is coarser,
 so that a prompt takes 8.6 s rather than 6.5 s and draws 515 frames rather than 423.
 
-**What macOS adds at launch.** An executable with a prebuilt heap starts again once with ASLR off for its own code (about 3 ms of
-the 20 ms of `pi --version`; [ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)).
+**What macOS adds at launch.** An executable with a prebuilt heap runs with ASLR off for its own code: these figures are of builds
+that started again for it once, after a first load by dyld (about 3 ms of the 20 ms of `pi --version`). The launcher that `pi`
+now is starts it that way at once ([ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)).
 
 ## Setup and method
 

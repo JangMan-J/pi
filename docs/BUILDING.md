@@ -99,7 +99,8 @@ scripts/build-pi.sh [options]
 | `--stable` | | Build with a stock Bun (`PIBOLT_STABLE_BUN`, default `bun`) instead, as a comparison. |
 
 The executable has to stay next to the files `build-pi.sh` puts beside it: Pi's themes, assets, HTML export template, the
-photon WASM module and the native terminal helpers.
+photon WASM module and the native terminal helpers. On macOS `pi` is a launcher and the executable is `pi-bin` beside it
+([ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)); either can be run.
 
 The script checks the result: the executable must report `image registered: true`, meaning it runs its compiled code.
 

@@ -122,6 +122,12 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 		--define "PIBOLT_BUILD=\"$PIBOLT_VERSION $CPU_VARIANT jit-$JIT\"" \
 		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | tee "${PIBOLT_BUILD_LOG:-/dev/null}" | grep -v "^AOT: " | tail -3
 )
+# macOS: pi is a launcher that starts the executable, pi-bin, without ASLR for it at once (scripts/lib/darwin-launcher.c): it
+# would otherwise start again itself, after a first load by dyld.
+if [ "$PIBOLT_OS" = darwin ]; then
+	mv "$OUT/pi" "$OUT/pi-bin"
+	xcrun clang -O2 -mmacosx-version-min=13.0 -o "$OUT/pi" "$PIBOLT_ROOT/scripts/lib/darwin-launcher.c"
+fi
 stage_assets "$OUT"
 printf 'Pi-Bolt %s (Pi %s), %s-%s, JIT %s, built %s\n' "$PIBOLT_VERSION" "$VERSION" "$PIBOLT_OS" "$CPU_VARIANT" "$JIT" "$(date -u +%Y-%m-%d)" >"$OUT/pi-bolt.txt"
 
