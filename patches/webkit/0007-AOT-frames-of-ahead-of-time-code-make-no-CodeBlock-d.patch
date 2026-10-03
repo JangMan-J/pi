@@ -1,0 +1,210 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <323596076+opensec-intelligence@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 03:31:19 +0000
+Subject: [PATCH] AOT: frames of ahead-of-time code make no CodeBlock
+ during a collection; FunctionRef helpers find what they can
+
+- StackFrame::makeCodeBlock() also refuses on a thread doing GC work, with the
+  world stopped, or without the API lock: a collection's end phase (which formats
+  Error stacks) may run on the collector thread, where the mutator's state still
+  reads Running, and on a Worker VM's collector thread a static-heap executable's
+  vm() is the first VM's. StackVisitor::Frame::makeCodeBlock() refuses during a
+  collection too.
+- FunctionRef::codeType/isBuiltinFunction/instructionsSize/lineColumnFor and
+  Instance::ensureData no longer dereference a null unlinked code block (an
+  executable may let go of it; a function linked without a Data keeps its own),
+  and lineColumnFor takes a missing or out-of-range bytecode index for the
+  function's start instead of stopping the process while a trace is formatted.
+- Instance::destroy() clears the Instance of its JITCodes, so a frame that names
+  an executable of a realm that is gone finds nothing instead of unmapped memory.
+---
+ Source/JavaScriptCore/aot/AOTRuntime.cpp      | 59 ++++++++++++++++---
+ Source/JavaScriptCore/aot/AOTRuntime.h        |  1 +
+ .../interpreter/StackVisitor.cpp              |  6 ++
+ Source/JavaScriptCore/runtime/StackFrame.cpp  | 11 +++-
+ 4 files changed, 67 insertions(+), 10 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTRuntime.cpp b/Source/JavaScriptCore/aot/AOTRuntime.cpp
+index 353378de90..47154d9080 100644
+--- a/Source/JavaScriptCore/aot/AOTRuntime.cpp
++++ b/Source/JavaScriptCore/aot/AOTRuntime.cpp
+@@ -182,6 +182,7 @@ struct Instance::Collections {
+     struct FunctionWithoutData {
+         ScriptExecutable* executable;
+         UnlinkedCodeBlock* unlinkedCodeBlock;
++        RefPtr<JITCode> code; // What the executable runs: Instance::destroy() tells it that this realm is gone.
+     };
+     Vector<FunctionWithoutData> functionsWithoutData;
+     // The slots that have, or have had, a transition. The collector goes over them again and again while it marks, and they are few.
+@@ -429,6 +430,18 @@ void Instance::destroy(Instance* instance)
+     instance->vm->m_aotInstances.removeFirst(instance);
+     if (instance->vm->m_aotInstanceOfProgram == instance)
+         instance->vm->m_aotInstanceOfProgram = nullptr;
++    // The realm is being swept, but an executable of its code may outlive it: a frame of an error's stack trace names it
++    // (StackFrame's aotExecutable, which the GC holds weakly), and so may a sample. FunctionRef::of() goes by the JITCode's
++    // Instance, which is about to be unmapped: from now on it finds nothing. (The JITCodes are the Datas' and these, not the
++    // executables', which may already have been swept.)
++    for (Data* data : instance->collections->all) {
++        if (data->code->instance() == instance)
++            data->code->clearInstance();
++    }
++    for (auto& function : instance->collections->functionsWithoutData) {
++        if (function.code->instance() == instance)
++            function.code->clearInstance();
++    }
+     while (!instance->collections->all.isEmpty())
+         Data::destroy(instance->collections->all.last());
+     size_t environmentsSize = instance->collections->environmentsSize;
+@@ -713,7 +726,9 @@ Data* Instance::ensureData(uint32_t index)
+         return data;
+     const FunctionInfo& info = infos[index];
+     auto* executable = uncheckedDowncast<FunctionExecutable>(info.executable());
+-    UnlinkedFunctionCodeBlock* unlinkedCodeBlock = executable->unlinkedExecutable()->codeBlockIfExists(info.kind());
++    // (Not just what the executable has: it may have let go of it since the function was linked. In a realm without the program's
++    // metadata, linkConstants() has nothing else to go by.)
++    UnlinkedCodeBlock* unlinkedCodeBlock = FunctionRef { this, index }.unlinkedCodeBlockIfExists();
+     // (An executable that was made when the program was built has no way of holding on to one.)
+     Ref<JITCode> code = executable->hasJITCodeFor(info.kind()) ? Ref { static_cast<JITCode&>(executable->generatedJITCodeFor(info.kind()).get()) } : codeOfFunctionFromImage({ &Image::of(*info.function()), info.function() }, info.kind());
+     RELEASE_ASSERT(code->index() == index);
+@@ -880,7 +895,18 @@ UnlinkedCodeBlock* FunctionRef::unlinkedCodeBlockIfExists() const
+ {
+     if (Data* data = dataIfExists(); data && data->unlinkedCodeBlock)
+         return data->unlinkedCodeBlock;
+-    return uncheckedDowncast<FunctionExecutable>(executable())->unlinkedExecutable()->codeBlockIfExists(info().kind());
++    auto* executable = dynamicDowncast<FunctionExecutable>(this->executable());
++    if (!executable)
++        return nullptr;
++    if (UnlinkedCodeBlock* result = executable->unlinkedExecutable()->codeBlockIfExists(info().kind()))
++        return result;
++    // The executable lets go of code that has aged, or gives it back to the cache it came from; a function linked without a Data
++    // keeps its own reference (Collections::functionsWithoutData). Rare, so a search will do.
++    for (auto& function : instance->collections->functionsWithoutData) {
++        if (function.executable == executable && function.unlinkedCodeBlock->isConstructor() == (info().kind() == CodeSpecializationKind::CodeForConstruct))
++            return function.unlinkedCodeBlock;
++    }
++    return nullptr;
+ }
+ 
+ // As many zeros as any function has bytes of instructions, in memory that is nobody's until somebody reads it.
+@@ -1018,23 +1044,32 @@ auto FunctionRef::reportedPositionFor(BytecodeIndex bytecodeIndex, OfConstructio
+     return result;
+ }
+ 
++// (These are asked by whoever walks the stack or formats a trace, possibly at the end of a collection: they find what they can and
++// make nothing. The code of a program or a module always has a Data with its unlinked code, so what has neither is a function.)
+ CodeType FunctionRef::codeType() const
+ {
+-    return metadata() ? FunctionCode : unlinkedCodeBlockIfExists()->codeType();
++    if (metadata())
++        return FunctionCode;
++    UnlinkedCodeBlock* unlinkedCodeBlock = unlinkedCodeBlockIfExists();
++    return unlinkedCodeBlock ? unlinkedCodeBlock->codeType() : FunctionCode;
+ }
+ 
+ bool FunctionRef::isBuiltinFunction() const
+ {
+     if (auto* metadata = this->metadata())
+         return metadata->flagsAndInstructionsSize & FunctionMetadata::isBuiltinFunction;
+-    return unlinkedCodeBlockIfExists()->isBuiltinFunction();
++    if (UnlinkedCodeBlock* unlinkedCodeBlock = unlinkedCodeBlockIfExists())
++        return unlinkedCodeBlock->isBuiltinFunction();
++    auto* executable = dynamicDowncast<FunctionExecutable>(this->executable());
++    return executable && executable->isBuiltinFunction();
+ }
+ 
+ unsigned FunctionRef::instructionsSize() const
+ {
+     if (auto* metadata = this->metadata())
+         return metadata->instructionsSize();
+-    return unlinkedCodeBlockIfExists()->instructions().size();
++    UnlinkedCodeBlock* unlinkedCodeBlock = unlinkedCodeBlockIfExists();
++    return unlinkedCodeBlock ? unlinkedCodeBlock->instructions().size() : 0;
+ }
+ 
+ void* FunctionRef::addressOfCatchEntrypoint(unsigned bytecodeOffset) const
+@@ -1181,13 +1216,19 @@ LineColumn FunctionRef::lineColumnFor(BytecodeIndex bytecodeIndex) const
+     if (auto position = reportedPositionFor(bytecodeIndex))
+         return position->lineColumn;
+     ScriptExecutable* executable = this->executable();
+-    RELEASE_ASSERT(bytecodeIndex.offset() < instructionsSize());
++    if (!executable)
++        return { };
++    // A frame that was looked at from a call that nobody was expected to ask about has no location (locationForReturnAddress()):
++    // it is then where the function starts. This is called while a trace is formatted, at the end of a collection too, which is
++    // no place to stop the process over a position.
++    if (!bytecodeIndex || bytecodeIndex.offset() >= instructionsSize())
++        bytecodeIndex = BytecodeIndex(0);
+     LineColumn lineColumn;
+     if (auto* metadata = this->metadata()) {
+         if (const uint32_t* word = metadata->find(FunctionMetadata::ExpressionInfo))
+             lineColumn = decodeBorrowedExpressionInfo(StaticHeap::inData<uint8_t>(*word))->lineColumnForInstPC(bytecodeIndex.offset());
+-    } else
+-        lineColumn = unlinkedCodeBlockIfExists()->lineColumnForBytecodeIndex(bytecodeIndex);
++    } else if (UnlinkedCodeBlock* unlinkedCodeBlock = unlinkedCodeBlockIfExists())
++        lineColumn = unlinkedCodeBlock->lineColumnForBytecodeIndex(bytecodeIndex);
+     lineColumn.column += lineColumn.line ? 1 : executable->startColumn();
+     lineColumn.line += executable->firstLine();
+     return lineColumn;
+@@ -1263,7 +1304,7 @@ bool install(VM& vm, FunctionExecutable* executable, CodeSpecializationKind kind
+             dataLogLn("AOT: nothing was known of function ", index, " when the program was built");
+         fillInfo(instance.infos[index], executable, unlinkedCodeBlock, code.get(), unlinkedCodeBlock->constantRegisters().span().data());
+         instance.infos[index].flags |= FunctionInfo::startsCold;
+-        instance.collections->functionsWithoutData.append({ executable, unlinkedCodeBlock });
++        instance.collections->functionsWithoutData.append({ executable, unlinkedCodeBlock, code.ptr() });
+         instance.setLinkedWithoutData(index);
+     } else if (!Data::create(instance, executable, unlinkedCodeBlock, code.get()))
+         return false;
+diff --git a/Source/JavaScriptCore/aot/AOTRuntime.h b/Source/JavaScriptCore/aot/AOTRuntime.h
+index 426664cdc3..50429bbb63 100644
+--- a/Source/JavaScriptCore/aot/AOTRuntime.h
++++ b/Source/JavaScriptCore/aot/AOTRuntime.h
+@@ -934,6 +934,7 @@ public:
+     static constexpr ptrdiff_t offsetOfInstance() { return OBJECT_OFFSETOF(JITCode, m_instance); }
+     Instance* instance() const { return m_instance; }
+     void setInstance(Instance& instance) { m_instance = &instance; }
++    void clearInstance() { m_instance = nullptr; } // Its realm is gone (Instance::destroy()).
+ 
+ private:
+     void* m_code;
+diff --git a/Source/JavaScriptCore/interpreter/StackVisitor.cpp b/Source/JavaScriptCore/interpreter/StackVisitor.cpp
+index 202516f58d..cfec69f846 100644
+--- a/Source/JavaScriptCore/interpreter/StackVisitor.cpp
++++ b/Source/JavaScriptCore/interpreter/StackVisitor.cpp
+@@ -471,6 +471,12 @@ void StackVisitor::readInlinedFrame(CallFrame* callFrame, CodeOrigin* codeOrigin
+ CodeBlock* StackVisitor::Frame::makeCodeBlock() const
+ {
+ #if ENABLE(FTL_JIT)
++    // As StackFrame::makeCodeBlock(): only the mutator makes one, outside a collection. (Stacks are walked on the VM's own thread,
++    // but what walks one may be reached from a collection's end phase, which is no place to allocate. Nobody asking then gets
++    // what a native frame would give.)
++    VM& vm = *m_aotFunction.instance->vm;
++    if (vm.heap.currentThreadIsDoingGCWork() || vm.heap.worldIsStopped())
++        return nullptr;
+     m_codeBlock = m_aotFunction.ensureData()->ensureCodeBlock();
+ #endif
+     return m_codeBlock;
+diff --git a/Source/JavaScriptCore/runtime/StackFrame.cpp b/Source/JavaScriptCore/runtime/StackFrame.cpp
+index 57f3f696af..0c21044bc9 100644
+--- a/Source/JavaScriptCore/runtime/StackFrame.cpp
++++ b/Source/JavaScriptCore/runtime/StackFrame.cpp
+@@ -90,7 +90,16 @@ CodeBlock* StackFrame::makeCodeBlock() const
+ #if ENABLE(FTL_JIT)
+     auto& jsFrame = std::get<JSFrameData>(m_frameData);
+     VM& vm = jsFrame.aotExecutable->vm();
+-    if (vm.heap.mutatorState() != MutatorState::Running)
++    // Making one allocates in the heap, may decode the function's unlinked code and links its constants: only the mutator may do
++    // that, outside a collection. The end phase of a collection (ErrorInstance::reconcileWeakReferencesAtGCEnd ->
++    // VM::onComputeErrorInfo) runs on whichever thread conducts it. When that is the collector thread, the mutator is merely
++    // stopped (it may have released heap access to wait in its event loop), so its mutatorState() still says Running: that alone
++    // does not tell. The world is stopped then, and the thread is a GC thread that does not hold the API lock.
++    // Also: the executable of a frame of code from the static heap is a static cell, and on a thread that has no VM of its own (a
++    // Worker VM's collector thread) JSCell::vm() of one is the FIRST VM's (StaticHeap::containerOfSlow()). Without the lock check
++    // a Worker's collection would make a CodeBlock, and a Data, in the main VM's heap and Instance from its own GC thread.
++    if (vm.heap.mutatorState() != MutatorState::Running || vm.heap.currentThreadIsDoingGCWork() || vm.heap.worldIsStopped()
++        || !vm.currentThreadIsHoldingAPILock())
+         return nullptr;
+     if (AOT::FunctionRef function = AOT::FunctionRef::of(vm, jsFrame.aotExecutable.get(), jsFrame.aotKind))
+         return function.ensureCodeBlock();
+-- 
+2.43.0
+

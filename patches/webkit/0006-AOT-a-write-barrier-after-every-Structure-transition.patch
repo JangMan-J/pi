@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <323596076+opensec-intelligence@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 03:07:52 +0000
+Subject: [PATCH] AOT: a write barrier after every Structure transition
+
+A put_by_id that transitions stores a new StructureID into the object; nothing
+else may keep that Structure alive, so the object must be barriered whatever the
+value is, as the JITs do. The PutById stubs (x86-64 and ARM64) and
+lowerPutById() barriered only when the value was a cell, and the x86-64
+put_by_val megamorphic store (which can transition too) jumped to the
+cell-only barrier. All now barrier the object after a transition.
+---
+ Source/JavaScriptCore/aot/AOTLowerAccess.cpp |  4 +++-
+ Source/JavaScriptCore/aot/AOTStubs.cpp       |  4 ++++
+ Source/JavaScriptCore/aot/AOTStubsX86_64.cpp | 10 ++++++++--
+ 3 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTLowerAccess.cpp b/Source/JavaScriptCore/aot/AOTLowerAccess.cpp
+index 3699e4c071..20044f3e46 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerAccess.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerAccess.cpp
+@@ -831,7 +831,9 @@ void Lowering::lowerPutById(Node* node)
+ 
+     m_out.appendTo(transition, stored);
+     m_out.store32(newStructureID, base, m_heaps.JSCell_structureID);
+-    m_out.jump(stored);
++    // The object refers to a new Structure now, which nothing else may be keeping alive: a barrier whatever the value is.
++    storeBarrier(base);
++    m_out.jump(continuation);
+ 
+     m_out.appendTo(stored, slowCase);
+     if (mayBe(valueNode->type, TCell))
+diff --git a/Source/JavaScriptCore/aot/AOTStubs.cpp b/Source/JavaScriptCore/aot/AOTStubs.cpp
+index 95c119441e..0655d509cf 100644
+--- a/Source/JavaScriptCore/aot/AOTStubs.cpp
++++ b/Source/JavaScriptCore/aot/AOTStubs.cpp
+@@ -1691,11 +1691,15 @@ static void generatePutById(CCallHelpers& jit)
+     jit.store64(A1, CCallHelpers::BaseIndex(T12, T11, CCallHelpers::TimesEight));
+     Jump sameStructure = jit.branchTest32(CCallHelpers::Zero, T13);
+     jit.store32(T13, Address(A0, JSCell::structureIDOffset()));
++    // A transition: the object refers to a new Structure now, which nothing else may be keeping alive, so the barrier is
++    // taken whatever the value is (as the JITs do: "IC can write new Structure without write-barrier").
++    Jump transitioned = jit.jump();
+     sameStructure.link(&jit);
+ 
+     CCallHelpers::Label stored = jit.label();
+     Jump notCell = jit.branchIfNotCell(A1);
+     CCallHelpers::Label storedAndMayBeOfAnotherStructure = jit.label();
++    transitioned.link(&jit);
+     loadInstance(jit, T9);
+     jit.load8(Address(A0, JSCell::cellStateOffset()), T11);
+     jit.loadPtr(Address(T9, Instance::offsetOfVM()), T12);
+diff --git a/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp b/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
+index ff2b458f9f..8ac3f4d035 100644
+--- a/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
++++ b/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
+@@ -1529,11 +1529,15 @@ static void generatePutById(CCallHelpers& jit)
+     jit.store64(A1, CCallHelpers::BaseIndex(storage, word, CCallHelpers::TimesEight));
+     Jump sameStructure = jit.branchTest32(CCallHelpers::Zero, next);
+     jit.store32(next, Address(A0, JSCell::structureIDOffset()));
++    // A transition: the object refers to a new Structure now, which nothing else may be keeping alive, so the barrier is
++    // taken whatever the value is (as the JITs do: "IC can write new Structure without write-barrier").
++    Jump transitioned = jit.jump();
+     sameStructure.link(&jit);
+ 
+     Jump notCell = jit.branchIfNotCell(A1);
+     // (A store through the megamorphic cache may have changed the Structure: the barrier is looked at whatever was stored.)
+     CCallHelpers::Label storedAndMayBeOfAnotherStructure = jit.label();
++    transitioned.link(&jit);
+     loadInstance(jit, T9);
+     returnAfterBarrier(jit);
+     notCell.link(&jit);
+@@ -2346,7 +2350,6 @@ static void generatePutByVal(CCallHelpers& jit)
+     inBounds.link(&jit);
+     jit.store64(A2, CCallHelpers::BaseIndex(storage, index, CCallHelpers::TimesEight));
+ 
+-    CCallHelpers::Label stored = jit.label();
+     Jump notCell = jit.branchIfNotCell(A2);
+     loadInstance(jit, T9);
+     returnAfterBarrier(jit);
+@@ -2380,7 +2383,10 @@ static void generatePutByVal(CCallHelpers& jit)
+         jit.push(A3);
+         auto [notCached, reallocating] = jit.storeMegamorphicProperty(CCallHelpers::MegamorphicCacheLocation(cache), A0, uid, nullptr, A2, storage, T9, A3);
+         jit.pop(A3);
+-        jit.jump().linkTo(stored, &jit);
++        // A cached transition gives the object a new Structure that nothing else may be keeping alive: the barrier is taken
++        // whatever the value is (as PutById's storedAndMayBeOfAnotherStructure).
++        loadInstance(jit, T9);
++        returnAfterBarrier(jit);
+         notCached.link(&jit);
+         reallocating.link(&jit);
+         jit.pop(A3);
+-- 
+2.43.0
+

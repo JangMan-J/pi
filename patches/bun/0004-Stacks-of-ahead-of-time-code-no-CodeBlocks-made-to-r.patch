@@ -1,0 +1,223 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <323596076+opensec-intelligence@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 03:10:30 +0000
+Subject: [PATCH] Stacks of ahead-of-time code: no CodeBlocks made to read
+ a frame; crash reports are not uploaded unasked
+
+- protectFrameCells roots codeBlockIfExists() or the frame's executable (what
+  StackFrame::isMarked asks about) instead of making a CodeBlock per AOT function
+  ever formatted, which also left the executable unrooted when none was found.
+- populateStackTrace defers GC while it walks an ErrorInstance's weak trace, and
+  reads code type / constructor from the frame.
+- isImplementationVisibilityPrivate and sourceURL of a StackVisitor or StackFrame
+  read the owner executable instead of making a CodeBlock mid-walk.
+- An await frame without code gets its function's file instead of 'unknown'.
+- AOT executables upload a crash report only on opt-in (BUN_ENABLE_CRASH_REPORTING
+  or BUN_CRASH_REPORT_URL): the canary build curled <report URL>/ack on every
+  crash, which the crash page does not answer (404 printed under the message).
+  The link is still printed.
+---
+ src/crash_handler/lib.rs                   |  8 ++++
+ src/jsc/bindings/ErrorStackTrace.cpp       | 45 ++++++++++++++--------
+ src/jsc/bindings/FormatStackTraceForJS.cpp | 20 +++++++++-
+ src/jsc/bindings/ZigException.cpp          | 14 +++++--
+ 4 files changed, 66 insertions(+), 21 deletions(-)
+
+diff --git a/src/crash_handler/lib.rs b/src/crash_handler/lib.rs
+index 491b2a2e..c2db8ce8 100644
+--- a/src/crash_handler/lib.rs
++++ b/src/crash_handler/lib.rs
+@@ -2743,6 +2743,14 @@ mod draft {
+             return enable_crash_reporting;
+         }
+ 
++        // Pi-Bolt's runtime is a canary build, which below would `curl <report URL>/ack` on every crash on Linux too: a request
++        // nobody opted into, to an endpoint that does not answer it (curl prints "The requested URL returned error: 404" under
++        // the crash message). The link is still printed for the user to follow; uploading is opt-in (BUN_ENABLE_CRASH_REPORTING=1
++        // or BUN_CRASH_REPORT_URL).
++        if is_ahead_of_time_executable() {
++            return false;
++        }
++
+         // Debug builds shouldn't report to the default url by default
+         if cfg!(debug_assertions) {
+             return false;
+diff --git a/src/jsc/bindings/ErrorStackTrace.cpp b/src/jsc/bindings/ErrorStackTrace.cpp
+index bab61b51..9aea36cf 100644
+--- a/src/jsc/bindings/ErrorStackTrace.cpp
++++ b/src/jsc/bindings/ErrorStackTrace.cpp
+@@ -31,16 +31,6 @@ using namespace WebCore;
+ 
+ namespace Zig {
+ 
+-static ImplementationVisibility getImplementationVisibility(JSC::CodeBlock* codeBlock)
+-{
+-
+-    if (auto* executable = codeBlock->ownerExecutable()) {
+-        return executable->implementationVisibility();
+-    }
+-
+-    return ImplementationVisibility::Public;
+-}
+-
+ bool isImplementationVisibilityPrivate(JSC::StackVisitor& visitor)
+ {
+     ImplementationVisibility implementationVisibility = [&]() -> ImplementationVisibility {
+@@ -53,8 +43,12 @@ bool isImplementationVisibilityPrivate(JSC::StackVisitor& visitor)
+             }
+         }
+ 
+-        if (auto* codeBlock = visitor->codeBlock()) {
+-            return getImplementationVisibility(codeBlock);
++        // ownerExecutable(), not codeBlock(): for a frame of code compiled ahead of time codeBlock() makes one, in the middle of
++        // the stack walk (StackVisitor.h: "Nothing else there is to ask of a Frame does that").
++        if (visitor->hasCode()) {
++            if (auto* executable = visitor->ownerExecutable())
++                return executable->implementationVisibility();
++            return ImplementationVisibility::Public;
+         }
+ 
+ #if ENABLE(WEBASSEMBLY)
+@@ -84,8 +78,10 @@ bool isImplementationVisibilityPrivate(const JSC::StackFrame& frame)
+             }
+         }
+ 
+-        if (auto* codeBlock = frame.codeBlock()) {
+-            return getImplementationVisibility(codeBlock);
++        // ownerExecutable(), not codeBlock(), which makes a CodeBlock for a frame of code compiled ahead of time.
++        if (frame.hasLineAndColumnInfo()) {
++            if (auto* executable = frame.ownerExecutable())
++                return executable->implementationVisibility();
+         }
+ 
+         return ImplementationVisibility::Public;
+@@ -281,6 +277,13 @@ ALWAYS_INLINE String JSCStackFrame::retrieveSourceURL()
+         return url;
+     }
+ 
++    // No CodeBlock, but code: a frame of code compiled ahead of time for which none could be made. Its executable says.
++    if (!m_codeBlock && m_stackFrame->hasLineAndColumnInfo()) {
++        url = Zig::sourceURL(m_vm, *m_stackFrame);
++        if (!url.isEmpty())
++            return url;
++    }
++
+     if (m_callee && m_callee->isObject()) {
+         if (auto* jsFunction = dynamicDowncast<JSFunction>(m_callee)) {
+             WTF::String url = Zig::sourceURL(m_vm, jsFunction);
+@@ -409,6 +412,15 @@ String sourceURL(JSC::VM& vm, const JSC::StackFrame& frame)
+     }
+ 
+     if (!frame.hasLineAndColumnInfo()) [[unlikely]] {
++        // An await frame without code to say where it is (JSC::Interpreter::getAsyncStackTrace makes one for a function compiled
++        // ahead of time whose code is not linked, and Bun's collectAsyncStackFramesFromPromise for every one of those): the file
++        // is still the function's, as JSC::StackFrame::sourceURL() says. Reads cells only, so it also runs at the end of a GC.
++        if (frame.isAsyncFrame() && frame.callee()) {
++            if (auto* function = dynamicDowncast<JSC::JSFunction>(frame.callee())) {
++                if (auto url = sourceURL(vm, function); !url.isEmpty())
++                    return url;
++            }
++        }
+         return "[native code]"_s;
+     }
+ 
+@@ -429,7 +441,10 @@ String sourceURL(JSC::StackVisitor& visitor)
+     case JSC::StackVisitor::Frame::Module:
+     case JSC::StackVisitor::Frame::Function:
+     case JSC::StackVisitor::Frame::Global: {
+-        return sourceURL(visitor->codeBlock());
++        // The executable's source is the CodeBlock's; codeBlock() would make one for a frame of code compiled ahead of time.
++        if (auto* executable = visitor->ownerExecutable())
++            return sourceURL(executable->source());
++        return String();
+     }
+     case JSC::StackVisitor::Frame::Native:
+         return "[native code]"_s;
+diff --git a/src/jsc/bindings/FormatStackTraceForJS.cpp b/src/jsc/bindings/FormatStackTraceForJS.cpp
+index cebb7c8f..1fafc026 100644
+--- a/src/jsc/bindings/FormatStackTraceForJS.cpp
++++ b/src/jsc/bindings/FormatStackTraceForJS.cpp
+@@ -335,7 +335,15 @@ WTF::String formatStackTrace(
+         remappedFrame.position.byte_position = -1;
+         originalLineColumns[i] = {};
+ 
+-        if (!frame.hasLineAndColumnInfo()) continue;
++        if (!frame.hasLineAndColumnInfo()) {
++            // An await frame without code (e.g. of a function compiled ahead of time) still has the function's file, rather
++            // than "unknown"; with no line there is nothing to remap.
++            if (frame.isAsyncFrame() && frame.callee()) {
++                if (auto* function = dynamicDowncast<JSC::JSFunction>(frame.callee()))
++                    sourceURLs[i] = Zig::sourceURL(vm, function);
++            }
++            continue;
++        }
+ 
+         originalLineColumns[i] = frame.computeLineAndColumn();
+ 
+@@ -696,8 +704,16 @@ static void protectFrameCells(JSC::MarkedArgumentBuffer& cells, const Vector<Sta
+     for (auto& frame : stackTrace) {
+         if (auto* callee = frame.callee())
+             cells.append(callee);
+-        if (auto* codeBlock = frame.codeBlock())
++        // Root what StackFrame::isMarked() asks about, without frame.codeBlock(): for a frame of code compiled ahead of time
++        // that makes a CodeBlock (allocating, and decoding an unlinked code block, for each such function that ever appears
++        // in a formatted stack, kept for the life of the program) and returns null when no AOT function is found, which left
++        // the frame's executable (JSFrameData::aotExecutable) unrooted while Error.prepareStackTrace runs.
++        if (auto* codeBlock = frame.codeBlockIfExists())
+             cells.append(codeBlock);
++        else if (frame.hasLineAndColumnInfo()) {
++            if (auto* executable = frame.ownerExecutable())
++                cells.append(executable);
++        }
+     }
+ }
+ 
+diff --git a/src/jsc/bindings/ZigException.cpp b/src/jsc/bindings/ZigException.cpp
+index cfd1059c..e6aa41f7 100644
+--- a/src/jsc/bindings/ZigException.cpp
++++ b/src/jsc/bindings/ZigException.cpp
+@@ -30,6 +30,7 @@
+ #include "JavaScriptCore/JSObject.h"
+ #include "JavaScriptCore/JSString.h"
+ #include "JavaScriptCore/StackFrame.h"
++#include "JavaScriptCore/DeferGC.h"
+ #include "JavaScriptCore/VM.h"
+ #include "ZigGlobalObject.h"
+ #include "helpers.h"
+@@ -84,9 +85,9 @@ static void populateStackFrameMetadata(JSC::VM& vm, const JSC::StackFrame& stack
+ 
+     auto sourceURL = Zig::sourceURL(vm, stackFrame);
+     frame.source_url = Bun::toStringRef(sourceURL);
+-    auto m_codeBlock = stackFrame.codeBlock();
+-    if (m_codeBlock) {
+-        switch (m_codeBlock->codeType()) {
++    // Ask the frame, not stackFrame.codeBlock(): for code compiled ahead of time that makes a CodeBlock just to read these.
++    if (stackFrame.hasLineAndColumnInfo()) {
++        switch (stackFrame.codeType()) {
+         case JSC::EvalCode: {
+             frame.code_type = ZigStackFrameCodeEval;
+             return;
+@@ -100,7 +101,7 @@ static void populateStackFrameMetadata(JSC::VM& vm, const JSC::StackFrame& stack
+             return;
+         }
+         case JSC::FunctionCode: {
+-            frame.code_type = !m_codeBlock->isConstructor() ? ZigStackFrameCodeFunction : ZigStackFrameCodeConstructor;
++            frame.code_type = !stackFrame.isConstructor() ? ZigStackFrameCodeFunction : ZigStackFrameCodeConstructor;
+             break;
+         }
+         default:
+@@ -412,6 +413,11 @@ public:
+ static void populateStackTrace(JSC::VM& vm, const WTF::Vector<JSC::StackFrame>& frames, ZigStackTrace& trace, PopulateStackTraceFlags flags)
+ {
+     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++    // `frames` is often an ErrorInstance's own weak trace (fromErrorInstance, JSC__JSValue__toZigException). A collection that
++    // finds one of its frames dead materializes it and frees the vector (ErrorInstance::reconcileWeakReferencesAtGCEnd), so none
++    // may run while it is read. StackFrame::codeBlock() allocates for a frame of code compiled ahead of time
++    // (populateStackFramePosition still needs a CodeBlock for the divot).
++    JSC::DeferGCForAWhile deferGC(vm);
+     if (flags == PopulateStackTraceFlags::OnlyPosition) {
+         uint8_t frame_i = 0;
+         size_t stack_frame_i = 0;
+-- 
+2.43.0
+
