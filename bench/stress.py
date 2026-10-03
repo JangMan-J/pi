@@ -171,8 +171,10 @@ def signals(build, port, root):
 
 
 def resident_mb(pid):
+    # (macOS: the physical footprint. Resident memory there also counts the clean pages of the executable that have been read,
+    # which only grow as more of it is used, and say nothing about what is kept.)
     if MACOS:
-        return memory_mb(pid).get("rss", 0.0)
+        return memory_mb(pid).get("own", 0.0)
     try:
         for line in open(f"/proc/{pid}/status"):
             if line.startswith("VmRSS:"):
@@ -254,7 +256,7 @@ def soak(build, port, root, prompts):
             fail(build.name, f"soak: crashed (exit {p.returncode}): {err[-400:]!r}")
     took = time.perf_counter() - start
     print(f"  {done}/{prompts} prompts in {took:.0f}s ({1000 * took / max(done, 1):.0f} ms each); exit {p.returncode}", flush=True)
-    print("  resident MB by prompt: " + ", ".join(f"{i}:{mb:.0f}" for i, mb in samples), flush=True)
+    print(f"  {'footprint' if MACOS else 'resident'} MB by prompt: " + ", ".join(f"{i}:{mb:.0f}" for i, mb in samples), flush=True)
     if len(samples) >= 8:
         # Memory rises and falls with each collection, so compare floors: the least in the last quarter of the run against the
         # least in its second quarter (the first is warm-up). What is retained for good raises the floor.
