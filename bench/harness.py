@@ -32,7 +32,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
 PROMPT = "Read the four fixture files"
-DONE = "Done: read all four files."
+DONE = "Done: read all four files"
+
+
+def done(prompt: int) -> str:
+    """How the fake model ends its answer to the nth prompt of a session. Wait for this, not for DONE: the answers before it
+    are on the screen too, and are written again when the screen is redrawn."""
+    return f"{DONE} (prompt {prompt})."
 MODEL_ARGS = ["--model", "fake/fake-model"]
 ANSI = re.compile(rb"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[=>78]|\x1b[()][A-Z0-9]")
 

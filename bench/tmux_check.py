@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import ANSI, DONE, MODEL_ARGS, PROMPT, cpu_ms, fake_model, median, memory_mb, parse_builds, pi_env, pi_home, workdir
+from harness import ANSI, MODEL_ARGS, PROMPT, cpu_ms, done, fake_model, median, memory_mb, parse_builds, pi_env, pi_home, workdir
 
 SOCKET = "pibolt-check"
 ERRORS = re.compile(r"TypeError|ReferenceError|RangeError|SyntaxError|panic\(|Segmentation fault|Bun has crashed|oh no:|Unhandled|uncaught", re.I)
@@ -125,7 +125,7 @@ def check(build, env, cwd, prompts, cpus, out_dir):
             c0, ts = cpu_ms(pid), time.perf_counter()
             tmux("send-keys", "-t", session, "-l", PROMPT)
             tmux("send-keys", "-t", session, "Enter")
-            if not wait_output(out_file, size0, DONE, 120):
+            if not wait_output(out_file, size0, done(i + 1), 120):
                 r.setdefault("warnings", []).append(f"prompt {i}: no final answer")
             wait_still(session, 0.3, 120)
             walls.append((time.perf_counter() - ts - 0.3) * 1000)
@@ -146,7 +146,7 @@ def check(build, env, cwd, prompts, cpus, out_dir):
         for cols, rows in (("100", "30"), ("200", "60"), ("80", "24"), ("160", "48")):
             tmux("resize-window", "-t", session, "-x", cols, "-y", rows)
             time.sleep(0.25)
-        r["resize_while_streaming"] = "ok" if wait_output(out_file, size0, DONE, 120) else "answer missing"
+        r["resize_while_streaming"] = "ok" if wait_output(out_file, size0, done(prompts + 1), 120) else "answer missing"
         wait_still(session, 0.5, 30)
         tmux("send-keys", "-t", session, "-l", PROMPT)
         tmux("send-keys", "-t", session, "Enter")
@@ -158,7 +158,8 @@ def check(build, env, cwd, prompts, cpus, out_dir):
         size0 = out_file.stat().st_size
         tmux("send-keys", "-t", session, "-l", "Say hi")
         tmux("send-keys", "-t", session, "Enter")
-        r["prompt_after_abort"] = "ok" if wait_output(out_file, size0, DONE, 120) else "no answer"
+        # (The prompt that was aborted is the one before it.)
+        r["prompt_after_abort"] = "ok" if wait_output(out_file, size0, done(prompts + 3), 120) else "no answer"
 
         wait_still(session, 1.0, 30)
         size0, c0 = out_file.stat().st_size, cpu_ms(pid)

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import DONE, MODEL_ARGS, PROMPT, Tty, cpu_ms, fake_model, memory_mb, parse_builds, pi_env, pi_home, pinned, workdir
+from harness import MODEL_ARGS, PROMPT, Tty, cpu_ms, done, fake_model, memory_mb, parse_builds, pi_env, pi_home, pinned, workdir
 
 
 def session(build, prompts, every, cpus):
@@ -32,7 +32,7 @@ def session(build, prompts, every, cpus):
         for i in range(1, prompts + 1):
             start = len(tty.buf)
             tty.send(PROMPT.encode() + b"\r")
-            if not tty.wait_for(DONE, start, deadline):
+            if not tty.wait_for(done(i), start, deadline):
                 rows.append({"prompt": i, "error": "no answer"})
                 break
             tty.settle(0.03, deadline)

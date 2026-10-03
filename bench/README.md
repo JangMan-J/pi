@@ -15,6 +15,9 @@ throwaway Pi home, so runs are isolated from your Pi configuration and from each
 | `e2e_tools.py` | Drives every core Pi tool through a scripted model. The transcript and files must be byte-identical to a reference build's. |
 | `stress.py` | Load and failure: N Pi processes at once doing large tool work (whose tool results and requests must equal a reference build's), a 2 MB streamed answer, tool arguments a few bytes at a time, a connection cut mid-answer, HTTP 500/429, a stream that is not JSON, SIGINT/SIGTERM while a tool runs, stdout closed early, and a soak of many prompts in one RPC session whose memory floor must not rise. Exit status 1 on any failure. |
 | `e2e_screen.py` | A long answer with every kind of Markdown and code block streams into the TUI in tmux. The whole scrollback, text and colors, must be what the reference build shows. |
+| `e2e_fullscreen.py` | The fullscreen TUI scrolls the rows that only moved instead of drawing them again. A long answer streams in, the transcript is paged and the window resized: every screen must be what it is when every row is drawn, in tmux and in zmx (`--docker IMAGE`: inside a container). |
+| `tmux_load.py` | What Pi costs the multiplexer it runs in: Pi in a tmux pane with a client attached. CPU of Pi and of the tmux server, bytes Pi writes, bytes tmux sends its client. |
+| `pauses.py` | The longest stretch in which the TUI writes nothing while it should be drawing (large files written through a tool call): the program busy with one thing. |
 | `plugin_bench.py` | A Pi extension compiled into the executable vs loaded at run time: launch time and the plugin's hot loop. |
 | `run-suite.sh` | Runs all of the benchmarks above into one results folder, then `report.py`: what the README and docs/BENCHMARKS.md show. |
 | `report.py` | Draws the charts (light and dark SVG) and prints the tables, from a results folder. |

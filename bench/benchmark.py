@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import DONE, MODEL_ARGS, PROMPT, Tty, fake_model, median, parse_builds, pi_env, pi_home, pinned, workdir
+from harness import DONE, MODEL_ARGS, PROMPT, Tty, done, fake_model, median, parse_builds, pi_env, pi_home, pinned, workdir
 
 
 def run_plain(build, args, env, cwd, cpus):
@@ -61,11 +61,11 @@ def interactive(build, env, cwd, cpus, prompts=5):
     r["tti_ms"] = (time.perf_counter() - t0) * 1e3
     tty.settle(0.05, deadline)
     turns = 0.0
-    for _ in range(prompts):
+    for n in range(1, prompts + 1):
         start = len(tty.buf)
         ts = time.perf_counter()
         tty.send(PROMPT.encode() + b"\r")
-        if not tty.wait_for(DONE, start, deadline):
+        if not tty.wait_for(done(n), start, deadline):
             break
         turns += (time.perf_counter() - ts) * 1e3
         tty.settle(0.03, deadline)

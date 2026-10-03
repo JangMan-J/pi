@@ -63,10 +63,11 @@ class Handler(BaseHTTPRequestHandler):
         req = json.loads(body or b"{}")
         # Count tool results since the latest user prompt, so every prompt in a
         # multi-prompt session runs the same 5-turn loop.
-        turn = 0
+        turn = prompts = 0
         for m in req.get("messages", []):
             if m.get("role") == "user":
                 turn = 0
+                prompts += 1
             elif m.get("role") == "tool":
                 turn += 1
 
@@ -82,7 +83,9 @@ class Handler(BaseHTTPRequestHandler):
                 out.append(chunk({"tool_calls": [{"index": 0, "function": {"arguments": args[i:i + 8]}}]}))
             out.append(chunk(finish="tool_calls"))
         else:
-            out.append(chunk({"content": "\n\nDone: read all four files."}))
+            # With the number of the prompt: a screen that is drawn again shows the answers before this one too, and
+            # whoever waits for this answer must not take one of those for it.
+            out.append(chunk({"content": f"\n\nDone: read all four files (prompt {prompts})."}))
             out.append(chunk(finish="stop"))
         out.append(chunk(usage={"prompt_tokens": 1000 * (turn + 1), "completion_tokens": 150,
                                 "total_tokens": 1000 * (turn + 1) + 150}))
