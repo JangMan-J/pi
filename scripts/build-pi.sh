@@ -133,4 +133,5 @@ printf 'Pi-Bolt %s (Pi %s), %s-%s, JIT %s, built %s\n' "$PIBOLT_VERSION" "$VERSI
 
 check=$(BUN_STATIC_HEAP_VERBOSE=1 "$OUT/pi" --version 2>&1)
 grep -q "image registered: true" <<<"$check" || die "the executable does not use its compiled code:"$'\n'"$check"
-log "done: $OUT/pi ($(du -h "$OUT/pi" | cut -f1), Pi $(tail -1 <<<"$check"))"
+executable="$OUT/pi"; [ -f "$OUT/pi-bin" ] && executable="$OUT/pi-bin"
+log "done: $OUT/pi ($(du -h "$executable" | cut -f1), Pi $(tail -1 <<<"$check"))"
