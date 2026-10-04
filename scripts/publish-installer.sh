@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publishes install.sh and site/ (the index, the crash-report page) to the gh-pages branch, which GitHub Pages serves at
+# Publishes install.sh and site/ (the home page, the crash-report page, the logo and the page's font) to the gh-pages branch, which GitHub Pages serves at
 # https://pi-bolt.opensec.in.
 # Usage: scripts/publish-installer.sh [REMOTE]     (default remote: origin). Adds a commit to gh-pages; never rewrites it.
 source "$(dirname "$0")/lib/common.sh"
@@ -15,7 +15,7 @@ if git -C "$WORKTREE" diff --quiet; then
 	log "gh-pages already has this install.sh and site"
 	exit 0
 fi
-git -C "$WORKTREE" add install.sh "$WORKTREE"/*.html "$WORKTREE"/*.svg
+git -C "$WORKTREE" add install.sh "$WORKTREE"/*.html "$WORKTREE"/*.svg "$WORKTREE"/*.woff2 "$WORKTREE"/*.txt
 git -C "$WORKTREE" commit -q -m "chore(pages): update install.sh and site"
 git -C "$WORKTREE" push -q "$REMOTE" HEAD:gh-pages
 log "published install.sh to $REMOTE gh-pages"
