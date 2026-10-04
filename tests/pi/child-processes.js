@@ -64,7 +64,8 @@ async function run() {
 	const fd3 = spawn("/bin/sh", ["-c", "echo on fd 3 >&3"], { stdio: ["ignore", "ignore", "ignore", "pipe"] });
 	let fd3Text = "";
 	fd3.stdio[3].on("data", (chunk) => (fd3Text += chunk));
-	await exited(fd3);
+	// (The end of the pipe, not the program's "exit": what a program wrote can arrive after it has exited.)
+	await Promise.all([exited(fd3), new Promise((resolve) => fd3.stdio[3].on("end", resolve).on("close", resolve))]);
 	check("a fourth descriptor", fd3Text === "on fd 3\n", fd3Text);
 	const ownPgid = execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim();
 	const childPgid = execFileSync("/bin/sh", ["-c", "/bin/ps -o pgid= -p $$"], { encoding: "utf8" }).trim();
@@ -92,11 +93,16 @@ async function run() {
 		if (grandchild.endsWith("\n")) process.kill(-group.pid, "SIGKILL");
 	});
 	const groupKilled = await exited(group);
+	// The grandchild, killed with the group, is a zombie until whoever adopted it reaps it, and kill(pid, 0) finds a zombie:
+	// it has a second to go.
 	let alive = true;
-	try {
-		process.kill(Number(grandchild), 0);
-	} catch {
-		alive = false;
+	for (let tries = 0; alive && tries < 100; tries++) {
+		try {
+			process.kill(Number(grandchild), 0);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		} catch {
+			alive = false;
+		}
 	}
 	check("detached, killed as a group", groupKilled.signal === "SIGKILL" && !alive, `${JSON.stringify(groupKilled)} ${grandchild.trim()} alive=${alive}`);
 }
