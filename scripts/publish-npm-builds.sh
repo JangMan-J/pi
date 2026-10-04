@@ -31,6 +31,14 @@ for file in "$DIST"/pi-bolt-*.tar.xz; do
 	[ -f "$file" ] && builds+=("$(basename "$file" .tar.xz)")
 done
 [ ${#builds[@]} -gt 0 ] || die "no pi-bolt-*.tar.xz in $DIST"
+# A platform's builds come together: all of them, or none (a missing one is a mistake, as it always was on Linux).
+for set in "linux-x64 linux-x64-baseline linux-x64-jit" "darwin-arm64 darwin-arm64-jit"; do
+	present=0
+	for platform in $set; do [ -f "$DIST/pi-bolt-$platform.tar.xz" ] && present=$((present + 1)); done
+	if [ "$present" -gt 0 ]; then
+		for platform in $set; do [ -f "$DIST/pi-bolt-$platform.tar.xz" ] || die "no pi-bolt-$platform.tar.xz in $DIST"; done
+	fi
+done
 for name in "${builds[@]}"; do
 	file="$name.tar.xz"
 	platform="${name#pi-bolt-}"
@@ -39,7 +47,7 @@ for name in "${builds[@]}"; do
 	darwin-*) os=darwin cpu=arm64 ;;
 	*) die "$file: not a build of a known platform" ;;
 	esac
-	(cd "$DIST" && grep " $file\$" SHA256SUMS | sha256 -c --quiet -) || die "$file does not match SHA256SUMS"
+	check_sum "$DIST" "$file" || die "$file does not match SHA256SUMS"
 	if [ -z "$PACK" ] && [ "$(npm view "$name@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
 		log "npm already has $name@$VERSION"
 		continue

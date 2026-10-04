@@ -24,7 +24,7 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 log "downloading $BASE/$NAME"
 curl -fL --progress-bar -o "$TMP/$NAME" "$BASE/$NAME"
 curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS"
-(cd "$TMP" && grep " $NAME\$" SHA256SUMS | sha256 -c --quiet -) || die "checksum mismatch for $NAME"
+check_sum "$TMP" "$NAME" || die "checksum mismatch for $NAME"
 tar -C "$TMP" -xzf "$TMP/$NAME"
 mkdir -p "$PIBOLT_WORK/runtime"
 install -m 755 "$TMP/pi-bolt-runtime-$PIBOLT_PLATFORM/bun" "$PIBOLT_WORK/runtime/bun"

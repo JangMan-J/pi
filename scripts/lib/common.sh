@@ -1,6 +1,11 @@
 # shellcheck shell=bash
 # Shared helpers for the Pi-Bolt scripts. Sourced, not run.
 set -euo pipefail
+# (mapfile, and empty arrays under set -u: bash 4.4. macOS's /bin/bash is 3.2: brew install bash.)
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 4 ]; }; then
+	printf 'error: bash 4.4 or later is required (this is %s); on macOS: brew install bash\n' "$BASH_VERSION" >&2
+	exit 1
+fi
 
 PIBOLT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Where sources, toolchains and builds live; override with PIBOLT_WORK.
@@ -36,14 +41,27 @@ abspath() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1
 if ! command -v timeout >/dev/null 2>&1; then
 	if [ ! -x "$PIBOLT_WORK/bin/timeout" ]; then
 		mkdir -p "$PIBOLT_WORK/bin"
-		printf '#!/usr/bin/perl\nalarm shift; exec @ARGV or exit 127;\n' >"$PIBOLT_WORK/bin/timeout"
+		# shellcheck disable=SC2016 # perl, not shell
+		printf '#!/usr/bin/perl\nalarm shift; exec { $ARGV[0] } @ARGV or exit 127;\n' >"$PIBOLT_WORK/bin/timeout"
 		chmod +x "$PIBOLT_WORK/bin/timeout"
 	fi
 	PATH="$PIBOLT_WORK/bin:$PATH"
 fi
 
-# sha256 [ARGS]: sha256sum, or shasum -a 256 where there is none (older macOS). Same output and -c.
+# sha256 [ARGS]: sha256sum, or shasum -a 256 where there is none (older macOS). Same output.
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+
+# check_sum DIR FILE: whether DIR/FILE matches its line in DIR/SHA256SUMS. No line is a mismatch: macOS's sha256sum passes when
+# it is given nothing to check.
+check_sum() {
+	local line
+	line=$(grep " $2\$" "$1/SHA256SUMS") && [ -n "$line" ] || return 1
+	if command -v sha256sum >/dev/null 2>&1; then
+		(cd "$1" && printf '%s\n' "$line" | sha256sum -c --quiet - >/dev/null 2>&1)
+	else
+		(cd "$1" && printf '%s\n' "$line" | shasum -a 256 -c --status - 2>/dev/null)
+	fi
+}
 
 # source_field <component> <field>: a value from sources.json.
 source_field() {

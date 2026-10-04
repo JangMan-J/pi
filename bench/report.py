@@ -218,7 +218,7 @@ def main():
         for line in env.read_text().splitlines():
             key, _, value = line.partition(": ")
             if key == "bun" and value:
-                LABELS["bun"] = f"Bun {value.strip()}"
+                LABELS["bun"] = f"Bun {value.split(',')[0].strip()}"
             elif key == "node" and value:
                 LABELS["node"] = f"Node {value.strip().lstrip('v').split('.')[0]}"
 

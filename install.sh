@@ -327,11 +327,13 @@ preflight_linux() {
 
 # check_sum FILE: whether FILE (in the current folder) matches its line in SHA256SUMS. (shasum where there is no sha256sum: macOS
 # before 15.)
+# A file that SHA256SUMS has no line for does not match (macOS's sha256sum passes when it is given nothing to check).
 check_sum() {
+	line=$(grep " $1\$" SHA256SUMS) && [ -n "$line" ] || return 1
 	if command -v sha256sum >/dev/null 2>&1; then
-		grep " $1\$" SHA256SUMS | sha256sum -c --quiet - >/dev/null 2>&1
+		printf '%s\n' "$line" | sha256sum -c --quiet - >/dev/null 2>&1
 	else
-		grep " $1\$" SHA256SUMS | shasum -a 256 -c --status -
+		printf '%s\n' "$line" | shasum -a 256 -c --status - 2>/dev/null
 	fi
 }
 
@@ -459,8 +461,15 @@ verify_signature() {
 		return 0
 	fi
 	printf '%s\n' "$RELEASE_KEY" >"$TMP/release.pub"
-	# An openssl that cannot read Ed25519 keys (LibreSSL, which macOS has as /usr/bin/openssl) cannot check it: then the checksums
-	# alone are, as without openssl, and that is said.
+	# Only OpenSSL 3 and later verify Ed25519 with -rawin: LibreSSL (macOS's /usr/bin/openssl) cannot read the key, OpenSSL 1.1
+	# has no -rawin. With another, the checksums alone are checked, as without openssl, and that is said.
+	case "$(openssl version 2>/dev/null)" in
+	"OpenSSL "[3-9]* | "OpenSSL "[1-9][0-9]*) ;;
+	*)
+		NOVERIFY=1
+		return 0
+		;;
+	esac
 	if ! openssl pkey -pubin -in "$TMP/release.pub" -noout >/dev/null 2>&1; then
 		NOVERIFY=1
 		return 0

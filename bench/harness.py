@@ -70,7 +70,9 @@ def warm_page_cache(builds: list[Build]) -> None:
     that are already cached along with the one that faulted, so a freshly written executable shows up to 10% more resident
     memory than the same executable read from disk; comparing a fresh build with an old one would be unfair either way."""
     for build in builds:
-        for path in build.argv:
+        # (A macOS build's pi is a launcher: the executable is pi-bin beside it.)
+        paths = [*build.argv, *(os.path.join(os.path.dirname(p), "pi-bin") for p in build.argv if "/" in p)]
+        for path in paths:
             if "/" in path and os.path.isfile(path):
                 with open(path, "rb") as f:
                     while f.read(1 << 22):

@@ -126,7 +126,7 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 # would otherwise start again itself, after a first load by dyld.
 if [ "$PIBOLT_OS" = darwin ]; then
 	mv "$OUT/pi" "$OUT/pi-bin"
-	xcrun clang -O2 -mmacosx-version-min=13.0 -o "$OUT/pi" "$PIBOLT_ROOT/scripts/lib/darwin-launcher.c"
+	xcrun clang -O2 -arch arm64 -mmacosx-version-min=13.0 -o "$OUT/pi" "$PIBOLT_ROOT/scripts/lib/darwin-launcher.c"
 fi
 stage_assets "$OUT"
 printf 'Pi-Bolt %s (Pi %s), %s-%s, JIT %s, built %s\n' "$PIBOLT_VERSION" "$VERSION" "$PIBOLT_OS" "$CPU_VARIANT" "$JIT" "$(date -u +%Y-%m-%d)" >"$OUT/pi-bolt.txt"

@@ -61,8 +61,9 @@ ICU, like official Bun builds.
 the result runs only on systems like the build machine.
 
 On macOS there is no sysroot: the runtime is built against Xcode's SDK for macOS 13 and later (Bun's own floor), with
-`-mcpu=apple-m1`, and uses the system's ICU. LLVM 23 from Homebrew (`brew install llvm cmake ninja`), Rust and Bun 1.4.2 are what
-it needs besides Xcode. On an M5 MacBook Air (10 cores, 16 GB) the first build takes about 40 minutes and later ones a few;
+`-mcpu=apple-m1`, and uses the system's ICU. LLVM 23 from Homebrew (`brew install llvm cmake ninja bash xz`), Rust and Bun 1.4.2 are
+what it needs besides Xcode. The scripts need bash 4.4 or later (macOS's own is 3.2) and Python 3; `build-pi.sh` also needs the
+Command Line Tools (`xcrun clang`) for the launcher. On an M5 MacBook Air (10 cores, 16 GB) the first build takes about 40 minutes and later ones a few;
 `scripts/build-runtime.sh --lto off -j8` builds without link-time optimization, for working on the engine.
 
 ```bash
