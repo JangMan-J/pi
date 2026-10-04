@@ -5,6 +5,7 @@ One scripted step per model turn: ls, find, grep, write, edit, bash, read, codem
 returned, so a wrong tool result changes the transcript. Usage: fake_model_tools.py PORT."""
 
 import json
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -56,7 +57,9 @@ class Handler(BaseHTTPRequestHandler):
                                                "function": {"name": name, "arguments": json.dumps(args)}}]}))
             out.append(chunk(finish="tool_calls"))
         else:
-            out.append(chunk({"content": "Final file:\n" + last + "\nDone: tools exercised."}))
+            # (Codemode says how long its script ran: how fast a build is, not what it does.)
+            quoted = re.sub(r"Wall time [\d.]+ seconds", "Wall time (some) seconds", last)
+            out.append(chunk({"content": "Final file:\n" + quoted + "\nDone: tools exercised."}))
             out.append(chunk(finish="stop"))
         out.append(b"data: [DONE]\n\n")
         self.send_response(200)
