@@ -131,9 +131,10 @@ network or a model. Bun 1.4.2 runs Pi 1.0.0 as released, built with Pi's own `bu
 which makes stock Bun faster. Node 22 runs Pi's npm package. Pi-Bolt is its own tree: Pi 1.0.0 with Pi-Bolt's changes to how the
 terminal is drawn.
 
-On a Mac with Apple silicon (an M5 MacBook Air), against the same Pi 1.0.0 on Bun 1.4.2: ready to type in 46 ms instead of 65,
-`pi -p` with under a third of the CPU (44 ms instead of 144), less than half the CPU per prompt in a long session (72 ms instead
-of 156) and about half the memory, and a 200 KB file written in 0.3 s instead of 11.4. See
+On a Mac with Apple silicon (an M5 MacBook Air), against the same Pi 1.0.0 on Bun 1.4.2: ready to type in 30 ms instead of 63,
+`pi -p` with a quarter of the CPU (33 ms instead of 136), less than half the CPU per prompt in a long session (70 ms instead of
+156) and half the memory (48 MB instead of 95), a 20,000-character answer streamed with a fifth of the CPU (1.0 s instead of 5.1),
+and a 200 KB file written in 0.3 s instead of 13.2. See
 [macOS on Apple silicon](docs/BENCHMARKS.md#macos-on-apple-silicon).
 
 ### Long answers and large files
