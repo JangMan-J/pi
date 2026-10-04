@@ -57,6 +57,7 @@ import { spawn } from "child_process";
 import {
 	APP_NAME,
 	APP_TITLE,
+	COMMAND_NAME,
 	CONFIG_DIR_NAME,
 	getAgentDir,
 	getAuthPath,
@@ -319,7 +320,7 @@ export function formatCrashExtensionHint(extensionMatches: readonly string[] | u
 				: `${quoted.slice(0, -1).join(", ")}, and ${quoted[quoted.length - 1]}`;
 	const noun = matches.length === 1 ? "extension" : "extensions";
 	const pronoun = matches.length === 1 ? "it" : "them";
-	return `A stack frame came from loaded ${noun} ${labels}, which may be involved. Try disabling ${pronoun} with \`${APP_NAME} config\`, or run \`${APP_NAME} -ne\` to confirm.`;
+	return `A stack frame came from loaded ${noun} ${labels}, which may be involved. Try disabling ${pronoun} with \`${COMMAND_NAME} config\`, or run \`${COMMAND_NAME} -ne\` to confirm.`;
 }
 
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
@@ -347,7 +348,7 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 	const sessionFile = sessionManager.getSessionFile();
 	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
 
-	const args = [APP_NAME];
+	const args = [COMMAND_NAME];
 	if (!sessionManager.usesDefaultSessionDir()) {
 		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
 	}
@@ -2153,7 +2154,9 @@ export class InteractiveMode {
 	}
 
 	private crashReportInstructions(): string {
-		const resume = this.session.sessionFile ? `run \`${APP_NAME} -r\` to resume the session, then` : "start pi and";
+		const resume = this.session.sessionFile
+			? `run \`${COMMAND_NAME} -r\` to resume the session, then`
+			: `start ${COMMAND_NAME} and`;
 		return `To report this crash: ${resume} run /bug. The crash details are attached automatically.`;
 	}
 
@@ -4170,7 +4173,7 @@ export class InteractiveMode {
 				() =>
 					theme.fg(
 						"warning",
-						`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart pi.`,
+						`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart ${COMMAND_NAME}.`,
 					),
 				1,
 				0,
@@ -4563,7 +4566,7 @@ export class InteractiveMode {
 	showNewVersionNotification(release: LatestPiRelease): void {
 		const updateInstruction = () =>
 			theme.fg("muted", `New ${PIBOLT ? "Pi-Bolt " : ""}version ${release.version} is available. Run `) +
-			theme.fg("accent", `${PIBOLT ? "pi-bolt" : APP_NAME} update`);
+			theme.fg("accent", `${COMMAND_NAME} update`);
 		const changelogUrl = PIBOLT ? PIBOLT_RELEASES_URL : "https://pi.dev/changelog";
 		const changelogLine = () => {
 			const changelogLink = getCapabilities().hyperlinks
@@ -4595,7 +4598,7 @@ export class InteractiveMode {
 	showPackageUpdateNotification(packages: string[]): void {
 		const updateInstruction = () =>
 			theme.fg("muted", "Package updates are available. Run ") +
-			theme.fg("accent", `${APP_NAME} update --extensions`);
+			theme.fg("accent", `${COMMAND_NAME} update --extensions`);
 		const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
 
 		this.chatContainer.addChild(new Spacer(1));
@@ -5265,7 +5268,7 @@ export class InteractiveMode {
 					trustStore.setMany(selection.updates);
 					done();
 					this.showStatus(
-						`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+						`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${COMMAND_NAME} for this to take effect.`,
 					);
 				},
 				onCancel: () => {

@@ -16,6 +16,7 @@ import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
 	APP_NAME,
+	COMMAND_NAME,
 	CONFIG_DIR_NAME,
 	detectInstallMethod,
 	getAgentDir,
@@ -266,17 +267,17 @@ function reportSettingsErrors(settingsManager: SettingsManager, context: string)
 function getPackageCommandUsage(command: PackageCommand): string {
 	switch (command) {
 		case "install":
-			return `${APP_NAME} install <source> [-l] [--approve|--no-approve]`;
+			return `${COMMAND_NAME} install <source> [-l] [--approve|--no-approve]`;
 		case "remove":
-			return `${APP_NAME} remove <source> [-l] [--approve|--no-approve]`;
+			return `${COMMAND_NAME} remove <source> [-l] [--approve|--no-approve]`;
 		case "update":
-			return `${APP_NAME} update [source|self|pi] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
+			return `${COMMAND_NAME} update [source|self|pi] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
 		case "list":
-			return `${APP_NAME} list [--approve|--no-approve]`;
+			return `${COMMAND_NAME} list [--approve|--no-approve]`;
 	}
 }
 
-const CONFIG_COMMAND_USAGE = `${APP_NAME} config [-l] [--approve|--no-approve]`;
+const CONFIG_COMMAND_USAGE = `${COMMAND_NAME} config [-l] [--approve|--no-approve]`;
 
 function printConfigCommandHelp(): void {
 	console.log(`${chalk.bold("Usage:")}
@@ -307,12 +308,12 @@ Options:
   -na, --no-approve Ignore project-local files for this command
 
 Examples:
-  ${APP_NAME} install npm:@foo/bar
-  ${APP_NAME} install git:github.com/user/repo
-  ${APP_NAME} install git:git@github.com:user/repo
-  ${APP_NAME} install https://github.com/user/repo
-  ${APP_NAME} install ssh://git@github.com/user/repo
-  ${APP_NAME} install ./local/path
+  ${COMMAND_NAME} install npm:@foo/bar
+  ${COMMAND_NAME} install git:github.com/user/repo
+  ${COMMAND_NAME} install git:git@github.com:user/repo
+  ${COMMAND_NAME} install https://github.com/user/repo
+  ${COMMAND_NAME} install ssh://git@github.com/user/repo
+  ${COMMAND_NAME} install ./local/path
 `);
 			return;
 
@@ -321,7 +322,7 @@ Examples:
   ${getPackageCommandUsage("remove")}
 
 Remove a package and its source from settings.
-Alias: ${APP_NAME} uninstall <source> [-l]
+Alias: ${COMMAND_NAME} uninstall <source> [-l]
 
 Options:
   -l, --local       Remove from project settings (${CONFIG_DIR_NAME}/settings.json)
@@ -329,8 +330,8 @@ Options:
   -na, --no-approve Ignore project-local files for this command
 
 Examples:
-  ${APP_NAME} remove npm:@foo/bar
-  ${APP_NAME} uninstall npm:@foo/bar
+  ${COMMAND_NAME} remove npm:@foo/bar
+  ${COMMAND_NAME} uninstall npm:@foo/bar
 `);
 			return;
 
@@ -351,11 +352,11 @@ Options:
   --force                 Reinstall pi even if the current version is latest
 
 Short forms:
-  ${APP_NAME} update                Update pi only
-  ${APP_NAME} update --all          Update pi and all extensions
-  ${APP_NAME} update --models       Refresh model catalogs only
-  ${APP_NAME} update <source>       Update one package
-  ${APP_NAME} update pi             Update pi only (self works as alias to pi)
+  ${COMMAND_NAME} update                Update pi only
+  ${COMMAND_NAME} update --all          Update pi and all extensions
+  ${COMMAND_NAME} update --models       Refresh model catalogs only
+  ${COMMAND_NAME} update <source>       Update one package
+  ${COMMAND_NAME} update pi             Update pi only (self works as alias to pi)
 `);
 			return;
 
@@ -613,13 +614,13 @@ function printSelfUpdateUnavailable(
 	npmCommand?: string[],
 	updatePackageTarget: SelfUpdatePackageTarget = PACKAGE_NAME,
 ): void {
-	console.error(`error: ${APP_NAME} cannot self-update this installation.`);
+	console.error(`error: ${COMMAND_NAME} cannot self-update this installation.`);
 	console.error(getSelfUpdateUnavailableInstruction(PACKAGE_NAME, npmCommand, updatePackageTarget));
 
 	const entrypoint = process.argv[1];
 	if (entrypoint) {
 		console.error("");
-		console.error(`Location of ${APP_NAME} executable: ${entrypoint}`);
+		console.error(`Location of ${COMMAND_NAME} executable: ${entrypoint}`);
 	}
 }
 
@@ -629,7 +630,7 @@ function printSelfUpdateFallback(command: SelfUpdateCommand): void {
 
 function printPnpmSelfUpdateMetadataHint(): void {
 	console.error(chalk.yellow("If pnpm reports missing package versions, its cached registry metadata may be stale."));
-	console.error(chalk.yellow(`Run \`pnpm store prune\` and retry \`${APP_NAME} update --self\`.`));
+	console.error(chalk.yellow(`Run \`pnpm store prune\` and retry \`${COMMAND_NAME} update --self\`.`));
 }
 
 function printSelfUpdateNote(note: string): void {
@@ -667,12 +668,12 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 	try {
 		latestRelease = await getLatestPiRelease(currentVersion, { retry: true });
 	} catch (error: unknown) {
-		throw new Error(`Could not determine latest ${APP_NAME} version: ${formatVersionCheckError(error)}`, {
+		throw new Error(`Could not determine latest ${COMMAND_NAME} version: ${formatVersionCheckError(error)}`, {
 			cause: error,
 		});
 	}
 	if (!latestRelease) {
-		throw new Error(`Could not determine latest ${APP_NAME} version.`);
+		throw new Error(`Could not determine latest ${COMMAND_NAME} version.`);
 	}
 
 	const packageName = latestRelease.packageName ?? PACKAGE_NAME;
@@ -724,7 +725,7 @@ async function runPiBoltSelfUpdate(version: string): Promise<boolean> {
 }
 
 async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
-	console.log(chalk.dim(`Updating ${APP_NAME} with ${command.display}...`));
+	console.log(chalk.dim(`Updating ${COMMAND_NAME} with ${command.display}...`));
 	for (const step of command.steps ?? [command]) {
 		await new Promise<void>((resolve, reject) => {
 			const child = spawnProcess(step.command, step.args, {
@@ -848,7 +849,7 @@ export async function handleConfigCommand(
 			projectTrustOverride = false;
 		} else if (arg.startsWith("-")) {
 			console.error(chalk.red(`Unknown option ${arg} for "config".`));
-			console.error(chalk.dim(`Use "${APP_NAME} --help" or "${CONFIG_COMMAND_USAGE}".`));
+			console.error(chalk.dim(`Use "${COMMAND_NAME} --help" or "${CONFIG_COMMAND_USAGE}".`));
 			process.exitCode = 1;
 			return true;
 		} else {
@@ -916,7 +917,7 @@ export async function handlePackageCommand(
 
 	if (options.invalidOption) {
 		console.error(chalk.red(`Unknown option ${options.invalidOption} for "${options.command}".`));
-		console.error(chalk.dim(`Use "${APP_NAME} --help" or "${getPackageCommandUsage(options.command)}".`));
+		console.error(chalk.dim(`Use "${COMMAND_NAME} --help" or "${getPackageCommandUsage(options.command)}".`));
 		process.exitCode = 1;
 		return true;
 	}
@@ -1046,7 +1047,7 @@ export async function handlePackageCommand(
 				const target = options.updateTarget ?? { type: "self" };
 				if (options.showExtensionsSkippedNote) {
 					console.log(
-						chalk.dim(`Extensions are skipped. Run ${APP_NAME} update --extensions to update extensions.`),
+						chalk.dim(`Extensions are skipped. Run ${COMMAND_NAME} update --extensions to update extensions.`),
 					);
 				}
 				if (updateTargetIncludesExtensions(target)) {
@@ -1063,7 +1064,7 @@ export async function handlePackageCommand(
 					if (managedInstallRoot && options.force) {
 						console.error(
 							chalk.red(
-								`Managed ${APP_NAME} installations do not support --force; rerun the installer to repair this installation.`,
+								`Managed ${COMMAND_NAME} installations do not support --force; rerun the installer to repair this installation.`,
 							),
 						);
 						process.exitCode = 1;
@@ -1078,7 +1079,7 @@ export async function handlePackageCommand(
 							printSelfUpdateNote(selfUpdatePlan.note);
 						}
 						try {
-							console.log(chalk.dim(`Updating managed ${APP_NAME} installation...`));
+							console.log(chalk.dim(`Updating managed ${COMMAND_NAME} installation...`));
 							await runManagedSelfUpdate(managedInstallRoot, selfUpdatePlan.version);
 						} catch (error: unknown) {
 							const message = error instanceof Error ? error.message : "Unknown managed update error";
@@ -1086,7 +1087,7 @@ export async function handlePackageCommand(
 							process.exitCode = 1;
 							return true;
 						}
-						console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
+						console.log(chalk.green(`Updated ${COMMAND_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
 						return true;
 					}
 
@@ -1102,9 +1103,11 @@ export async function handlePackageCommand(
 					const installMethod = detectInstallMethod();
 					if (process.platform === "win32" && installMethod !== "npm" && installMethod !== "pnpm") {
 						console.error(
-							chalk.red(`${APP_NAME} self-update on Windows is only supported for npm and pnpm installs.`),
+							chalk.red(`${COMMAND_NAME} self-update on Windows is only supported for npm and pnpm installs.`),
 						);
-						console.error(chalk.dim(`Detected install method: ${installMethod}. Update ${APP_NAME} manually.`));
+						console.error(
+							chalk.dim(`Detected install method: ${installMethod}. Update ${COMMAND_NAME} manually.`),
+						);
 						process.exitCode = 1;
 						return true;
 					}
@@ -1136,7 +1139,7 @@ export async function handlePackageCommand(
 						process.exitCode = 1;
 						return true;
 					}
-					console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
+					console.log(chalk.green(`Updated ${COMMAND_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
 				}
 				return true;
 			}

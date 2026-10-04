@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import chalk from "chalk";
-import { APP_NAME, CONFIG_DIR_NAME } from "../../config.ts";
+import { APP_NAME, COMMAND_NAME, CONFIG_DIR_NAME } from "../../config.ts";
 import { validateMcpServerConfig } from "../../core/mcp-servers.ts";
 import { ProjectTrustStore } from "../../core/trust-manager.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
@@ -31,12 +31,12 @@ import {
 } from "./runtime.ts";
 
 const HELP = `${chalk.bold("Usage:")}
-  ${APP_NAME} mcp add <server> [options] -- <command> [args...]
-  ${APP_NAME} mcp add <server> [options] --url <url>
-  ${APP_NAME} mcp remove <server> [-l]
-  ${APP_NAME} mcp list [--json]
-  ${APP_NAME} mcp login <server> [--timeout <seconds>]
-  ${APP_NAME} mcp logout <server>
+  ${COMMAND_NAME} mcp add <server> [options] -- <command> [args...]
+  ${COMMAND_NAME} mcp add <server> [options] --url <url>
+  ${COMMAND_NAME} mcp remove <server> [-l]
+  ${COMMAND_NAME} mcp list [--json]
+  ${COMMAND_NAME} mcp login <server> [--timeout <seconds>]
+  ${COMMAND_NAME} mcp logout <server>
 
 Configure and check MCP servers and sign in to OAuth servers without starting a session.
 Reads ~/${CONFIG_DIR_NAME}/agent/mcp.json and, in trusted projects, ${CONFIG_DIR_NAME}/mcp.json.
@@ -72,7 +72,7 @@ Other options:
   --json                  Print the list as JSON
   --timeout <seconds>     How long login waits for the browser (default: 300)`;
 
-const HELP_HINT = chalk.dim(`Use "${APP_NAME} mcp --help" for usage.`);
+const HELP_HINT = chalk.dim(`Use "${COMMAND_NAME} mcp --help" for usage.`);
 
 const DEFAULT_LOGIN_TIMEOUT_SECONDS = 300;
 
@@ -199,7 +199,7 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 	const loaded = loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted });
 	const untrustedNote =
 		!projectTrusted && existsSync(projectConfig)
-			? `${projectConfig} is ignored because the project is not trusted. Start ${APP_NAME} in the project to trust it.`
+			? `${projectConfig} is ignored because the project is not trusted. Start ${COMMAND_NAME} in the project to trust it.`
 			: undefined;
 	const credentials = options.credentials ?? new McpOAuthCredentialStore();
 
@@ -208,7 +208,7 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			const parsed = parseOptions(rest, { json: "flag" }, error);
 			if (!parsed) return 1;
 			if (parsed.positional.length > 0) {
-				error(`Usage: ${APP_NAME} mcp list [--json]\n${HELP_HINT}`);
+				error(`Usage: ${COMMAND_NAME} mcp list [--json]\n${HELP_HINT}`);
 				return 1;
 			}
 			return list(loaded, parsed.values.has("json"), untrustedNote, options, credentials, log);
@@ -219,7 +219,7 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			if (!parsed) return 1;
 			const [name, ...extra] = parsed.positional;
 			if (!name || extra.length > 0) {
-				error(`Usage: ${APP_NAME} mcp ${command} <server>\n${HELP_HINT}`);
+				error(`Usage: ${COMMAND_NAME} mcp ${command} <server>\n${HELP_HINT}`);
 				return 1;
 			}
 			const entry = loaded.servers.find((server) => server.name === name);
@@ -279,7 +279,7 @@ function add(
 	log: (line: string) => void,
 	error: (line: string) => void,
 ): number {
-	const usage = `Usage: ${APP_NAME} mcp add <server> [options] (--url <url> | -- <command> [args...])\n${HELP_HINT}`;
+	const usage = `Usage: ${COMMAND_NAME} mcp add <server> [options] (--url <url> | -- <command> [args...])\n${HELP_HINT}`;
 	const parsed = parseOptions(
 		args,
 		{
@@ -379,14 +379,16 @@ function add(
 	}
 	log(`${replaced ? "Replaced" : "Added"} ${scope} MCP server "${name}" in ${path}.`);
 	if (project && new ProjectTrustStore(options.agentDir).get(options.cwd) !== true) {
-		log(`The project is not trusted, so ${path} is ignored until you start ${APP_NAME} in the project and trust it.`);
+		log(
+			`The project is not trusted, so ${path} is ignored until you start ${COMMAND_NAME} in the project and trust it.`,
+		);
 	}
 	// HTTP servers without an Authorization header may use OAuth.
 	const mayNeedSignIn =
 		"url" in validated &&
 		!Object.keys(validated.headers ?? {}).some((header) => header.toLowerCase() === "authorization");
 	log(
-		`Check it with: ${APP_NAME} mcp list${mayNeedSignIn ? `. If it requires sign-in: ${APP_NAME} mcp login ${name}` : ""}`,
+		`Check it with: ${COMMAND_NAME} mcp list${mayNeedSignIn ? `. If it requires sign-in: ${COMMAND_NAME} mcp login ${name}` : ""}`,
 	);
 	return 0;
 }
@@ -402,7 +404,7 @@ function remove(
 	if (!parsed) return 1;
 	const [name, ...extra] = parsed.positional;
 	if (!name || extra.length > 0) {
-		error(`Usage: ${APP_NAME} mcp remove <server> [-l]\n${HELP_HINT}`);
+		error(`Usage: ${COMMAND_NAME} mcp remove <server> [-l]\n${HELP_HINT}`);
 		return 1;
 	}
 	const project = parsed.values.has("local");
@@ -496,7 +498,7 @@ async function list(
 					: report.state;
 		log(`${report.name}: ${state} (${report.exposure}, ${report.scope})`);
 		log(`  ${report.transport}`);
-		if (report.state === "needs-auth") log(`  sign in with: ${APP_NAME} mcp login ${report.name}`);
+		if (report.state === "needs-auth") log(`  sign in with: ${COMMAND_NAME} mcp login ${report.name}`);
 		if (report.tools.length > 0) {
 			const tools = report.tools.map((tool) => {
 				const exposure = report.toolExposure?.[tool];
