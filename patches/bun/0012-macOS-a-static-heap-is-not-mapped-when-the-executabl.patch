@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 09:37:56 +0530
+Subject: [PATCH] macOS: a static heap is not mapped when the executable is not
+ where it was linked to be; a fallback to bytecode says why
+
+---
+ src/jsc/bindings/ZigSourceProvider.cpp        | 8 +++++---
+ src/standalone_graph/StandaloneModuleGraph.rs | 4 ++++
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/src/jsc/bindings/ZigSourceProvider.cpp b/src/jsc/bindings/ZigSourceProvider.cpp
+index 05a3f732..b2bab3c0 100644
+--- a/src/jsc/bindings/ZigSourceProvider.cpp
++++ b/src/jsc/bindings/ZigSourceProvider.cpp
+@@ -649,9 +649,11 @@ extern "C" bool Bun__StaticHeap__map(const uint8_t* image, size_t size, int fd,
+     Bun__setBytecodeCacheVersion();
+     bool asked = !(getenv("BUN_AOT") && getenv("BUN_AOT")[0] == '0');
+ #if OS(DARWIN)
+-    // The heap points into this executable where it was linked to be (c-bindings.cpp starts it again there).
+-    if (asked && _dyld_get_image_vmaddr_slide(0)) {
+-        noteNotUsed("the executable could not be loaded where its prebuilt heap expects it");
++    // The heap points into this executable where it was linked to be (c-bindings.cpp starts it again there). (Also with BUN_AOT=0:
++    // a static heap without code would be mapped then.)
++    if (_dyld_get_image_vmaddr_slide(0)) {
++        if (asked)
++            noteNotUsed("the executable could not be loaded where its prebuilt heap expects it");
+         return false;
+     }
+ #endif
+diff --git a/src/standalone_graph/StandaloneModuleGraph.rs b/src/standalone_graph/StandaloneModuleGraph.rs
+index c6513e13..b46ea037 100644
+--- a/src/standalone_graph/StandaloneModuleGraph.rs
++++ b/src/standalone_graph/StandaloneModuleGraph.rs
+@@ -1084,6 +1084,10 @@ impl StandaloneModuleGraph {
+             // (The `__BUN` section's pages are covered by the executable's code signature, so its code may be mapped
+             // executable from the file, as on Linux: no writable code, no MAP_JIT.)
+             let Some((file, offset)) = macho::open_file_of(self.static_heap.as_ptr() as usize) else {
++                // (Bun__StaticHeap__map() says why for every other reason.)
++                if !std::env::var_os("BUN_AOT").is_some_and(|value| value.as_encoded_bytes().starts_with(b"0")) {
++                    eprintln!("bun: the executable's ahead-of-time compiled code is not used (the executable's file could not be opened); running from bytecode");
++                }
+                 return false;
+             };
+             // SAFETY: as above.
+-- 
+2.54.0 (Apple Git-157)
+

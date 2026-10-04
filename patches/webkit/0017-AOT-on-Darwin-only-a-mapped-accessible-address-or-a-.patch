@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 09:37:56 +0530
+Subject: [PATCH] AOT: on Darwin only a mapped, accessible address or a symbol
+ in the shared cache is taken for a pointer; ARM64 regular expressions tag the
+ return address of the unicode slow path
+
+---
+ Source/JavaScriptCore/aot/AOTCompiler.cpp | 23 +++++++++++++++++++++--
+ Source/JavaScriptCore/yarr/YarrJIT.cpp    |  1 +
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTCompiler.cpp b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+index 2c9b4ffe6d..c813752040 100644
+--- a/Source/JavaScriptCore/aot/AOTCompiler.cpp
++++ b/Source/JavaScriptCore/aot/AOTCompiler.cpp
+@@ -33,6 +33,7 @@
+ #include <wtf/text/StringHash.h>
+ 
+ #if OS(DARWIN)
++#include <dlfcn.h>
+ #include <mach/mach.h>
+ #include <mach/mach_vm.h>
+ #endif
+@@ -58,17 +59,35 @@ static bool isMappedInThisProcess(uint64_t address)
+     fclose(maps);
+     return found;
+ #elif OS(DARWIN)
++    // The system's shared cache spans tens of gigabytes that numbers fall in: in it, only the start of a symbol is taken for an
++    // address (a C function or object that a lowering pointed at).
++    static const auto sharedCache = [] {
++        size_t size = 0;
++        uintptr_t start = 0;
++        if (auto* range = reinterpret_cast<const void* (*)(size_t*)>(dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_range")))
++            start = reinterpret_cast<uintptr_t>(range(&size));
++        return std::pair { start, size };
++    }();
++    if (address >= sharedCache.first && address - sharedCache.first < sharedCache.second) {
++        Dl_info info;
++        return dladdr(reinterpret_cast<const void*>(address), &info) && reinterpret_cast<uintptr_t>(info.dli_saddr) == address;
++    }
+     // The region at `address` or the first one after it.
+     mach_vm_address_t start = address;
+     mach_vm_size_t size = 0;
+     vm_region_basic_info_data_64_t info;
+     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+     mach_port_t object = MACH_PORT_NULL;
+-    if (mach_vm_region(mach_task_self(), &start, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object) != KERN_SUCCESS)
++    kern_return_t result = mach_vm_region(mach_task_self(), &start, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
++    if (result == KERN_INVALID_ADDRESS)
+         return false; // Nothing there or after it.
++    if (result != KERN_SUCCESS)
++        return true; // (As on Linux when the mappings cannot be read.)
+     if (object != MACH_PORT_NULL)
+         mach_port_deallocate(mach_task_self(), object);
+-    return address >= start && address - start < size;
++    // A reservation that nothing can be read from (the system keeps hundreds of gigabytes of them) holds nothing to point at: what
++    // is used of it is a region of its own.
++    return address >= start && address - start < size && info.protection != VM_PROT_NONE;
+ #else
+     UNUSED_PARAM(address);
+     return true;
+diff --git a/Source/JavaScriptCore/yarr/YarrJIT.cpp b/Source/JavaScriptCore/yarr/YarrJIT.cpp
+index 7d4cf441a7..70d5da8036 100644
+--- a/Source/JavaScriptCore/yarr/YarrJIT.cpp
++++ b/Source/JavaScriptCore/yarr/YarrJIT.cpp
+@@ -9635,6 +9635,7 @@ public:
+             // linked once the code is laid out (branch compaction moves it), below: code for an image is never finalized, so a link
+             // task would not run.
+             m_unicodeSlowPath = m_jit.label();
++            m_jit.tagReturnAddress(); // (As the thunk does: nothing on ARM64, the return address signed on ARM64E.)
+             tryReadUnicodeCharSlowImpl(m_jit);
+             m_jit.ret();
+         }
+-- 
+2.54.0 (Apple Git-157)
+
