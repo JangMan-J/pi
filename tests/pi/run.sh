@@ -36,4 +36,24 @@ else
 	echo "FAIL the transformed extension is not in $home/agent/cache/jiti"
 	status=1
 fi
+run builtin-modules 2
+
+# Bedrock, the proxy agents and the OAuth flows are loaded when they are first used, with the builtin modules they import
+# (node:http, https, net, tls). A request to Bedrock that can reach nothing (its endpoint and the proxy are a closed port of this
+# machine) has to fail as a connection that is refused, not as code that is missing or broken.
+bedrock() {
+	local name=$1 out; shift
+	out=$(env -i HOME="$home" PATH=/usr/bin:/bin PI_CODING_AGENT_DIR="$home/agent" DO_NOT_TRACK=1 BUN_ENABLE_CRASH_REPORTING=0 PI_OFFLINE=1 \
+		AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1 "$@" \
+		"$PI" -ne --no-session --provider amazon-bedrock --model amazon.nova-micro-v1:0 -p hi 2>&1 </dev/null)
+	if grep -q "ECONNREFUSED\|ConnectionRefused\|onnection refused" <<<"$out" && ! grep -qi "is not defined\|cannot find module\|is not a function\|is not a constructor\|panic" <<<"$out"; then
+		echo "PASS $name"
+	else
+		echo "FAIL $name"
+		tail -3 <<<"$out" | cut -c1-200 | sed 's/^/   /'
+		status=1
+	fi
+}
+bedrock "Bedrock loads (the request is refused)" AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:1
+bedrock "Bedrock loads behind a proxy (the proxy refuses)" AWS_ENDPOINT_URL_BEDROCK_RUNTIME=https://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1
 exit $status

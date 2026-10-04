@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 13:09:19 +0530
+Subject: [PATCH] AOT: the environment of a closure that became part of its
+ maker stays when a name in the closure is only found as the code runs
+
+---
+ Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp b/Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp
+index 219793618c..84d0859c16 100644
+--- a/Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp
++++ b/Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp
+@@ -624,9 +624,22 @@ public:
+         case op_get_scope: // (Of what has become part of this code: another name for it.)
+         case op_get_parent_scope:
+             return true;
+-        case op_resolve_scope:
++        case op_resolve_scope: {
+             // (What is not found until the code runs is in none of the environments that the code says it makes: it starts looking further out.)
+-            return user->as<OpResolveScope>().m_resolveType != Dynamic;
++            auto bytecode = user->as<OpResolveScope>();
++            if (bytecode.m_resolveType == Dynamic)
++                return false;
++            // Not so for a closure that has become part of the code that makes it: the environments made here are around it, and
++            // what it does not declare may well be theirs. Where that is not known as the code is compiled (nothing says what the
++            // code around a function of one of the embedder's own modules declares), the name is looked for when the code runs,
++            // in environments that then have to be there.
++            if (user->graph->scopeOfClosure && !isStaticClosureVarResolveType(bytecode.m_resolveType) && !user->graph->distanceOfEnvironmentResolvedTo(user)) {
++                auto variable = user->graph->resolveStatically(bytecode.m_var, bytecode.m_localScopeDepth, bytecode.m_resolveType);
++                if (!variable.isAtStaticDepth() && variable.kind != Graph::StaticVariable::Import && !variable.isInGlobalScopes && !variable.isGlobal)
++                    return false;
++            }
++            return true;
++        }
+         case op_get_from_scope:
+             return use.reg == user->as<OpGetFromScope>().m_scope && (user->graph->distanceOfEnvironmentAccessed(user) || offsetAccessedBy(user));
+         case op_put_to_scope:
+-- 
+2.54.0 (Apple Git-157)
+
