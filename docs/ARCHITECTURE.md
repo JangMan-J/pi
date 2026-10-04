@@ -105,7 +105,9 @@ When the executable starts:
    file. Structures go to the 4 GB right after it, where the code expects them.
 3. **The code image is mapped** executable and registered with the VM. Functions in the heap point straight at their machine
    code.
-4. Pi's `main()` runs. Its modules are already evaluated, so nothing is parsed, compiled or initialized again.
+4. Pi's modules run, then its `main()`. Their functions and code are in the heap, so nothing is parsed or compiled; what the
+   heap does not hold is the modules' state: their top-level code (and Bun's `node:*` modules they import) runs at every start,
+   as it would without Pi-Bolt, only compiled.
 
 If any check fails, the executable prints one notice and runs from bytecode instead: correct, just slower to start. The checks
 are the engine stamp, the CPU features, the address space (for example a tight `ulimit -v`), and `BUN_AOT=0`. See
