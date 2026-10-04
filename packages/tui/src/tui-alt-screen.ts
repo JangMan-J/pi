@@ -215,6 +215,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private lastDocument: string[] = [];
 	private previousScreenWidth = 0;
 	private previousScreenHeight = 0;
+	// The rows of the frame before, by what each was before it was finished (resets, width), and those that are images.
+	private finishedRows = new Map<string, string>();
+	private finishedRowsWidth = 0;
+	private imageRows = new Set<string>();
 	private layoutRoot: Component | undefined;
 	private currentLayout: LayoutFrame | undefined;
 	private readonly implicitDocument: Component;
@@ -484,6 +488,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	protected override resetRenderState(): void {
 		this.previousScreen = [];
+		this.finishedRows = new Map();
+		this.imageRows = new Set();
 		this.previousScreenWidth = 0;
 		this.previousScreenHeight = 0;
 		this.currentLayout = undefined;
@@ -1738,7 +1744,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.refreshSearch(nextLayout)) {
 			nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
 		}
-		let screen = nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
+		let screen = nextLayout.lines.map((line) =>
+			line.startsWith("\x1b]133;") ? line.replace(OSC133_ZONE_PREFIX, "") : line,
+		);
 		screen = this.applySearchHighlights(screen, nextLayout);
 		screen = this.compositeScrollToEndIndicator(screen, nextLayout, width);
 		screen = this.compositeOverlays(screen, width, height);
@@ -1747,17 +1755,37 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		screen = this.compositeFlashes(screen, width, height);
 
 		const cursorPos = this.extractCursorPosition(screen, height);
-		screen = this.applyLineResets(screen).map((line) => {
-			if (isImageLine(line) || visibleWidth(line) <= width) return line;
-			return sliceByColumn(line, 0, width, true);
+		// A row that is what a row of the frame before was (most of the screen, while a reply streams in) is finished as
+		// that one was, and is that same string: comparing it with what is shown then reads neither.
+		const knownRows = this.finishedRowsWidth === width ? this.finishedRows : undefined;
+		const previousImageRows = this.imageRows;
+		const finishedRows = new Map<string, string>();
+		const imageRows = new Set<string>();
+		screen = screen.map((line) => {
+			let finished = knownRows?.get(line);
+			if (finished === undefined) {
+				finished = this.applyLineResets([line])[0];
+				if (isImageLine(finished)) imageRows.add(finished);
+				else if (visibleWidth(finished) > width) finished = sliceByColumn(finished, 0, width, true);
+			} else if (previousImageRows.has(finished)) {
+				imageRows.add(finished);
+			}
+			finishedRows.set(line, finished);
+			return finished;
 		});
+		this.finishedRows = finishedRows;
+		this.finishedRowsWidth = width;
+		this.imageRows = imageRows;
 
 		const fullRedraw =
 			this.previousScreen.length === 0 || this.previousScreenWidth !== width || this.previousScreenHeight !== height;
-		const imagesNeedRedraw = screen.some(
-			(line, row) =>
-				line !== this.previousScreen[row] && (isImageLine(line) || isImageLine(this.previousScreen[row] ?? "")),
-		);
+		const imagesNeedRedraw =
+			(imageRows.size > 0 || previousImageRows.size > 0) &&
+			screen.some(
+				(line, row) =>
+					line !== this.previousScreen[row] &&
+					(imageRows.has(line) || previousImageRows.has(this.previousScreen[row] ?? "")),
+			);
 		const redrawImages = fullRedraw || imagesNeedRedraw;
 		const hadUploadedKittyImages = this.uploadedKittyImages.size > 0;
 		const preparedKittyScreen =
@@ -1785,7 +1813,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const clearRowsBeforeKittyImages =
 			redrawImages &&
 			this.imageProtocol === "kitty" &&
-			screen.some(isImageLine) &&
+			imageRows.size > 0 &&
 			(Boolean(process.env.WEZTERM_PANE) || process.env.TERM_PROGRAM?.toLowerCase() === "wezterm");
 		if (clearRowsBeforeKittyImages) {
 			for (let row = 0; row < height; row++) {

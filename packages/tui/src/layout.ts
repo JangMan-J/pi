@@ -335,7 +335,7 @@ function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
 		for (let row = firstRow; row < lastRow; row++) {
 			const sourceLine = box.lines[offset + row - box.rect.y];
 			if (sourceLine === undefined) continue;
-			let line = sourceLine.replace(OSC133_ZONE_PREFIX, "");
+			let line = sourceLine.startsWith("\x1b]133;") ? sourceLine.replace(OSC133_ZONE_PREFIX, "") : sourceLine;
 			const imageMetadata = getKittyImageMetadata(line);
 			if (imageMetadata) {
 				const clipBottom = Math.min(screen.length, box.clip.y + box.clip.height);
