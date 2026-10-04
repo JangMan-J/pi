@@ -1,7 +1,7 @@
 {
 	"name": "pi-bolt",
 	"version": "0.6.1",
-	"description": "Pi, the coding agent, compiled ahead of time to native code: one executable for Linux x86-64 and macOS on Apple silicon, ready in 74 ms, less than half the CPU",
+	"description": "Pi, the coding agent, compiled ahead of time to native code: one executable for Linux x86-64 and macOS on Apple silicon, starts 2-3x sooner than Pi on Bun and uses about a third of its CPU over a session",
 	"keywords": [
 		"pi",
 		"coding-agent",

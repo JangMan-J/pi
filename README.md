@@ -19,7 +19,8 @@
 # Pi-Bolt
 
 Pi-Bolt is the [Pi](https://github.com/earendil-works/pi) coding agent compiled ahead of time to native code. It is one
-executable, for Linux on x86-64 and macOS on Apple silicon, ready in 45 ms, using less than half the CPU of Pi on Bun, with no JIT.
+executable, for Linux on x86-64 and macOS on Apple silicon, that starts two to three times sooner than Pi on Bun and uses about
+a third of its CPU over a session, with no JIT.
 
 It runs the Pi you already use: the commands, keys, sessions, settings, extensions and providers are all Pi's. What differs is
 how Pi is executed. Every function is compiled to machine code (x86-64 or ARM64) when the executable is built, and stored in it
@@ -40,8 +41,9 @@ together with a prebuilt JavaScript heap, so at launch nothing is parsed, interp
   <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.0 / 10.4 / 8.4 s; a 60,000-character answer 3.8 / 43.1 / 43.7 s; share of a core while streaming 8 / 85 / 87%; writing a 200 KB file through a tool call 0.8 / 27.8 / 44.3 s" src="docs/images/bench-long-light.svg">
 </picture>
 
-<sub>Pi 1.0.0 on Linux x86-64, compiled by Pi-Bolt, against the same release on stock Bun 1.4.2 and on Node 22. Medians of
-interleaved runs; lower is better. macOS figures and the method are under [Benchmarks](#benchmarks).</sub>
+<sub>Pi 1.0.0 compiled by Pi-Bolt, against the same release on stock Bun 1.4.2 and on Node 22, measured on one Linux server (AMD
+EPYC 7B13). Medians of interleaved runs; lower is better. Times on other machines differ; the ratios are what carries over. macOS
+figures and the method are under [Benchmarks](#benchmarks).</sub>
 
 ## Getting started
 
@@ -136,6 +138,11 @@ pi-bolt install npm:opensec-pi-todo
 
 The same Pi 1.0.0 run three ways: compiled by Pi-Bolt, as released on stock Bun 1.4.2, and from its npm package on Node. Every
 figure is a median of fresh processes, interleaved across the runtimes; lower is better everywhere.
+
+**These are measurements, not guarantees.** Each table comes from one machine: an AMD EPYC 7B13 server for Linux and an M5
+MacBook Air for macOS. On other hardware the milliseconds will differ, and so can the load, the terminal and the disk. What
+carries over is the comparison, because every run interleaves the runtimes on the same machine: Pi-Bolt starts two to three
+times sooner than Pi on Bun and uses about a third of its CPU over an interactive session.
 
 **Linux x86-64** (AMD EPYC 7B13)
 

@@ -12,7 +12,8 @@
 # pi-bolt
 
 [Pi](https://github.com/earendil-works/pi), the coding agent, compiled ahead of time to native code. Pi-Bolt is one executable,
-for Linux on x86-64 and macOS on Apple silicon, that is ready in 45 ms and uses less than half the CPU of Pi on Bun, with no JIT.
+for Linux on x86-64 and macOS on Apple silicon, that starts two to three times sooner than Pi on Bun and uses about a third of its
+CPU over a session, with no JIT. (Measured on one Linux server and one Mac; the times on your machine will differ, the ratios less so.)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/opensec-git/Pi-Bolt/HEAD/docs/images/bench-hero-dark.svg">

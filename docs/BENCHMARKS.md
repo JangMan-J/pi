@@ -4,6 +4,12 @@ Pi-Bolt compared with the same Pi release on stock Bun and on Node.js. Every fig
 [`bench/`](../bench), and the raw results are in [`bench/results/`](../bench/results). The charts are drawn from those files by
 [`bench/report.py`](../bench/report.py).
 
+**These are measurements, not guarantees.** Each set of results comes from one machine: an AMD EPYC 7B13 server for Linux and an
+M5 MacBook Air for macOS. On other hardware the milliseconds will differ, and so can the load, the terminal and the disk. What
+carries over is the comparison, because every run interleaves the runtimes on the same machine: Pi-Bolt starts two to three
+times sooner than Pi on Bun and uses about a third of its CPU over an interactive session. The ratio varies by scenario: see
+each table.
+
 - [Results](#results)
 - [macOS on Apple silicon](#macos-on-apple-silicon)
 - [With a real model](#with-a-real-model)
