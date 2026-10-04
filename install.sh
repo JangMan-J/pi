@@ -19,9 +19,11 @@
 #   PIBOLT_SOURCE    where to download the executable from: auto (npm, then GitHub; the default), npm or github
 #   PIBOLT_NPM_REGISTRY  the npm registry or mirror to use (default: https://registry.npmjs.org)
 
-# The public key that releases are signed with (keys/release.pub in the repository; scripts/sign-release.sh). Empty until the
-# first signed release: then signatures are not checked.
-RELEASE_KEY=""
+# The public key that releases are signed with (keys/release.pub in the repository; scripts/sign-release.sh), from 0.6.0. A
+# release from before has no signature, which is said.
+RELEASE_KEY="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAoLboJqtKaoISPqffk03vHZr+1sRBG3uIRIWeKOew+aY=
+-----END PUBLIC KEY-----"
 
 ESC=$(printf '\033')
 CR=$(printf '\r')
