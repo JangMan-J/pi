@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 10:21:46 +0530
+Subject: [PATCH] macOS: ahead-of-time executables start with a heap budget
+ that fits a static heap
+
+---
+ src/jsc/VirtualMachine.rs | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/src/jsc/VirtualMachine.rs b/src/jsc/VirtualMachine.rs
+index 3848fa53..816ff36b 100644
+--- a/src/jsc/VirtualMachine.rs
++++ b/src/jsc/VirtualMachine.rs
+@@ -1455,9 +1455,25 @@ impl VirtualMachine {
+         }
+         const MIN_BUDGET: usize = 8 * 1024 * 1024;
+         const MAX_BUDGET: usize = 128 * 1024 * 1024;
+-        let budget = graph
++        #[allow(unused_mut)]
++        let mut budget = graph
+             .module_graph_load_bytes()
+             .clamp(MIN_BUDGET, MAX_BUDGET);
++        // macOS: with a static heap the modules are not loaded from the graph's bytes, and what starting allocates outlives
++        // it a third as much (Pi: 7 of 21 MB); a budget of all those bytes only lets the heap grow larger before its first
++        // collection. Measured on Pi (budgets of 12, 16, 20 and 24 MB): at 12, a sixth less memory at the peak of a session
++        // and a few percent less CPU over it, for two small collections while it starts (2-3 ms of CPU, the same time to
++        // the first frame).
++        #[cfg(target_os = "macos")]
++        {
++            unsafe extern "C" {
++                safe fn Bun__AOTImage__isMapped() -> bool;
++            }
++            const STATIC_HEAP_BUDGET: usize = 12 * 1024 * 1024;
++            if Bun__AOTImage__isMapped() {
++                budget = budget.min(STATIC_HEAP_BUDGET);
++            }
++        }
+         if budget > MIN_BUDGET {
+             JSC__Heap__setInitialAllocationBudget(self.jsc_vm(), budget);
+         }
+-- 
+2.54.0 (Apple Git-157)
+
