@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 15:36:02 +0530
+Subject: [PATCH] macOS: an ahead-of-time executable that waits collects every
+ 5 seconds rather than every second
+
+---
+ src/jsc/GarbageCollectionController.rs | 26 ++++++++++++++++++++++++--
+ 1 file changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/src/jsc/GarbageCollectionController.rs b/src/jsc/GarbageCollectionController.rs
+index 96ff316e..5ca64ff9 100644
+--- a/src/jsc/GarbageCollectionController.rs
++++ b/src/jsc/GarbageCollectionController.rs
+@@ -79,7 +79,7 @@ impl GarbageCollectionController {
+         self.gc_timer_interval.set(
+             env_var::BUN_GC_TIMER_INTERVAL::get()
+                 .filter(|&v| v > 0)
+-                .unwrap_or(1000)
++                .unwrap_or(default_fast_interval_ms())
+                 .min(i32::MAX as u64) as i32,
+         );
+ 
+@@ -225,7 +225,7 @@ impl GarbageCollectionController {
+                 .saturating_add(1);
+             this.heap_size_didnt_change_for_repeating_timer_ticks_count
+                 .set(ticks);
+-            if ticks >= 30 {
++            if ticks >= quiet_ticks_until_slow(this.gc_timer_interval.get()) {
+                 this.gc_repeating_timer_fast.set(false);
+             }
+         } else {
+@@ -253,3 +253,25 @@ impl Drop for GarbageCollectionController {
+         self.deinit();
+     }
+ }
++
++/// The fast interval of the repeating timer, unless `BUN_GC_TIMER_INTERVAL` says. macOS, an executable compiled ahead of time:
++/// 5 s rather than 1 s. Such a program (an interactive one) left waiting still collected every second for half a minute, the
++/// only thing that woke it (Pi at its prompt: 1.4 ms of CPU a second); at 5 s it gives the same memory back as soon, in a fifth
++/// of the wake-ups.
++fn default_fast_interval_ms() -> u64 {
++    #[cfg(target_os = "macos")]
++    {
++        unsafe extern "C" {
++            safe fn Bun__AOTImage__isMapped() -> bool;
++        }
++        if Bun__AOTImage__isMapped() {
++            return 5000;
++        }
++    }
++    1000
++}
++
++/// Quiet fast ticks before the timer drops to its slow interval: about half a minute, whatever the fast interval.
++fn quiet_ticks_until_slow(fast_interval_ms: i32) -> u8 {
++    (30_000 / fast_interval_ms.max(1000)).clamp(1, 30) as u8
++}
+-- 
+2.54.0 (Apple Git-157)
+
