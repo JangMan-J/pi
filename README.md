@@ -152,11 +152,17 @@ network or a model. Bun 1.4.2 runs Pi 1.0.0 as released, built with Pi's own `bu
 which makes stock Bun faster. Node 22 runs Pi's npm package. Pi-Bolt is its own tree: Pi 1.0.0 with Pi-Bolt's changes to how the
 terminal is drawn.
 
-On a Mac with Apple silicon (an M5 MacBook Air), against the same Pi 1.0.0 on Bun 1.4.2: ready to type in 30 ms instead of 63,
-`pi -p` with a quarter of the CPU (33 ms instead of 136), less than half the CPU per prompt in a long session (70 ms instead of
-156) and half the memory (48 MB instead of 95), a 20,000-character answer streamed with a fifth of the CPU (1.0 s instead of 5.1),
-and a 200 KB file written in 0.3 s instead of 13.2. See
-[macOS on Apple silicon](docs/BENCHMARKS.md#macos-on-apple-silicon).
+On a Mac with Apple silicon (an M5 MacBook Air), against the same Pi 1.0.0 on Bun 1.4.2:
+- ready to type in 31 ms instead of 63;
+- `pi -p` with a quarter of the CPU: 32 ms instead of 138;
+- less than half the CPU per prompt in a long session: 70 ms instead of 158;
+- two thirds of the memory: 64 MB instead of 95. Node takes 1.9 GB.
+
+See [macOS on Apple silicon](docs/BENCHMARKS.md#macos-on-apple-silicon).
+
+With a hosted model over the internet, the user waits the same on every runtime, because the model sets the pace. In those
+sessions Pi-Bolt uses about 40% of the CPU of Pi on Bun and a quarter to a half of Node's, with a third of Bun's memory. See
+[With a real model](docs/BENCHMARKS.md#with-a-real-model).
 
 ### Long answers and large files
 
