@@ -53,10 +53,13 @@ The installer:
 - picks the build for your CPU;
 - downloads it from the npm registry's CDN, or from GitHub if that fails (`PIBOLT_SOURCE=github` to use GitHub only);
 - checks its SHA-256 checksum against the GitHub release;
+- verifies the release's signature, with OpenSSL 3 or later;
 - installs it to `~/.pi-bolt`;
-- links the `pi-bolt` command into `~/.local/bin`.
+- links the `pi-bolt` command into `~/.local/bin`;
+- offers to install OpenSec's two optional [extensions](#extensions).
 
-Run it again to reinstall or uninstall.
+Run it again to reinstall or uninstall. Pi-Bolt is self-contained: it needs neither Node.js nor Bun. Extensions are installed
+with npm where it is installed, and otherwise with the package manager built into Pi-Bolt.
 
 Or use a package manager:
 
@@ -88,16 +91,34 @@ against `SHA256SUMS`, unpack it, and run `./pi` in the unpacked folder:
 
 | Download | For |
 |---|---|
-| `pi-bolt-linux-x64.tar.xz` | **Recommended.** CPUs with AVX2: Intel Haswell (2013) and later, AMD Zen and later |
-| `pi-bolt-linux-x64-baseline.tar.xz` | Any x86-64 CPU |
-| `pi-bolt-linux-x64-jit.tar.xz` | Also JIT-compiles code loaded at run time, for heavy use of run-time plugins |
-| `pi-bolt-runtime-linux-x64.tar.gz` | The Pi-Bolt Bun runtime, to [compile plugins in](docs/PLUGINS.md) without building it |
+| `pi-bolt-linux-x64.tar.xz` | **Linux.** CPUs with AVX2: Intel Haswell (2013) and later, AMD Zen and later |
+| `pi-bolt-linux-x64-baseline.tar.xz` | Linux, any x86-64 CPU |
 | `pi-bolt-darwin-arm64.tar.xz` | **macOS.** Macs with Apple silicon (M1 and later) |
-| `pi-bolt-darwin-arm64-jit.tar.xz` | macOS, with the JIT on for code loaded at run time |
-| `pi-bolt-runtime-darwin-arm64.tar.gz` | The Pi-Bolt Bun runtime for macOS |
 
-Each Pi-Bolt build is also there as a `.tar.gz`, about 60% bigger, for systems without `xz`. `pi-bolt --version` prints the Pi
+Each build is also there as a `.tar.gz`, about 60% bigger, for systems without `xz`. The release also has builds with the JIT on
+(`-jit`), for heavy use of plugins loaded at run time, and the Pi-Bolt runtime, to [compile plugins in](docs/PLUGINS.md). Most
+people need neither: the installer and npm install the standard build. `pi-bolt --version` prints the Pi
 version and, in brackets, the Pi-Bolt version and build; `pi-bolt update` installs the latest release.
+
+### Extensions
+
+Pi extensions and Pi packages work in Pi-Bolt as they do in Pi: install them with `pi-bolt install npm:<package>` or
+`pi-bolt install git:<repository>`. The installer offers two that OpenSec maintains for Pi-Bolt, prebuilt for Bun so that
+they load without being transpiled:
+
+| Package | What it does |
+|---|---|
+| [`opensec-pi-subagents`](https://www.npmjs.com/package/opensec-pi-subagents) | Specialized agents in separate sessions that inherit the parent's model and thinking level; parallel workflows and scheduled jobs |
+| [`opensec-pi-todo`](https://www.npmjs.com/package/opensec-pi-todo) | A todo list for the model, shown as a live panel above the editor |
+
+Both are under the Apache License 2.0. To install them without the installer:
+
+```bash
+pi-bolt install npm:opensec-pi-subagents
+pi-bolt install npm:opensec-pi-todo
+```
+
+`PIBOLT_EXTENSIONS=yes` (or `no`) answers the installer's question in advance, for scripted installs.
 
 ### Requirements
 
@@ -196,8 +217,14 @@ to x86-64, brings it to macOS, and adds its own code-generation and runtime work
 
 ## The fork
 
-Pi's own code is untouched: the `packages/` tree is Pi at
-[v1.0.0](https://github.com/earendil-works/pi/releases/tag/v1.0.0), and Pi-Bolt runs it as it is. Pi-Bolt adds:
+The `packages/` tree is Pi at [v1.0.0](https://github.com/earendil-works/pi/releases/tag/v1.0.0) with Pi-Bolt's changes on
+top, each a separate commit after Pi's "Release v1.0.0":
+- how the terminal is drawn while answers stream;
+- less work at startup;
+- installing packages without npm;
+- messages that name the `pi-bolt` command.
+
+The commands, settings, sessions and extension API are Pi's. Pi-Bolt adds:
 
 | | |
 |---|---|

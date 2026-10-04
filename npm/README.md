@@ -61,21 +61,37 @@ pi-bolt --help
 
 This package does not contain the executable. Its `pi-bolt` command is a small shell script:
 
-1. **On the first run**, it downloads the Pi-Bolt release that matches the package version from
-   [GitHub](https://github.com/opensec-git/Pi-Bolt/releases). It verifies the download against the release's SHA-256
-   checksums, then keeps it in `~/.pi-bolt/npm/<version>`.
+1. **On the first run**, it downloads the Pi-Bolt build that matches the package version, from the npm registry or, failing
+   that, from the [GitHub release](https://github.com/opensec-git/Pi-Bolt/releases). It checks the download against the
+   release's SHA-256 checksums (and, with OpenSSL 3, their signature), then keeps it in `~/.pi-bolt/npm/<version>`.
 2. **On every run**, it replaces itself with that native executable (`exec`). No Node.js or Bun process stays in between, and
    startup is the same as running the executable directly.
 
 The package has no dependencies and no install scripts, so it works with package managers that block lifecycle scripts, such
 as Bun.
 
+## Extensions
+
+Pi extensions and Pi packages work as they do in Pi. Install them with Pi-Bolt itself, which needs neither npm nor Bun to do
+it:
+
+```bash
+pi-bolt install npm:<package>
+```
+
+OpenSec maintains two for Pi-Bolt, prebuilt for Bun so that they load without being transpiled (Apache-2.0):
+
+| Package | What it does |
+|---|---|
+| [`opensec-pi-subagents`](https://www.npmjs.com/package/opensec-pi-subagents) | Specialized agents in separate sessions that inherit the parent's model and thinking level |
+| [`opensec-pi-todo`](https://www.npmjs.com/package/opensec-pi-todo) | A todo list for the model, shown as a live panel above the editor |
+
 ## Configuration
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PIBOLT_VARIANT` | `x64` on CPUs with AVX2, otherwise `x64-baseline`; `arm64` on macOS | Which build to use: `x64`, `x64-baseline` (any x86-64 CPU), or `x64-jit` (also JIT-compiles plugins loaded at run time); on macOS `arm64` or `arm64-jit` |
 | `PIBOLT_HOME` | `~/.pi-bolt` | Where downloaded executables are kept |
+| `PIBOLT_VARIANT` | the standard build for your CPU | `x64-baseline` for an x86-64 CPU without AVX2 (picked automatically). Advanced: `x64-jit` or `arm64-jit` also JIT-compile plugins loaded at run time |
 
 ## Update and uninstall
 
