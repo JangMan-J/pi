@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 11:17:38 +0530
+Subject: [PATCH] AOT: the methods a program stores by name are not read while
+ they are being recorded (a race between the threads of an image build)
+
+---
+ Source/JavaScriptCore/aot/AOTProgram.h        | 10 ++++++++++
+ Source/JavaScriptCore/runtime/CachedTypes.cpp |  1 +
+ 2 files changed, 11 insertions(+)
+
+diff --git a/Source/JavaScriptCore/aot/AOTProgram.h b/Source/JavaScriptCore/aot/AOTProgram.h
+index accd06676e..4052000588 100644
+--- a/Source/JavaScriptCore/aot/AOTProgram.h
++++ b/Source/JavaScriptCore/aot/AOTProgram.h
+@@ -10,6 +10,7 @@
+ #include "AOTStubs.h"
+ #include "AOTType.h"
+ #include "DeclaredNamesLink.h"
++#include <atomic>
+ #include <wtf/HashMap.h>
+ #include <wtf/TZoneMalloc.h>
+ #include <wtf/text/UniquedStringImpl.h>
+@@ -309,12 +310,18 @@ public:
+     // Collection phase. Any thread.
+     JS_EXPORT_PRIVATE void recordMethod(UniquedStringImpl* name, uint32_t function);
+     JS_EXPORT_PRIVATE void recordOtherStore(UniquedStringImpl* name); // Something else is stored under the name somewhere.
++    // The end of the collection phase. Until then nothing is known by name: the functions that are parsed while it lasts (on
++    // other threads, as they record) would otherwise read the table as it is being written, and see what happened to be
++    // recorded first.
++    void seal() { m_sealed.store(true, std::memory_order_release); }
+ 
+     // After collection. Any thread. The one function stored under the name, or zero if there is none or more than one, or if the
+     // name is one of the standard objects' methods (`indexOf`, `call`, `then`: a program's `indexOf` is seldom what is called by that
+     // name). `others` says whether anything else is stored under the name (the check then fails now and then).
+     uint32_t onlyMethodNamed(UniquedStringImpl* name, bool* others = nullptr) const
+     {
++        if (!m_sealed.load(std::memory_order_acquire))
++            return 0;
+         auto it = m_byName.find(name);
+         if (it == m_byName.end())
+             return 0;
+@@ -329,6 +336,8 @@ public:
+     // is not a standard method's. Empty otherwise. (For calls that may reach any of a few: Inliner::splitMethodCalls().)
+     Vector<uint32_t, 4> methodsNamed(UniquedStringImpl* name, unsigned most) const
+     {
++        if (!m_sealed.load(std::memory_order_acquire))
++            return { };
+         auto it = m_byName.find(name);
+         if (it == m_byName.end() || it->value.candidates.size() > most || isNameOfStandardMethod(name))
+             return { };
+@@ -345,6 +354,7 @@ private:
+     static constexpr unsigned mostCandidatesKept = 16;
+     Lock m_lock;
+     UncheckedKeyHashMap<UniquedStringImpl*, Entry> m_byName;
++    std::atomic<bool> m_sealed { false };
+     mutable Lock m_standardLock;
+     mutable std::optional<UncheckedKeyHashSet<String>> m_standardNames;
+ };
+diff --git a/Source/JavaScriptCore/runtime/CachedTypes.cpp b/Source/JavaScriptCore/runtime/CachedTypes.cpp
+index f93c70c87c..040ae37ac6 100644
+--- a/Source/JavaScriptCore/runtime/CachedTypes.cpp
++++ b/Source/JavaScriptCore/runtime/CachedTypes.cpp
+@@ -6483,6 +6483,7 @@ struct BytecodeLinkEncoder::Impl {
+                     unreadable++;
+             });
+             AOT::TypeTable::finalizeAtomizedFields();
++            methodsOfProgram.seal();
+             RELEASE_ASSERT(!unreadable.load());
+             classesOfProgram.forEachNonEscapingMethod([&](uint32_t number) {
+                 const AOT::KnownFunction& function = *functionsOfProgram.function(number);
+-- 
+2.54.0 (Apple Git-157)
+
