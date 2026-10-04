@@ -46,8 +46,9 @@ HINTS="$PIBOLT_ROOT/profiles/runtime-$PIBOLT_PLATFORM.hints"
 if [ "$PIBOLT_OS" = darwin ] && [ -f "$HINTS" ]; then
 	ORDER="$BUN_SRC/$BUILD_DIR/linker.order"
 	log "a linker order file from $HINTS"
-	cp "$ORDER" "$ORDER.before"
-	(cd "$BUN_SRC" && bun scripts/orderfile/generate.ts --build-dir="$BUILD_DIR" --hints="$HINTS" | tail -1)
+	cp -p "$ORDER" "$ORDER.before"
+	# (What it says of the hints, how many of their names this build still has, and of what it wrote.)
+	(cd "$BUN_SRC" && bun scripts/orderfile/generate.ts --build-dir="$BUILD_DIR" --hints="$HINTS" | grep -E '^ *hints:|^wrote ')
 	if cmp -s "$ORDER" "$ORDER.before"; then
 		touch -r "$ORDER.before" "$ORDER" # (unchanged: nothing to link again)
 	else

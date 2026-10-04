@@ -46,9 +46,15 @@ done
 
 AGENT="$(pi_agent_dir "$PI_DIR")"
 VERSION="$(pi_version "$AGENT")"
-# The executable is made from Pi's built output (dist), not from its sources: a source changed since it was built would be left out.
-stale="$(find "$(dirname "$AGENT")" -path '*/node_modules' -prune -o -path '*/src/*' -name '*.ts' ! -name '*.d.ts' -newer "$AGENT/dist/cli.js" -print -quit 2>/dev/null)"
-[ -z "$stale" ] || die "Pi's sources changed since it was built ($stale): build it again (npm run build in $(dirname "$(dirname "$AGENT")"), or scripts/prepare-pi.sh)"
+# The executable is made from Pi's built output (each package's dist), not from its sources: a source changed since its package
+# was built would be left out.
+for package in "$(dirname "$AGENT")"/*/; do
+	[ -d "$package/src" ] && [ -d "$package/dist" ] || continue
+	built="$(find "$package/dist" -maxdepth 1 -name '*.js' -print -quit)"
+	[ -n "$built" ] || continue
+	stale="$(find "$package/src" -name '*.ts' ! -name '*.d.ts' -newer "$built" -print -quit)"
+	[ -z "$stale" ] || die "Pi's sources changed since it was built ($stale): build it again (npm run build in $(dirname "$(dirname "$AGENT")"), or scripts/prepare-pi.sh)"
+done
 PIBOLT_VERSION="$(cat "$PIBOLT_ROOT/VERSION")"
 CPU_VARIANT=$PIBOLT_ARCH; [ "$CPU" = baseline ] && CPU_VARIANT=$PIBOLT_ARCH-baseline; [ "$JIT" = on ] && CPU_VARIANT=$PIBOLT_ARCH-jit
 OUT="$(abspath "${OUT:-$PIBOLT_ROOT/out/pi-bolt}")"
