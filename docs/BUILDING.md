@@ -134,6 +134,19 @@ exercises them to `training.md` and record again.
 scripts/train-profile.sh [--pi DIR] [--plugins FILE] [--out DIR]
 ```
 
+### The runtime's order file (macOS)
+
+On macOS `build-runtime.sh` also lays out the runtime's own code by what Pi runs: the functions a Pi session enters first and
+most, placed together at the front of the code with a linker order file, so that starting and running Pi touches fewer pages of
+the executable (it maps less of it from disk on a cold start, and keeps less of it resident). The file is made after the build,
+from [`profiles/runtime-darwin-arm64.hints`](../profiles/runtime-darwin-arm64.hints) (the functions Pi entered, in first-entry
+order) and then Bun's own workloads (`.work/bun/scripts/orderfile`), and the runtime is linked again with it. The hints are
+names, so they hold from one build of the runtime to the next; record them again when what Pi runs has changed much:
+
+```bash
+scripts/train-runtime-hints.sh [--pi BUILD]   # traces sessions of out/pi-bolt (bench/orderfile_session.py) -> profiles/runtime-darwin-arm64.hints
+```
+
 ## Packaging a release
 
 ```bash

@@ -35,8 +35,27 @@ BUILD_DIR="build/pibolt-release"; [ "$LTO" = off ] && BUILD_DIR="build/pibolt-re
 EXTRA=()
 # Bun's own floor for macOS. Without it, a local build targets the SDK's version (this machine's macOS).
 [ "$PIBOLT_OS" = darwin ] && EXTRA+=(--osx-deployment-target=13.0)
+build() { (cd "$BUN_SRC" && BUN_WEBKIT_PATH="$WEBKIT" bun scripts/build.ts --profile=release-local --lto="$LTO" --build-dir="$BUILD_DIR" "${EXTRA[@]}" "${JOBS[@]}"); }
 log "building the runtime in $BUN_SRC/$BUILD_DIR (WebKit from $WEBKIT)"
-(cd "$BUN_SRC" && BUN_WEBKIT_PATH="$WEBKIT" bun scripts/build.ts --profile=release-local --lto="$LTO" --build-dir="$BUILD_DIR" "${EXTRA[@]}" "${JOBS[@]}")
+build
+# macOS: the functions that start Pi, and those it runs most, laid out together at the front of the code (a linker order file),
+# so that Pi touches fewer of its pages: what Pi runs, traced in sessions of it (profiles/runtime-darwin-arm64.hints, from
+# scripts/train-runtime-hints.sh), then what Bun's own workloads run. The order is made with the build just done, and the
+# runtime linked again with it when it changed.
+HINTS="$PIBOLT_ROOT/profiles/runtime-$PIBOLT_PLATFORM.hints"
+if [ "$PIBOLT_OS" = darwin ] && [ -f "$HINTS" ]; then
+	ORDER="$BUN_SRC/$BUILD_DIR/linker.order"
+	log "a linker order file from $HINTS"
+	cp "$ORDER" "$ORDER.before"
+	(cd "$BUN_SRC" && bun scripts/orderfile/generate.ts --build-dir="$BUILD_DIR" --hints="$HINTS" | tail -1)
+	if cmp -s "$ORDER" "$ORDER.before"; then
+		touch -r "$ORDER.before" "$ORDER" # (unchanged: nothing to link again)
+	else
+		log "linking the runtime again with its order file"
+		build
+	fi
+	rm -f "$ORDER.before"
+fi
 
 mkdir -p "$PIBOLT_WORK/runtime"
 cp "$BUN_SRC/$BUILD_DIR/bun" "$PIBOLT_WORK/runtime/bun"
