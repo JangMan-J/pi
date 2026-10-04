@@ -26,7 +26,7 @@ ENTRY=""
 mapfile -t ENTRIES < <(pi_entries "$AGENT" "$ENTRY")
 
 log "a bytecode build of Pi $VERSION to train with"
-(cd "$AGENT" && "$BUN" build --compile --no-compile-autoload-bunfig --target="bun-$PIBOLT_PLATFORM" --bytecode --format=esm "${ENTRIES[@]}" --outfile "$TMP/pi" >/dev/null)
+(cd "$AGENT" && "$BUN" build --compile --no-compile-autoload-bunfig --no-compile-autoload-dotenv --target="bun-$PIBOLT_PLATFORM" --bytecode --format=esm "${ENTRIES[@]}" --outfile "$TMP/pi" >/dev/null)
 # (What the session opens that reads files from beside the executable: the themes the settings list.)
 mkdir -p "$TMP/theme" && cp "$AGENT"/src/modes/interactive/theme/*.json "$TMP/theme/"
 log "training sessions"

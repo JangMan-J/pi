@@ -83,7 +83,7 @@ if [ -n "$STABLE" ]; then
 	BUN="${PIBOLT_STABLE_BUN:-bun}"
 	need "$BUN"
 	log "Pi $VERSION with stock Bun $("$BUN" --version) (bytecode, no AOT) -> $OUT"
-	(cd "$AGENT" && "$BUN" build --compile --no-compile-autoload-bunfig --target="bun-$PIBOLT_PLATFORM" --bytecode --format=esm \
+	(cd "$AGENT" && "$BUN" build --compile --no-compile-autoload-bunfig --no-compile-autoload-dotenv --target="bun-$PIBOLT_PLATFORM" --bytecode --format=esm \
 		"${ENTRIES[@]}" --outfile "$OUT/pi" >/dev/null)
 	stage_assets "$OUT"
 	log "done: $OUT/pi"
@@ -117,8 +117,10 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 	# them gets a TypeError; adding methods is fine. BUN_JSC_useImmutableIntrinsics=0 turns it off (docs/PLUGINS.md).
 	export BUN_JSC_useImmutableIntrinsics="${BUN_JSC_useImmutableIntrinsics:-1}"
 	[ -n "$REGEXPS" ] && export BUN_JSC_aotRegExpsPath="$REGEXPS"
+	# No .env from the working directory (in both builds): Pi on Node never loads one into its environment, and looking for it
+	# in a large directory cost a millisecond or more at every start.
 	# What `pi --version` and `pi update` know themselves by (packages/coding-agent/src/pi-bolt.ts).
-	"$BUN" build --compile --no-compile-autoload-bunfig --target="bun-$PIBOLT_PLATFORM" --bytecode --format=esm "${ORDER_ARGS[@]}" \
+	"$BUN" build --compile --no-compile-autoload-bunfig --no-compile-autoload-dotenv --target="bun-$PIBOLT_PLATFORM" --bytecode --format=esm "${ORDER_ARGS[@]}" \
 		--define "PIBOLT_BUILD=\"$PIBOLT_VERSION $CPU_VARIANT jit-$JIT\"" \
 		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | tee "${PIBOLT_BUILD_LOG:-/dev/null}" | grep -v "^AOT: " | tail -3
 )
