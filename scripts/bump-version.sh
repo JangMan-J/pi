@@ -22,7 +22,8 @@ if [ -z "$NEW" ]; then
 fi
 [[ "$NEW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "not a version: $NEW"
 echo "$NEW" >VERSION
-sed -i "s/^VERSION=.*/VERSION=$NEW/" npm/bin/pi-bolt
+# (Not sed -i, which takes its argument differently in macOS's sed.)
+perl -pi -e "s/^VERSION=.*/VERSION=$NEW/" npm/bin/pi-bolt
 python3 - "$NEW" "$PI" <<'PY'
 import json, sys
 new, pi = sys.argv[1], sys.argv[2]
