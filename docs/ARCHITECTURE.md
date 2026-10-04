@@ -183,11 +183,25 @@ macOS loads an ARM64 executable at a different address each time, and refuses on
 executable with a static heap starts again at once, from a constructor that runs before anything else, with ASLR turned off for
 the main executable (`posix_spawn` with `POSIX_SPAWN_SETEXEC`: the same process). That costs a second load by dyld, so a macOS
 build's `pi` is a small launcher ([`scripts/lib/darwin-launcher.c`](../scripts/lib/darwin-launcher.c)) that starts the executable
-beside it, `pi-bin`, that way at once: 12% fewer instructions for `pi --version`. macOS keeps a process's "no ASLR" for the
-processes it starts, so the commands and servers Pi starts run without it too; relocating the heap's pointers into the executable
-at launch instead would avoid that, at a cost in memory and startup time. The system's libraries still move,
+beside it, `pi-bin`, that way at once: 12% fewer instructions for `pi --version`. The system's libraries still move,
 at every boot; the build checks that the heap points at none of their functions or objects. A build with `BUN_STATIC_HEAP=1`
 does the same, and makes no static heap if it cannot. If the executable is not at its address after all, it runs from bytecode.
+
+**The programs Pi starts have ASLR.** macOS keeps a process's "no ASLR" for every process it starts, and theirs, and nothing
+can turn it back on. So before the launcher starts `pi-bin`, it forks a helper, which has ASLR and is not started by `pi-bin`
+([`scripts/lib/darwin-spawn.h`](../scripts/lib/darwin-spawn.h)). Where Bun would `posix_spawn` a program, it starts `pi-spawn`
+instead (`spawn_through_proxy` in Bun's `posix_spawn.rs`, from the launcher's `BUN_INTERNAL_SPAWN_HELPER`), exactly as it would
+have started the program. `pi-spawn` hands the helper what it was given: its files, by `SCM_RIGHTS`, its directory, environment,
+signal mask and ignored signals, limits and umask, and its process group or session. A worker forked by the helper starts the
+program with all of that: in `pi-bin`'s process group, so that it can use the terminal; or leading a group or a session of its
+own (`detached`). `pi-bin` learns the program's pid on a pipe, or why `posix_spawn` failed (`ENOENT` and the rest, as before).
+`child.pid` is the program's pid, and `kill()` signals it; `pi-spawn` ignores signals, waits for word that the program has exited,
+and exits the same way, with its exit code or by its signal, so `pi-bin` waits for `pi-spawn` as it would for the program. If
+`pi-spawn` is killed (`SIGKILL`), the worker kills the program. The helper exits with `pi-bin`. Without the helper (`pi-bin`
+started directly) or when it cannot help, `pi-spawn` runs the program in its own place, without ASLR, as before. Not covered:
+programs started on a pseudo-terminal (Bun's `terminal` option) or as another user, which Bun starts with `fork`. What it costs: a
+fork of the launcher at each start (0.3 ms; not for `pi --version`), and 1.4 ms per program, mostly `pi-spawn`'s own start. A
+program's CPU time is no longer counted in `pi-bin`'s `RUSAGE_CHILDREN`: it is the helper's.
 
 **Fixed regions.** The static region (36 GB of address space at 0x200000000000) and the structures' 4 GB are free in every
 macOS process. macOS has no `RLIMIT_AS`, so the fallbacks for an address-space limit are not needed there.
