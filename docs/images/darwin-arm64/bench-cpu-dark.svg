@@ -4,46 +4,46 @@
 <text x="20" y="50" font-size="13" fill="#c3c2b7">All threads, lower is better. Ratios compare Pi-Bolt with Bun. Pi 1.0.0, medians.</text>
 <text x="20" y="86" font-size="13" font-weight="600" fill="#ffffff">Interactive session: 5 prompts</text>
 <text x="108" y="111" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
-<path d="M116,100 h51.80515885706725 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-51.80515885706725 z" fill="#3987e5"/>
-<text x="177.80515885706725" y="111" font-size="12" fill="#ffffff">149 ms <tspan fill="#c3c2b7">2.5× less</tspan></text>
+<path d="M116,100 h50.99229716690564 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-50.99229716690564 z" fill="#3987e5"/>
+<text x="176.99229716690564" y="111" font-size="12" fill="#ffffff">148 ms <tspan fill="#c3c2b7">2.5× less</tspan></text>
 <text x="108" y="135" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.4.2</text>
-<path d="M116,124 h134.14545815458928 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-134.14545815458928 z" fill="#d95926"/>
-<text x="260.1454581545893" y="135" font-size="12" fill="#ffffff">368 ms</text>
+<path d="M116,124 h133.12246577881476 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-133.12246577881476 z" fill="#d95926"/>
+<text x="259.1224657788148" y="135" font-size="12" fill="#ffffff">370 ms</text>
 <text x="108" y="159" font-size="12" text-anchor="end" fill="#c3c2b7">Node 26</text>
 <path d="M116,148 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#199e70"/>
-<text x="326.0" y="159" font-size="12" fill="#ffffff">544 ms</text>
+<text x="326.0" y="159" font-size="12" fill="#ffffff">550 ms</text>
 <line x1="116" y1="96" x2="116" y2="166" stroke="#3a3a37"/>
 <text x="450" y="86" font-size="13" font-weight="600" fill="#ffffff">pi -p: one prompt</text>
 <text x="538" y="111" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
-<path d="M546,100 h26.892140968587807 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-26.892140968587807 z" fill="#3987e5"/>
-<text x="582.8921409685878" y="111" font-size="12" fill="#ffffff">42 ms <tspan fill="#c3c2b7">3.2× less</tspan></text>
+<path d="M546,100 h25.988796120287216 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-25.988796120287216 z" fill="#3987e5"/>
+<text x="581.9887961202872" y="111" font-size="12" fill="#ffffff">44 ms <tspan fill="#c3c2b7">3.3× less</tspan></text>
 <text x="538" y="135" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.4.2</text>
-<path d="M546,124 h95.06083323359483 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-95.06083323359483 z" fill="#d95926"/>
-<text x="651.0608332335948" y="135" font-size="12" fill="#ffffff">134 ms</text>
+<path d="M546,124 h94.54009685848047 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-94.54009685848047 z" fill="#d95926"/>
+<text x="650.5400968584804" y="135" font-size="12" fill="#ffffff">144 ms</text>
 <text x="538" y="159" font-size="12" text-anchor="end" fill="#c3c2b7">Node 26</text>
 <path d="M546,148 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#199e70"/>
-<text x="756.0" y="159" font-size="12" fill="#ffffff">276 ms</text>
+<text x="756.0" y="159" font-size="12" fill="#ffffff">298 ms</text>
 <line x1="546" y1="96" x2="546" y2="166" stroke="#3a3a37"/>
 <text x="20" y="204" font-size="13" font-weight="600" fill="#ffffff">pi --version</text>
 <text x="108" y="229" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
-<path d="M116,218 h18.327503731200494 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-18.327503731200494 z" fill="#3987e5"/>
-<text x="144.3275037312005" y="229" font-size="12" fill="#ffffff">17 ms <tspan fill="#c3c2b7">3.3× less</tspan></text>
+<path d="M116,218 h16.304624427992113 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-16.304624427992113 z" fill="#3987e5"/>
+<text x="142.3046244279921" y="229" font-size="12" fill="#ffffff">16 ms <tspan fill="#c3c2b7">3.6× less</tspan></text>
 <text x="108" y="253" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.4.2</text>
-<path d="M116,242 h68.8792621790211 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-68.8792621790211 z" fill="#d95926"/>
-<text x="194.8792621790211" y="253" font-size="12" fill="#ffffff">56 ms</text>
+<path d="M116,242 h68.22738941180849 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-68.22738941180849 z" fill="#d95926"/>
+<text x="194.22738941180847" y="253" font-size="12" fill="#ffffff">57 ms</text>
 <text x="108" y="277" font-size="12" text-anchor="end" fill="#c3c2b7">Node 26</text>
 <path d="M116,266 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#199e70"/>
-<text x="326.0" y="277" font-size="12" fill="#ffffff">157 ms</text>
+<text x="326.0" y="277" font-size="12" fill="#ffffff">161 ms</text>
 <line x1="116" y1="214" x2="116" y2="284" stroke="#3a3a37"/>
 <text x="450" y="204" font-size="13" font-weight="600" fill="#ffffff">Per prompt, 4.2M-token session</text>
 <text x="538" y="229" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
-<path d="M546,218 h52.11574074074074 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-52.11574074074074 z" fill="#3987e5"/>
-<text x="608.1157407407408" y="229" font-size="12" fill="#ffffff">71 ms <tspan fill="#c3c2b7">2.2× less</tspan></text>
+<path d="M546,218 h53.12 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-53.12 z" fill="#3987e5"/>
+<text x="609.12" y="229" font-size="12" fill="#ffffff">72 ms <tspan fill="#c3c2b7">2.2× less</tspan></text>
 <text x="538" y="253" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.4.2</text>
-<path d="M546,242 h119.0138888888889 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-119.0138888888889 z" fill="#d95926"/>
-<text x="675.0138888888889" y="253" font-size="12" fill="#ffffff">156 ms</text>
+<path d="M546,242 h119.42990291262136 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-119.42990291262136 z" fill="#d95926"/>
+<text x="675.4299029126214" y="253" font-size="12" fill="#ffffff">156 ms</text>
 <text x="538" y="277" font-size="12" text-anchor="end" fill="#c3c2b7">Node 26</text>
 <path d="M546,266 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#199e70"/>
-<text x="756.0" y="277" font-size="12" fill="#ffffff">259 ms</text>
+<text x="756.0" y="277" font-size="12" fill="#ffffff">258 ms</text>
 <line x1="546" y1="214" x2="546" y2="284" stroke="#3a3a37"/>
 </svg>

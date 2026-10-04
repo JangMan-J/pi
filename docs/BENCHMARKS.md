@@ -69,30 +69,31 @@ the physical footprint (what Activity Monitor shows), the closest measure to pri
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/darwin-arm64/bench-hero-dark.svg">
-  <img alt="macOS: ready to type 48 / 64 / 188 ms; CPU per session 149 / 368 / 544 ms; CPU while streaming 724 / 880 / 952 ms; memory after a long session 54 / 100 / 2,517 MB" src="images/darwin-arm64/bench-hero-light.svg">
+  <img alt="macOS: ready to type 46 / 65 / 190 ms; CPU per session 148 / 370 / 550 ms; CPU while streaming 670 / 856 / 900 ms; memory after a long session 52 / 98 / 2,450 MB" src="images/darwin-arm64/bench-hero-light.svg">
 </picture>
 
 | Scenario | Metric | Pi-Bolt | Pi-Bolt, JIT on | Bun 1.4.2 | Node 26 |
 |---|---|---:|---:|---:|---:|
-| `pi --version` | wall | **20 ms** | 21 ms | 32 ms | 147 ms |
-| | CPU | **17 ms** | 18 ms | 56 ms | 157 ms |
-| `pi -p "<prompt>"`: one prompt, 5 model turns, 4 tool calls | wall | **45 ms** | 47 ms | 67 ms | 214 ms |
-| | CPU | **42 ms** | 44 ms | 134 ms | 276 ms |
-| Interactive TUI: launch, 5 prompts (25 model turns), `/quit` | time to interactive | 48 ms | **44 ms** | 64 ms | 188 ms |
-| | CPU | 149 ms | **146 ms** | 368 ms | 544 ms |
-| | peak memory | **136 MB** | 138 MB | 198 MB | 239 MB |
-| Long session: 75 prompts, a conversation of about 4.2M tokens | time per prompt, last 25 | **212 ms** | | 279 ms | 342 ms |
-| | CPU per prompt, last 25 | **71 ms** | | 156 ms | 259 ms |
-| | own memory at the end | **54 MB** | | 100 MB | 2,517 MB |
-| tmux: replies streaming at human pace (4 prompts) | CPU | **724 ms** | | 880 ms | 952 ms |
-| | own memory | **32 MB** | | 66 MB | 81 MB |
-| | bytes written to the terminal per prompt | **168 KB** | | 354 KB | 355 KB |
-| Long answers in the TUI (1,200 characters a second) | CPU, 20,000 characters | **2.3 s** | | 7.2 s | 6.5 s |
-| | CPU, 60,000 characters | **8.4 s** | | 26.9 s | 25.5 s |
-| A file written through a tool call (`pi -p`) | 200 KB: wall / CPU | **0.3 / 0.2 s** | | 11.5 / 19.5 s | 14.3 / 14.6 s |
-| The same in the TUI | longest pause in drawing, 200 KB | **80 ms** | | 94 ms | 176 ms |
-| A plugin's hot loop | compiled in | **44 ms** | 43 ms | | |
-| | loaded at run time | 482 ms | **39 ms** | 39 ms | |
+| `pi --version` | wall | **19 ms** | 20 ms | 32 ms | 152 ms |
+| | CPU | **16 ms** | 17 ms | 57 ms | 161 ms |
+| `pi -p "<prompt>"`: one prompt, 5 model turns, 4 tool calls | wall | **46 ms** | 48 ms | 71 ms | 230 ms |
+| | CPU | **44 ms** | 45 ms | 144 ms | 298 ms |
+| Interactive TUI: launch, 5 prompts (25 model turns), `/quit` | time to interactive | 46 ms | **42 ms** | 65 ms | 190 ms |
+| | CPU | 148 ms | **146 ms** | 370 ms | 550 ms |
+| | peak memory | **136 MB** | 139 MB | 198 MB | 234 MB |
+| Long session: 75 prompts, a conversation of about 4.2M tokens | time per prompt, last 25 | **216 ms** | | 280 ms | 342 ms |
+| | CPU per prompt, last 25 | **72 ms** | | 156 ms | 258 ms |
+| | own memory at the end | **52 MB** | | 98 MB | 2,450 MB |
+| tmux: replies streaming at human pace (4 prompts) | CPU | **670 ms** | | 856 ms | 900 ms |
+| | own memory | **30 MB** | | 67 MB | 94 MB |
+| | bytes written to the terminal per prompt | **168 KB** | | 353 KB | 355 KB |
+| | CPU while idle, per second | **0.5 ms** | | 3.5 ms | 22.9 ms |
+| Long answers in the TUI (1,200 characters a second) | CPU, 20,000 characters | **1.8 s** | | 6.8 s | 6.2 s |
+| | CPU, 60,000 characters | **7.0 s** | | 26.3 s | 25.4 s |
+| A file written through a tool call (`pi -p`) | 200 KB: wall / CPU | **0.3 / 0.2 s** | | 11.4 / 19.5 s | 14.0 / 14.3 s |
+| The same in the TUI | longest pause in drawing, 200 KB | **82 ms** | | 86 ms | 139 ms |
+| A plugin's hot loop | compiled in | **44 ms** | 44 ms | | |
+| | loaded at run time | 485 ms | **39 ms** | 40 ms | |
 
 Medians of 21 runs (3 warm-up runs), 3 long sessions and 5 tmux rounds per runtime.
 
@@ -105,9 +106,9 @@ Linux, on a server CPU at a fixed clock, shows the work more directly (half the 
 the EPYC, and Node 952 against 580: a terminal and timers that cost more per frame, and a model server whose pacing is coarser,
 so that a prompt takes 8.6 s rather than 6.5 s and draws 515 frames rather than 423.
 
-**What macOS adds at launch.** An executable with a prebuilt heap runs with ASLR off for its own code: these figures are of builds
-that started again for it once, after a first load by dyld (about 3 ms of the 20 ms of `pi --version`). The launcher that `pi`
-now is starts it that way at once ([ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)).
+**What macOS adds at launch.** An executable with a prebuilt heap runs with ASLR off for its own code: `pi`, a small launcher,
+starts it that way at once ([ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)). The figures are of the release builds, launcher
+included.
 
 ## Setup and method
 
