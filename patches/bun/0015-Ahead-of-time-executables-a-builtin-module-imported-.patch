@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Sun, 4 Oct 2026 12:11:59 +0530
+Subject: [PATCH] Ahead-of-time executables: a builtin module imported by a
+ module evaluated later is required when that module is
+
+---
+ src/bundler/LinkerContext.rs                  | 27 +++++++++++++++++++
+ src/bundler/bundle_v2.rs                      |  9 +++++++
+ .../linker_context/convertStmtsForChunk.rs    | 19 +++++++++++++
+ .../linker_context/scanImportsAndExports.rs   |  6 +++++
+ 4 files changed, 61 insertions(+)
+
+diff --git a/src/bundler/LinkerContext.rs b/src/bundler/LinkerContext.rs
+index 354e7135..5936c810 100644
+--- a/src/bundler/LinkerContext.rs
++++ b/src/bundler/LinkerContext.rs
+@@ -1450,6 +1450,8 @@ pub struct LinkerOptions {
+     pub(crate) source_maps: SourceMapOption,
+     pub(crate) target: Target,
+     pub(crate) compile_mode: CompileMode,
++    /// See `LinkerContext::defers_import_into_wrapper`.
++    pub(crate) defer_builtin_imports: bool,
+     pub(crate) metafile: bool,
+     /// Path to write JSON metafile (for Bun.build API)
+     pub(crate) metafile_json_path: &'static [u8],
+@@ -1499,6 +1501,7 @@ impl Default for LinkerOptions {
+             source_maps: SourceMapOption::None,
+             target: Target::Browser,
+             compile_mode: CompileMode::None,
++            defer_builtin_imports: false,
+             metafile: false,
+             metafile_json_path: b"",
+             metafile_markdown_path: b"",
+@@ -3969,6 +3972,11 @@ impl<'a> LinkerContext<'a> {
+                 | ImportTrackerStatus::External => {
+                     if status == ImportTrackerStatus::External
+                         && self.options.output_format.keep_es6_import_export_syntax()
++                        && !self.graph.ast.items_named_imports()[prev_source_index as usize]
++                            .get(&tracker.import_ref)
++                            .is_some_and(|named_import| {
++                                self.defers_import_record(prev_source_index, named_import.import_record_index)
++                            })
+                     {
+                         // Imports from external modules should not be converted to CommonJS
+                         // if the output format preserves the original ES6 import statements
+@@ -4294,6 +4302,25 @@ impl<'a> LinkerContext<'a> {
+     /// import that resolved here is that module's namespace)?
+     /// The record of a named import in `source_index` is an `import()` or a
+     /// `require()`, so the name is read off the call's result.
++    /// An executable compiled ahead of time (`--compile` with `BUN_STATIC_HEAP=1 BUN_AOT=1`): a builtin module that a module
++    /// evaluated lazily (wrapped as ESM, `init_*()`) imports is required where that module is evaluated, as in a CommonJS
++    /// output file, rather than imported by the program before it starts. A program that loads a part of itself later
++    /// (`await import()`) no longer pays at its start for what only that part uses (`node:http` and what it needs, ...).
++    pub(crate) fn defers_import_into_wrapper(&self, record: &ImportRecord, importer: crate::IndexInt) -> bool {
++        self.options.defer_builtin_imports
++            && record.kind == ImportKind::Stmt
++            && !record.source_index.is_valid()
++            && self.graph.meta.items_flags()[importer as usize].wrap == WrapKind::Esm
++            && bun_resolve_builtins::HardcodedModule::Alias::has(record.path.text, Target::Bun, Default::default())
++    }
++
++    fn defers_import_record(&self, source_index: crate::IndexInt, record_index: u32) -> bool {
++        self.graph.ast.items_import_records()[source_index as usize]
++            .as_slice()
++            .get(record_index as usize)
++            .is_some_and(|record| self.defers_import_into_wrapper(record, source_index))
++    }
++
+     fn is_call_record(&self, source_index: crate::IndexInt, record_index: u32) -> bool {
+         self.graph.ast.items_import_records()[source_index as usize]
+             .as_slice()
+diff --git a/src/bundler/bundle_v2.rs b/src/bundler/bundle_v2.rs
+index 5ca21ad0..df7b61c1 100644
+--- a/src/bundler/bundle_v2.rs
++++ b/src/bundler/bundle_v2.rs
+@@ -3383,6 +3383,15 @@ pub mod bv2_impl {
+                 }
+             }
+             this.linker.options.compile_mode = this.transpiler.options.compile_mode;
++            {
++                unsafe extern "C" {
++                    safe fn Bun__shouldCompileAheadOfTime() -> bool;
++                }
++                this.linker.options.defer_builtin_imports = this.linker.options.compile_mode.is_executable()
++                    && this.linker.options.output_format == options::Format::Esm
++                    && this.linker.options.target.is_bun()
++                    && Bun__shouldCompileAheadOfTime();
++            }
+             this.linker.options.metafile = this.transpiler.options.metafile;
+             // SAFETY: same `'a`-owned `Transpiler` field as `banner` above.
+             this.linker.options.metafile_json_path =
+diff --git a/src/bundler/linker_context/convertStmtsForChunk.rs b/src/bundler/linker_context/convertStmtsForChunk.rs
+index 258b0dfb..47ac439f 100644
+--- a/src/bundler/linker_context/convertStmtsForChunk.rs
++++ b/src/bundler/linker_context/convertStmtsForChunk.rs
+@@ -97,6 +97,25 @@ pub(crate) fn convert_stmts_for_chunk(
+                 bun_ast::StmtData::SImport(s) => {
+                     // "import * as ns from 'path'"
+                     // "import {foo} from 'path'"
++                    if c.defers_import_into_wrapper(&ast.import_records[s.import_record_index as usize], source_index) {
++                        stmts.inside_wrapper_prefix.append_non_dependency(Stmt::alloc(
++                            S::Local {
++                                decls: G::DeclList::from_slice(&[G::Decl {
++                                    binding: Binding::alloc(bump, bun_ast::b::Identifier { r#ref: s.namespace_ref }, stmt.loc),
++                                    value: Some(Expr::init(
++                                        E::RequireString {
++                                            import_record_index: s.import_record_index,
++                                            ..Default::default()
++                                        },
++                                        stmt.loc,
++                                    )),
++                                }]),
++                                ..Default::default()
++                            },
++                            stmt.loc,
++                        ))?;
++                        continue 'stmt_loop;
++                    }
+                     if c.should_remove_import_export_stmt(
+                         stmts,
+                         stmt.loc,
+diff --git a/src/bundler/linker_context/scanImportsAndExports.rs b/src/bundler/linker_context/scanImportsAndExports.rs
+index 4611b2fe..b77f007e 100644
+--- a/src/bundler/linker_context/scanImportsAndExports.rs
++++ b/src/bundler/linker_context/scanImportsAndExports.rs
+@@ -1130,9 +1130,15 @@ pub(crate) fn scan_imports_and_exports(
+                         }
+ 
+                         // This is an external import. Check if it will be a "require()" call.
++                        let deferred = !rec_source_index.is_valid() && {
++                            let record = &col_ref!(import_records_list)[id].as_slice()
++                                [import_record_index as usize];
++                            this.defers_import_into_wrapper(record, id as crate::IndexInt)
++                        };
+                         if kind == ImportKind::Require
+                             || !output_format.keep_es6_import_export_syntax()
+                             || kind == ImportKind::Dynamic
++                            || deferred
+                         {
+                             // We should use "__require" instead of "require" if we're not
+                             // generating a CommonJS output file, since it won't exist otherwise.
+-- 
+2.54.0 (Apple Git-157)
+
