@@ -3,7 +3,12 @@
 // An executable with a static heap must run where it was linked to be (docs/ARCHITECTURE.md, "The macOS ARM64 port"). Started
 // directly, it starts again itself, once dyld has loaded it and its libraries; from here it is started that way at once, which
 // saves dyld's work on the first start (about a millisecond and a half). Without this launcher it works all the same.
-// Built by scripts/build-pi.sh: clang -O2 -mmacosx-version-min=13.0 darwin-launcher.c -o pi
+//
+// macOS passes ASLR being off on to everything pi-bin starts. So first it forks the helper that starts pi-bin's programs with
+// ASLR (darwin-spawn.h), and tells pi-bin where it is.
+// Built by scripts/build-pi.sh: clang -O2 -mmacosx-version-min=13.0 darwin-launcher.c darwin-spawn-helper.c -o pi
+#include "darwin-spawn.h"
+
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
@@ -18,7 +23,6 @@ extern char** environ;
 
 int main(int argc, char** argv)
 {
-    (void)argc;
     char self[PATH_MAX];
     uint32_t size = sizeof(self);
     char resolved[PATH_MAX];
@@ -26,10 +30,24 @@ int main(int argc, char** argv)
         fprintf(stderr, "pi: cannot tell where this executable is\n");
         return 127;
     }
+    char directory[PATH_MAX];
+    strlcpy(directory, dirname(resolved), sizeof(directory));
     char target[PATH_MAX];
-    if (snprintf(target, sizeof(target), "%s/pi-bin", dirname(resolved)) >= (int)sizeof(target)) {
+    if (snprintf(target, sizeof(target), "%s/pi-bin", directory) >= (int)sizeof(target)) {
         fprintf(stderr, "pi: the path of this executable is too long\n");
         return 127;
+    }
+
+    // (Not for `pi --version`, which pi-bin answers without starting anything: the fork would be 3% of its time.)
+    int versionOnly = argc == 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-v"));
+    char proxy[PATH_MAX];
+    int helper = -1;
+    if (!versionOnly && snprintf(proxy, sizeof(proxy), "%s/pi-spawn", directory) < (int)sizeof(proxy) && !access(proxy, X_OK))
+        helper = pibolt_spawn_helper_start();
+    if (helper >= 0) {
+        char value[sizeof(proxy) + 32];
+        snprintf(value, sizeof(value), "%d:%d:%s", (int)getpid(), helper, proxy);
+        setenv(PIBOLT_SPAWN_HELPER_ENV, value, 1);
     }
 
     // What pi-bin's own start without ASLR looks for (c-bindings.cpp in Bun): it is started that way already.

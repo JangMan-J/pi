@@ -134,10 +134,13 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | tee "${PIBOLT_BUILD_LOG:-/dev/null}" | grep -v "^AOT: " | tail -3
 )
 # macOS: pi is a launcher that starts the executable, pi-bin, without ASLR for it at once (scripts/lib/darwin-launcher.c): it
-# would otherwise start again itself, after a first load by dyld.
+# would otherwise start again itself, after a first load by dyld. The launcher also forks the helper that starts the programs
+# Pi starts with ASLR, through pi-spawn (scripts/lib/darwin-spawn.h).
 if [ "$PIBOLT_OS" = darwin ]; then
 	mv "$OUT/pi" "$OUT/pi-bin"
-	xcrun clang -O2 -arch arm64 -mmacosx-version-min=13.0 -o "$OUT/pi" "$PIBOLT_ROOT/scripts/lib/darwin-launcher.c"
+	CLANG=(xcrun clang -O2 -Wall -arch arm64 -mmacosx-version-min=13.0 -I"$PIBOLT_ROOT/scripts/lib")
+	"${CLANG[@]}" -o "$OUT/pi" "$PIBOLT_ROOT/scripts/lib/darwin-launcher.c" "$PIBOLT_ROOT/scripts/lib/darwin-spawn-helper.c"
+	"${CLANG[@]}" -o "$OUT/pi-spawn" "$PIBOLT_ROOT/scripts/lib/darwin-spawn-proxy.c"
 fi
 stage_assets "$OUT"
 printf 'Pi-Bolt %s (Pi %s), %s-%s, JIT %s, built %s\n' "$PIBOLT_VERSION" "$VERSION" "$PIBOLT_OS" "$CPU_VARIANT" "$JIT" "$(date -u +%Y-%m-%d)" >"$OUT/pi-bolt.txt"
