@@ -201,6 +201,18 @@ uses (LSE, JSCVT, FP16, FRINTTS, SHA3, DotProd): every Apple silicon CPU has the
 (`libicucore`). With the JIT off and no sandbox policy given, JavaScriptCore on Darwin turns `SharedArrayBuffer` off, which Pi's
 codemode worker needs; Bun now says it is not sandboxed.
 
+**Fewer pages, a smaller first heap.** The runtime is linked with an order file: the functions a Pi session enters, in the order
+it first enters them (traced from sessions of Pi, [`profiles/runtime-darwin-arm64.hints`](../profiles/runtime-darwin-arm64.hints)),
+then those Bun's own workloads enter, placed together at the front of the code, so that Pi maps and keeps fewer of the
+executable's pages (9 MB less resident for `pi --version`). The heap's first collection comes after 12 MB rather than after as
+much as the program's modules weigh (about 23 MB for Pi): with a static heap the modules are not loaded from those bytes, and
+most of what starting allocates is garbage soon after.
+
+**Builtin modules when they are needed.** In an executable compiled ahead of time, a module that is evaluated later (one that the
+program `import()`s) requires the builtin modules it imports when it is evaluated, as a CommonJS bundle does, instead of having them
+imported before the program starts. A start of Pi then loads none of `node:http`, `https`, `net` and `tls`, which only Bedrock,
+the proxy agents and the OAuth callback servers use (the first two alone cost a start about 60 million instructions).
+
 ## Limitations
 
 - **Linux x86-64 and macOS on Apple silicon** only. Windows and Linux on ARM64 are not built yet.
