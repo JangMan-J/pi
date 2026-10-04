@@ -25,7 +25,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import DONE, MODEL_ARGS, PROMPT, Tty, done, fake_model, maxrss_mb, median, parse_builds, pi_env, pi_home, pinned, workdir
+from harness import (
+    DONE, MACOS, MODEL_ARGS, PROMPT, Tty, done, fake_model, maxrss_mb, median, parse_builds, peak_footprint_mb, pi_env, pi_home,
+    pinned, workdir,
+)
 
 
 def run_plain(build, args, env, cwd, cpus):
@@ -33,9 +36,13 @@ def run_plain(build, args, env, cwd, cpus):
     p = subprocess.Popen(pinned([*build.argv, *args], cpus), env=env, cwd=cwd, stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = p.stdout.read()
+    peak_fp = peak_footprint_mb(p.pid)
     _, status, ru = os.wait4(p.pid, 0)
-    return out, {"ok": os.waitstatus_to_exitcode(status) == 0, "wall_ms": (time.perf_counter() - t0) * 1e3,
-                 "cpu_ms": (ru.ru_utime + ru.ru_stime) * 1e3, "peak_mb": maxrss_mb(ru)}
+    r = {"ok": os.waitstatus_to_exitcode(status) == 0, "wall_ms": (time.perf_counter() - t0) * 1e3,
+         "cpu_ms": (ru.ru_utime + ru.ru_stime) * 1e3, "peak_mb": maxrss_mb(ru)}
+    if peak_fp is not None:
+        r["peak_fp_mb"] = peak_fp
+    return out, r
 
 
 def startup(build, env, cwd, cpus):
@@ -76,6 +83,8 @@ def interactive(build, env, cwd, cpus, prompts=5):
     r["wall_ms"] = (time.perf_counter() - t0) * 1e3
     r["cpu_ms"] = (ru.ru_utime + ru.ru_stime) * 1e3
     r["peak_mb"] = maxrss_mb(ru)
+    if getattr(tty, "peak_footprint_mb", None) is not None:
+        r["peak_fp_mb"] = tty.peak_footprint_mb
     return r
 
 
@@ -85,6 +94,10 @@ COLUMNS = {
     "headless": ["wall_ms", "cpu_ms", "peak_mb"],
     "interactive": ["tti_ms", "turns_ms", "wall_ms", "cpu_ms", "peak_mb"],
 }
+if MACOS:
+    # (peak_mb, ru_maxrss, counts clean file pages and freed pages the kernel may take back; the footprint does not.)
+    for columns in COLUMNS.values():
+        columns.append("peak_fp_mb")
 
 
 def summarize(rows, baseline=None):

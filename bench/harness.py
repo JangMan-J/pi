@@ -191,6 +191,26 @@ def _rusage_macos(pid: int):
     return list(buf)[2:]
 
 
+def peak_footprint_mb(pid: int, block: bool = True) -> float | None:
+    """macOS: the largest physical footprint a child had (ri_lifetime_max_phys_footprint), read once it has exited and before
+    it is reaped: its memory at the peak without the clean file pages and the freed pages the kernel may take back at will,
+    which ru_maxrss counts too. None elsewhere, or (block False) while the child still runs. Reap it after (wait4)."""
+    if not MACOS:
+        return None
+    import ctypes
+    global _libc
+    if "_libc" not in globals():
+        _libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    info = ctypes.create_string_buffer(128)  # siginfo_t: si_signo, si_errno, si_code, then si_pid
+    # waitid(P_PID, pid, &info, WEXITED | WNOWAIT [| WNOHANG])
+    if _libc.waitid(1, pid, info, 0x4 | 0x20 | (0 if block else 0x1)) != 0:
+        return None
+    if int.from_bytes(info.raw[12:16], "little") != pid:
+        return None
+    ri = _rusage_macos(pid)
+    return round(ri[28] / (1 << 20), 1) if ri else None
+
+
 class Tty:
     """A minimal terminal on a pseudo-terminal: answers the capability queries the TUI sends the way xterm does."""
 
@@ -246,6 +266,10 @@ class Tty:
         end = time.perf_counter() + timeout
         while time.perf_counter() < end:
             self.pump(0.02)
+            if MACOS:
+                self.peak_footprint_mb = peak_footprint_mb(self.pid, block=False)
+                if self.peak_footprint_mb is None:
+                    continue
             pid, status, ru = os.wait4(self.pid, os.WNOHANG)
             if pid:
                 os.close(self.fd)
