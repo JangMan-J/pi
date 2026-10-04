@@ -111,7 +111,8 @@ export type ValidatedThemeJson = Static<ThemeJsonSchemas["ThemeJsonSchema"]>;
 export function validateThemeJson(label: string, json: unknown): ValidatedThemeJson {
 	// (Value checks against the schema as it is. Compile() would generate a checker as source code first: more than checking one
 	// document costs, and on every start.)
-	const { ThemeJsonSchema } = (themeJsonSchemas ??= buildThemeJsonSchemas());
+	themeJsonSchemas ??= buildThemeJsonSchemas();
+	const { ThemeJsonSchema } = themeJsonSchemas;
 	if (!Value.Check(ThemeJsonSchema, json)) {
 		const errors = Array.from(Value.Errors(ThemeJsonSchema, json));
 		const missingColors = new Set<string>();
