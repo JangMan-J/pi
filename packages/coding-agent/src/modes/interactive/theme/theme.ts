@@ -734,7 +734,8 @@ export const liveTheme: Theme = new Proxy({} as Theme, {
 
 // The theme in use. In the module instance that sets it, this binding is the theme itself: theme.fg() and the like run on
 // every line of every frame, and through the proxy each was a trap and a lookup on globalThis. Another instance of this module
-// (one an extension loaded) never sets it, and keeps the proxy.
+// (one an extension loaded) never sets it, and keeps the proxy. It is for code that reads it each time it draws: what is handed
+// to code that may keep it (an extension's widget, footer, header or view) is liveTheme, which follows a change of theme.
 export let theme: Theme = liveTheme;
 
 function setGlobalTheme(t: Theme): void {
@@ -1041,7 +1042,7 @@ function rememberHighlightedCode(key: string, lines: string[]): void {
  * Throws what highlight() throws.
  */
 function highlightedLines(code: string, lang: string): string[] {
-	// (`theme` is a proxy: the theme in use is what it reads.)
+	// (The theme in use, whichever instance of this module set it.)
 	const themeInUse = (globalThis as Record<symbol, Theme>)[THEME_KEY];
 	if (highlightedCodeTheme !== themeInUse) {
 		highlightedCodeTheme = themeInUse;

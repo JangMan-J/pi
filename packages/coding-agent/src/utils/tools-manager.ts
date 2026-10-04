@@ -79,7 +79,6 @@ const TOOLS: Record<string, ToolConfig> = {
 	},
 };
 
-// Check if a command exists in PATH by trying to run it
 // Whether cmd is an executable file in PATH, which is what spawning it finds. Elsewhere than on Windows it is looked up rather
 // than run as `cmd --version`: Pi asks for rg and fd before its first frame, and spawning one held the start for milliseconds.
 function commandExists(cmd: string): boolean {

@@ -2383,7 +2383,7 @@ export class InteractiveMode {
 			component = container;
 		} else {
 			// Factory function - create component
-			component = content(this.ui, theme);
+			component = content(this.ui, liveTheme);
 		}
 
 		const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
@@ -2488,7 +2488,7 @@ export class InteractiveMode {
 		this.footerContainer.clear();
 		if (factory) {
 			// Create and add custom footer, passing the data provider
-			this.customFooter = factory(this.ui, theme, this.footerDataProvider);
+			this.customFooter = factory(this.ui, liveTheme, this.footerDataProvider);
 			this.footerContainer.addChild(this.customFooter);
 		} else {
 			// Restore built-in footer
@@ -2519,7 +2519,7 @@ export class InteractiveMode {
 
 		if (factory) {
 			// Create and add custom header
-			this.customHeader = factory(this.ui, theme);
+			this.customHeader = factory(this.ui, liveTheme);
 			if (isExpandable(this.customHeader)) {
 				this.customHeader.setExpanded(this.toolOutputExpanded);
 			}
@@ -2948,7 +2948,7 @@ export class InteractiveMode {
 				}
 			};
 
-			Promise.resolve(factory(this.ui, theme, this.keybindings, close))
+			Promise.resolve(factory(this.ui, liveTheme, this.keybindings, close))
 				.then((c) => {
 					if (closed) return;
 					component = c;
