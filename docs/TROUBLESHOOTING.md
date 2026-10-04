@@ -130,7 +130,8 @@ it the executable runs from bytecode, with one notice. The `-jit` build also nee
 **ASLR.** An executable with a prebuilt heap runs with address space layout randomization off for its main executable, which is
 where the Linux build is too (it is linked without it). macOS would pass that on to every process Pi starts; from 0.6.1 they are
 started by a helper with ASLR instead, through `pi-spawn` beside `pi-bin` ([ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)).
-In `ps` a program Pi started has a `pi-spawn` process beside it, which stands in for it until it exits. Programs started on a
+In `ps` a program Pi started has a `pi-spawn` process beside it, which stands in for it until it exits. That costs 1.4 ms per
+program started; `PIBOLT_SPAWN_ASLR=0` turns it off (programs then start without ASLR, as in 0.6.0, at 0.7 ms). Programs started on a
 pseudo-terminal (Bun's `terminal` option) and `pi-bin` started directly, without the `pi` launcher, are still started without
 ASLR. `BUN_AOT=0 pi-bin` runs with ASLR itself, from bytecode.
 

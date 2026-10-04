@@ -119,7 +119,7 @@ they are as above.
 starts it that way at once ([ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)). The figures are of the release builds, launcher
 included. From 0.6.1 the launcher also forks the helper that starts Pi's programs with ASLR: 0.3 ms more for `pi -p` (1%; not
 for `pi --version`, which starts nothing), and each program Pi starts takes 1.4 ms more to start and be waited for (`spawnSync`
-of `/usr/bin/true`: 2.1 ms against 0.7). None of the scenarios above starts a program. The programs' CPU time is not counted
+of `/usr/bin/true`: 2.1 ms against 0.7; `PIBOLT_SPAWN_ASLR=0` turns that off). None of the scenarios above starts a program. The programs' CPU time is not counted
 in Pi's on macOS any more (`wait4` counts a process's children; the programs are the helper's).
 
 ## Setup and method
