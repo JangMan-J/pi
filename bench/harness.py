@@ -194,7 +194,8 @@ def _rusage_macos(pid: int):
 def peak_footprint_mb(pid: int, block: bool = True) -> float | None:
     """macOS: the largest physical footprint a child had (ri_lifetime_max_phys_footprint), read once it has exited and before
     it is reaped: its memory at the peak without the clean file pages and the freed pages the kernel may take back at will,
-    which ru_maxrss counts too. None elsewhere, or (block False) while the child still runs. Reap it after (wait4)."""
+    which ru_maxrss counts too. None elsewhere, or (block False) while the child still runs, or if it is not a child to wait
+    for. Reap it after (wait4)."""
     if not MACOS:
         return None
     import ctypes
@@ -208,7 +209,8 @@ def peak_footprint_mb(pid: int, block: bool = True) -> float | None:
     if int.from_bytes(info.raw[12:16], "little") != pid:
         return None
     ri = _rusage_macos(pid)
-    return round(ri[28] / (1 << 20), 1) if ri else None
+    # (Exited, in any case: 0.0 if its figures cannot be read, so that whoever asked goes on to reap it.)
+    return round(ri[28] / (1 << 20), 1) if ri else 0.0
 
 
 class Tty:
@@ -267,9 +269,8 @@ class Tty:
         while time.perf_counter() < end:
             self.pump(0.02)
             if MACOS:
-                self.peak_footprint_mb = peak_footprint_mb(self.pid, block=False)
-                if self.peak_footprint_mb is None:
-                    continue
+                # (Before it is reaped, if it has exited. If that cannot be told, wait4 below still can.)
+                self.peak_footprint_mb = peak_footprint_mb(self.pid, block=False) or None
             pid, status, ru = os.wait4(self.pid, os.WNOHANG)
             if pid:
                 os.close(self.fd)
