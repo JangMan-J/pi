@@ -123,11 +123,13 @@ an Apple silicon Mac, the installer installs the ARM64 build, which runs nativel
 file. With the hardened runtime (`-o runtime`), add the entitlement `com.apple.security.cs.disable-library-validation`: without
 it the executable runs from bytecode, with one notice. The `-jit` build also needs `com.apple.security.cs.allow-jit` for its JIT.
 
-**ASLR.** An executable with a prebuilt heap runs with address space layout randomization off for its own code, as the Linux build
-is linked without it. The system's libraries, the heap and the stacks are randomized as usual.
+**ASLR.** An executable with a prebuilt heap runs with address space layout randomization off for its main executable, which is
+where the Linux build is too (it is linked without it). macOS passes that setting on to every process Pi starts: commands of the
+bash tool, MCP and language servers, a dev server started from Pi all run with their own executable and stack at fixed addresses
+(the system's libraries still move, once per boot, as for every process). `BUN_AOT=0 pi-bin` runs with ASLR, from bytecode.
 
 **`pi` and `pi-bin`.** In a macOS build `pi` is a small launcher, and `pi-bin` beside it the Pi-Bolt executable, which runs
-from either. `BUN_STATIC_HEAP_VERBOSE=1 pi --version` reports on `pi-bin`. Re-sign `pi-bin` (above); the launcher needs nothing.
+from either. Link `pi` (as the installer does) rather than copy it alone: it starts the `pi-bin` beside its real path. `BUN_STATIC_HEAP_VERBOSE=1 pi --version` reports on `pi-bin`. Re-sign `pi-bin` (above); the launcher needs nothing.
 
 ## Reporting a problem
 

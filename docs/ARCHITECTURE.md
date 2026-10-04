@@ -181,7 +181,9 @@ macOS loads an ARM64 executable at a different address each time, and refuses on
 executable with a static heap starts again at once, from a constructor that runs before anything else, with ASLR turned off for
 the main executable (`posix_spawn` with `POSIX_SPAWN_SETEXEC`: the same process). That costs a second load by dyld, so a macOS
 build's `pi` is a small launcher ([`scripts/lib/darwin-launcher.c`](../scripts/lib/darwin-launcher.c)) that starts the executable
-beside it, `pi-bin`, that way at once: 12% fewer instructions for `pi --version`. The system's libraries still move,
+beside it, `pi-bin`, that way at once: 12% fewer instructions for `pi --version`. macOS keeps a process's "no ASLR" for the
+processes it starts, so the commands and servers Pi starts run without it too; relocating the heap's pointers into the executable
+at launch instead would avoid that, at a cost in memory and startup time. The system's libraries still move,
 at every boot; the build checks that the heap points at none of their functions or objects. A build with `BUN_STATIC_HEAP=1`
 does the same, and makes no static heap if it cannot. If the executable is not at its address after all, it runs from bytecode.
 
