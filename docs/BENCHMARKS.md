@@ -61,8 +61,8 @@ after the last prompt, so it depends on when the garbage collector last ran. Acr
 Pi-Bolt and Bun overlap there, and Node uses two and a half to three times as much. In the long session every model turn sends
 the whole conversation, 17 MB at the end: its time per prompt is mostly that, on every runtime.
 
-The charts above are still drawn from the 0.5.2 measurements
-([`bench/results/2026-10-03-pi-bolt-0.5.2`](../bench/results/2026-10-03-pi-bolt-0.5.2)); the tables are of 0.6.1.
+The charts above are drawn from these measurements,
+[`bench/results/2026-10-04-pi-bolt-0.6.1`](../bench/results/2026-10-04-pi-bolt-0.6.1), with `bench/report.py`.
 
 **0.6.1 against earlier releases**, Pi-Bolt only, the same method (medians of 21 interleaved runs):
 
@@ -301,14 +301,14 @@ runs.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/bench-long-dark.svg">
-  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.1 / 10.0 / 8.2 s; a 60,000-character answer 3.8 / 43.7 / 43.8 s; share of a core while streaming 8 / 87 / 87%; writing a 200 KB file through a tool call 0.9 / 30.8 / 43.5 s" src="images/bench-long-light.svg">
+  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.0 / 10.4 / 8.4 s; a 60,000-character answer 3.8 / 43.1 / 43.7 s; share of a core while streaming 8 / 85 / 87%; writing a 200 KB file through a tool call 0.8 / 27.8 / 44.3 s" src="images/bench-long-light.svg">
 </picture>
 
 | | Pi-Bolt | Bun 1.4.2 | Node 22 | Node 24 |
 |---|---:|---:|---:|---:|
 | Streaming a 20,000-character answer: CPU | **1.0 s** | 10.4 s | 8.4 s | 7.6 s |
 | Streaming a 60,000-character answer: CPU | **3.8 s** | 43.1 s | 43.7 s | 40.3 s |
-| Share of a core while it streams (60,000 characters) | **8%** | 86% | 87% | 80% |
+| Share of a core while it streams (60,000 characters) | **8%** | 85% | 87% | 80% |
 | Own memory after the 60,000-character answer | **34 MB** | 168 MB | 253 MB | 243 MB |
 | Writing a 50 KB file through a tool call (`pi -p`) | **0.2 s** | 1.9 s | 2.9 s | 2.7 s |
 | Writing a 200 KB file through a tool call (`pi -p`) | **0.8 s** | 27.8 s | 44.3 s | 33.6 s |
@@ -323,8 +323,8 @@ model write a file of TypeScript through the `write` tool, its arguments streami
 and measures `pi -p` from start to exit. Means of two runs, which differed by at most 5%; pinned to 8 cores. Bun and Node run
 Pi 1.0.0 as released (`v1.0.0`): Bun built with `scripts/build-pi.sh --stable --pi <Pi 1.0.0>`, Node from Pi's npm bundle.
 `bench/pauses.py` writes the same files in the TUI and reports the longest time between two writes to the terminal: while
-it lasts nothing is drawn and no key is taken. Pi-Bolt 0.6.1; the chart is drawn from the 0.5.2 measurements,
-[`bench/results/2026-10-03-pi-bolt-0.5.2`](../bench/results/2026-10-03-pi-bolt-0.5.2), with `bench/report.py`.
+it lasts nothing is drawn and no key is taken. Pi-Bolt 0.6.1; the chart and the table are drawn from
+[`bench/results/2026-10-04-pi-bolt-0.6.1`](../bench/results/2026-10-04-pi-bolt-0.6.1), with `bench/report.py`.
 
 Both come from Pi's own code, not from the runtime. Pi draws a message again each time a few more words arrive, with a new
 component that lexes the whole Markdown text, renders and wraps every block and highlights every code block, so the cost of each

@@ -19,7 +19,7 @@
 # Pi-Bolt
 
 Pi-Bolt is the [Pi](https://github.com/earendil-works/pi) coding agent compiled ahead of time to native code. It is one
-executable, for Linux on x86-64 and macOS on Apple silicon, ready in 74 ms, using less than half the CPU of Pi on Bun, with no JIT.
+executable, for Linux on x86-64 and macOS on Apple silicon, ready in 45 ms, using less than half the CPU of Pi on Bun, with no JIT.
 
 It runs the Pi you already use: the commands, keys, sessions, settings, extensions and providers are all Pi's. What differs is
 how Pi is executed. Every function is compiled to machine code (x86-64 or ARM64) when the executable is built, and stored in it
@@ -32,12 +32,12 @@ together with a prebuilt JavaScript heap, so at launch nothing is parsed, interp
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-hero-dark.svg">
-  <img alt="Pi-Bolt vs Bun 1.4.2 vs Node 22: ready to type 74 / 125 / 299 ms; CPU per session 336 / 823 / 1,205 ms; CPU while streaming 366 / 493 / 580 ms; memory after a long session 140 / 226 / 529 MB" src="docs/images/bench-hero-light.svg">
+  <img alt="Pi-Bolt vs Bun 1.4.2 vs Node 22: ready to type 45 / 128 / 303 ms; CPU per session 303 / 844 / 1,242 ms; CPU while streaming 320 / 524 / 605 ms; memory after a long session 201 / 241 / 601 MB" src="docs/images/bench-hero-light.svg">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-long-dark.svg">
-  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.1 / 10.0 / 8.2 s; a 60,000-character answer 3.8 / 43.7 / 43.8 s; share of a core while streaming 8 / 87 / 87%; writing a 200 KB file through a tool call 0.9 / 30.8 / 43.5 s" src="docs/images/bench-long-light.svg">
+  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.0 / 10.4 / 8.4 s; a 60,000-character answer 3.8 / 43.1 / 43.7 s; share of a core while streaming 8 / 85 / 87%; writing a 200 KB file through a tool call 0.8 / 27.8 / 44.3 s" src="docs/images/bench-long-light.svg">
 </picture>
 
 ## Getting started
@@ -168,7 +168,7 @@ sessions Pi-Bolt uses about 40% of the CPU of Pi on Bun and a quarter to a half 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-long-dark.svg">
-  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.1 / 10.0 / 8.2 s; a 60,000-character answer 3.8 / 43.7 / 43.8 s; share of a core while streaming 8 / 87 / 87%; writing a 200 KB file through a tool call 0.9 / 30.8 / 43.5 s" src="docs/images/bench-long-light.svg">
+  <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.0 / 10.4 / 8.4 s; a 60,000-character answer 3.8 / 43.1 / 43.7 s; share of a core while streaming 8 / 85 / 87%; writing a 200 KB file through a tool call 0.8 / 27.8 / 44.3 s" src="docs/images/bench-long-light.svg">
 </picture>
 
 Pi renders an answer again each time a few more words arrive, and re-reads a tool call's arguments each time a few more
@@ -198,7 +198,7 @@ scripts/build-pi.sh --plugins my-plugins/plugins.ts --out out/pi-bolt-plugins
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-plugins-dark.svg">
-  <img alt="A plugin's hot loop: 50 ms compiled in, 1,105 ms loaded at run time on the JIT-off build, 38 ms on the JIT-on build, 38 ms on Bun" src="docs/images/bench-plugins-light.svg">
+  <img alt="A plugin's hot loop: 50 ms compiled in, 1,119 ms loaded at run time on the JIT-off build, 42 ms on the JIT-on build, 38 ms on Bun" src="docs/images/bench-plugins-light.svg">
 </picture>
 
 The default build has no JIT. A plugin loaded at run time is therefore interpreted, and a plugin compiled in runs as machine code.

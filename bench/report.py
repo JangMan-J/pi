@@ -19,7 +19,7 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-LABELS = {"pi-bolt": "Pi-Bolt", "bun": "Bun 1.4.2", "node": "Node 22", "pi-bolt-jit": "Pi-Bolt (JIT on)"}
+LABELS = {"pi-bolt": "Pi-Bolt", "bun": "Bun 1.4.2", "node": "Node 22", "node24": "Node 24", "pi-bolt-jit": "Pi-Bolt (JIT on)"}
 # Validated categorical slots (light, dark): blue, orange, aqua. Text colors per theme.
 SERIES = [("#2a78d6", "#3987e5"), ("#eb6834", "#d95926"), ("#1baf7a", "#199e70"), ("#4a3aa7", "#9085e9")]
 THEME = {

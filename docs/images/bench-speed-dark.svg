@@ -1,49 +1,49 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="306" viewBox="0 0 880 306" role="img" aria-label="Time: Wall-clock time, lower is better. Ratios compare Pi-Bolt with Bun. Pi 1.0.0, medians.">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="542" viewBox="0 0 880 542" role="img" aria-label="Time: Wall-clock time, lower is better. Ratios compare Pi-Bolt with Bun. Pi 1.0.0, medians.">
 <style>text{font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;font-variant-numeric:tabular-nums}</style>
 <text x="20" y="28" font-size="18" font-weight="600" fill="#ffffff">Time</text>
 <text x="20" y="50" font-size="13" fill="#c3c2b7">Wall-clock time, lower is better. Ratios compare Pi-Bolt with Bun. Pi 1.0.0, medians.</text>
 <text x="20" y="86" font-size="13" font-weight="600" fill="#ffffff">Launch to interactive (TUI)</text>
-<text x="108" y="111" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
-<path d="M116,100 h46.237796193905474 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-46.237796193905474 z" fill="#3987e5"/>
-<text x="172.23779619390547" y="111" font-size="12" fill="#ffffff">74 ms <tspan fill="#c3c2b7">1.7× faster</tspan></text>
-<text x="108" y="135" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.4.2</text>
-<path d="M116,124 h81.29134588437086 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-81.29134588437086 z" fill="#d95926"/>
-<text x="207.29134588437086" y="135" font-size="12" fill="#ffffff">125 ms</text>
-<text x="108" y="159" font-size="12" text-anchor="end" fill="#c3c2b7">Node 22</text>
-<path d="M116,148 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#199e70"/>
-<text x="326.0" y="159" font-size="12" fill="#ffffff">299 ms</text>
-<line x1="116" y1="96" x2="116" y2="166" stroke="#3a3a37"/>
-<text x="450" y="86" font-size="13" font-weight="600" fill="#ffffff">pi --version</text>
-<text x="538" y="111" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
-<path d="M546,100 h37.29322605068438 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-37.29322605068438 z" fill="#3987e5"/>
-<text x="593.2932260506843" y="111" font-size="12" fill="#ffffff">45 ms <tspan fill="#c3c2b7">1.7× faster</tspan></text>
-<text x="538" y="135" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.4.2</text>
-<path d="M546,124 h67.49583490378923 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-67.49583490378923 z" fill="#d95926"/>
-<text x="623.4958349037893" y="135" font-size="12" fill="#ffffff">78 ms</text>
-<text x="538" y="159" font-size="12" text-anchor="end" fill="#c3c2b7">Node 22</text>
-<path d="M546,148 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#199e70"/>
-<text x="756.0" y="159" font-size="12" fill="#ffffff">223 ms</text>
-<line x1="546" y1="96" x2="546" y2="166" stroke="#3a3a37"/>
-<text x="20" y="204" font-size="13" font-weight="600" fill="#ffffff">pi -p: one prompt, 4 tool calls</text>
-<text x="108" y="229" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
-<path d="M116,218 h50.42546754896631 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-50.42546754896631 z" fill="#3987e5"/>
-<text x="176.4254675489663" y="229" font-size="12" fill="#ffffff">108 ms <tspan fill="#c3c2b7">1.6× faster</tspan></text>
-<text x="108" y="253" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.4.2</text>
-<path d="M116,242 h82.60901862108275 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-82.60901862108275 z" fill="#d95926"/>
-<text x="208.60901862108275" y="253" font-size="12" fill="#ffffff">171 ms</text>
-<text x="108" y="277" font-size="12" text-anchor="end" fill="#c3c2b7">Node 22</text>
-<path d="M116,266 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#199e70"/>
-<text x="326.0" y="277" font-size="12" fill="#ffffff">403 ms</text>
-<line x1="116" y1="214" x2="116" y2="284" stroke="#3a3a37"/>
-<text x="450" y="204" font-size="13" font-weight="600" fill="#ffffff">Time per prompt, 4.2M-token session</text>
-<text x="538" y="229" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
-<path d="M546,218 h112.17714829299227 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-112.17714829299227 z" fill="#3987e5"/>
-<text x="668.1771482929922" y="229" font-size="12" fill="#ffffff">539 ms <tspan fill="#c3c2b7">1.3× faster</tspan></text>
-<text x="538" y="253" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.4.2</text>
-<path d="M546,242 h145.4476271007293 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-145.4476271007293 z" fill="#d95926"/>
-<text x="701.4476271007293" y="253" font-size="12" fill="#ffffff">693 ms</text>
-<text x="538" y="277" font-size="12" text-anchor="end" fill="#c3c2b7">Node 22</text>
-<path d="M546,266 h200.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-200.0 z" fill="#199e70"/>
-<text x="756.0" y="277" font-size="12" fill="#ffffff">946 ms</text>
-<line x1="546" y1="214" x2="546" y2="284" stroke="#3a3a37"/>
+<text x="222" y="111" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
+<path d="M230,100 h72.72496272982453 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-72.72496272982453 z" fill="#3987e5"/>
+<text x="312.72496272982454" y="111" font-size="12" fill="#ffffff">45 ms <tspan fill="#c3c2b7">2.9× faster</tspan></text>
+<text x="222" y="135" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.0.0 on stock Bun 1.4.2</text>
+<path d="M230,124 h215.52032664021314 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-215.52032664021314 z" fill="#d95926"/>
+<text x="455.52032664021317" y="135" font-size="12" fill="#ffffff">128 ms</text>
+<text x="222" y="159" font-size="12" text-anchor="end" fill="#c3c2b7">Node 22</text>
+<path d="M230,148 h516.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-516.0 z" fill="#199e70"/>
+<text x="756.0" y="159" font-size="12" fill="#ffffff">303 ms</text>
+<line x1="230" y1="96" x2="230" y2="166" stroke="#3a3a37"/>
+<text x="20" y="204" font-size="13" font-weight="600" fill="#ffffff">pi --version</text>
+<text x="222" y="229" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
+<path d="M230,218 h28.171880742065085 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-28.171880742065085 z" fill="#3987e5"/>
+<text x="268.17188074206507" y="229" font-size="12" fill="#ffffff">14 ms <tspan fill="#c3c2b7">5.8× faster</tspan></text>
+<text x="222" y="253" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.0.0 on stock Bun 1.4.2</text>
+<path d="M230,242 h183.7338537459933 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-183.7338537459933 z" fill="#d95926"/>
+<text x="423.7338537459933" y="253" font-size="12" fill="#ffffff">82 ms</text>
+<text x="222" y="277" font-size="12" text-anchor="end" fill="#c3c2b7">Node 22</text>
+<path d="M230,266 h516.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-516.0 z" fill="#199e70"/>
+<text x="756.0" y="277" font-size="12" fill="#ffffff">228 ms</text>
+<line x1="230" y1="214" x2="230" y2="284" stroke="#3a3a37"/>
+<text x="20" y="322" font-size="13" font-weight="600" fill="#ffffff">pi -p: one prompt, 4 tool calls</text>
+<text x="222" y="347" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
+<path d="M230,336 h97.1440966974474 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-97.1440966974474 z" fill="#3987e5"/>
+<text x="337.14409669744737" y="347" font-size="12" fill="#ffffff">79 ms <tspan fill="#c3c2b7">2.2× faster</tspan></text>
+<text x="222" y="371" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.0.0 on stock Bun 1.4.2</text>
+<path d="M230,360 h217.40401454088686 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-217.40401454088686 z" fill="#d95926"/>
+<text x="457.40401454088686" y="371" font-size="12" fill="#ffffff">172 ms</text>
+<text x="222" y="395" font-size="12" text-anchor="end" fill="#c3c2b7">Node 22</text>
+<path d="M230,384 h516.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-516.0 z" fill="#199e70"/>
+<text x="756.0" y="395" font-size="12" fill="#ffffff">404 ms</text>
+<line x1="230" y1="332" x2="230" y2="402" stroke="#3a3a37"/>
+<text x="20" y="440" font-size="13" font-weight="600" fill="#ffffff">Time per prompt, 4.2M-token session</text>
+<text x="222" y="465" font-size="12" text-anchor="end" fill="#c3c2b7">Pi-Bolt</text>
+<path d="M230,454 h298.6326699834163 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-298.6326699834163 z" fill="#3987e5"/>
+<text x="538.6326699834162" y="465" font-size="12" fill="#ffffff">562 ms <tspan fill="#c3c2b7">1.3× faster</tspan></text>
+<text x="222" y="489" font-size="12" text-anchor="end" fill="#c3c2b7">Bun 1.0.0 on stock Bun 1.4.2</text>
+<path d="M230,478 h375.7056384742952 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-375.7056384742952 z" fill="#d95926"/>
+<text x="615.7056384742953" y="489" font-size="12" fill="#ffffff">704 ms</text>
+<text x="222" y="513" font-size="12" text-anchor="end" fill="#c3c2b7">Node 22</text>
+<path d="M230,502 h516.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-516.0 z" fill="#199e70"/>
+<text x="756.0" y="513" font-size="12" fill="#ffffff">965 ms</text>
+<line x1="230" y1="450" x2="230" y2="520" stroke="#3a3a37"/>
 </svg>

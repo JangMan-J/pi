@@ -2,66 +2,66 @@
 <style>text{font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;font-variant-numeric:tabular-nums}</style>
 <rect x="20.0" y="12" width="198.0" height="224" rx="10" fill="#161b22" stroke="#30363d"/>
 <text x="36.0" y="42" font-size="13" font-weight="600" fill="#c3c2b7">Ready to type</text>
-<text x="36.0" y="84" font-size="34" font-weight="700" fill="#3987e5">74<tspan font-size="18" font-weight="600" dx="4">ms</tspan></text>
-<text x="36.0" y="108" font-size="12.5" font-weight="600" fill="#ffffff">1.7× faster than Bun</text>
+<text x="36.0" y="84" font-size="34" font-weight="700" fill="#3987e5">45<tspan font-size="18" font-weight="600" dx="4">ms</tspan></text>
+<text x="36.0" y="108" font-size="12.5" font-weight="600" fill="#ffffff">2.9× faster than Bun</text>
 <text x="36.0" y="138" font-size="11.5" fill="#c3c2b7">Pi-Bolt</text>
-<text x="202.0" y="138" font-size="11.5" text-anchor="end" fill="#ffffff">74 ms</text>
+<text x="202.0" y="138" font-size="11.5" text-anchor="end" fill="#ffffff">45 ms</text>
 <rect x="36.0" y="144" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
-<rect x="36.0" y="144" width="40.9" height="8" rx="4" fill="#3987e5"/>
+<rect x="36.0" y="144" width="24.5" height="8" rx="4" fill="#3987e5"/>
 <text x="36.0" y="172" font-size="11.5" fill="#c3c2b7">Bun</text>
-<text x="202.0" y="172" font-size="11.5" text-anchor="end" fill="#ffffff">125 ms</text>
+<text x="202.0" y="172" font-size="11.5" text-anchor="end" fill="#ffffff">128 ms</text>
 <rect x="36.0" y="178" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
-<rect x="36.0" y="178" width="69.4" height="8" rx="4" fill="#d95926"/>
+<rect x="36.0" y="178" width="70.1" height="8" rx="4" fill="#d95926"/>
 <text x="36.0" y="206" font-size="11.5" fill="#c3c2b7">Node</text>
-<text x="202.0" y="206" font-size="11.5" text-anchor="end" fill="#ffffff">299 ms</text>
+<text x="202.0" y="206" font-size="11.5" text-anchor="end" fill="#ffffff">303 ms</text>
 <rect x="36.0" y="212" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
 <rect x="36.0" y="212" width="166.0" height="8" rx="4" fill="#199e70"/>
 <rect x="234.0" y="12" width="198.0" height="224" rx="10" fill="#161b22" stroke="#30363d"/>
 <text x="250.0" y="42" font-size="13" font-weight="600" fill="#c3c2b7">CPU per session</text>
-<text x="250.0" y="84" font-size="34" font-weight="700" fill="#3987e5">336<tspan font-size="18" font-weight="600" dx="4">ms</tspan></text>
-<text x="250.0" y="108" font-size="12.5" font-weight="600" fill="#ffffff">2.5× less than Bun</text>
+<text x="250.0" y="84" font-size="34" font-weight="700" fill="#3987e5">303<tspan font-size="18" font-weight="600" dx="4">ms</tspan></text>
+<text x="250.0" y="108" font-size="12.5" font-weight="600" fill="#ffffff">2.8× less than Bun</text>
 <text x="250.0" y="138" font-size="11.5" fill="#c3c2b7">Pi-Bolt</text>
-<text x="416.0" y="138" font-size="11.5" text-anchor="end" fill="#ffffff">336 ms</text>
+<text x="416.0" y="138" font-size="11.5" text-anchor="end" fill="#ffffff">303 ms</text>
 <rect x="250.0" y="144" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
-<rect x="250.0" y="144" width="46.2" height="8" rx="4" fill="#3987e5"/>
+<rect x="250.0" y="144" width="40.5" height="8" rx="4" fill="#3987e5"/>
 <text x="250.0" y="172" font-size="11.5" fill="#c3c2b7">Bun</text>
-<text x="416.0" y="172" font-size="11.5" text-anchor="end" fill="#ffffff">823 ms</text>
+<text x="416.0" y="172" font-size="11.5" text-anchor="end" fill="#ffffff">844 ms</text>
 <rect x="250.0" y="178" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
-<rect x="250.0" y="178" width="113.3" height="8" rx="4" fill="#d95926"/>
+<rect x="250.0" y="178" width="112.8" height="8" rx="4" fill="#d95926"/>
 <text x="250.0" y="206" font-size="11.5" fill="#c3c2b7">Node</text>
-<text x="416.0" y="206" font-size="11.5" text-anchor="end" fill="#ffffff">1,205 ms</text>
+<text x="416.0" y="206" font-size="11.5" text-anchor="end" fill="#ffffff">1,242 ms</text>
 <rect x="250.0" y="212" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
 <rect x="250.0" y="212" width="166.0" height="8" rx="4" fill="#199e70"/>
 <rect x="448.0" y="12" width="198.0" height="224" rx="10" fill="#161b22" stroke="#30363d"/>
 <text x="464.0" y="42" font-size="13" font-weight="600" fill="#c3c2b7">CPU while streaming</text>
-<text x="464.0" y="84" font-size="34" font-weight="700" fill="#3987e5">366<tspan font-size="18" font-weight="600" dx="4">ms</tspan></text>
-<text x="464.0" y="108" font-size="12.5" font-weight="600" fill="#ffffff">1.3× less than Bun</text>
+<text x="464.0" y="84" font-size="34" font-weight="700" fill="#3987e5">320<tspan font-size="18" font-weight="600" dx="4">ms</tspan></text>
+<text x="464.0" y="108" font-size="12.5" font-weight="600" fill="#ffffff">1.6× less than Bun</text>
 <text x="464.0" y="138" font-size="11.5" fill="#c3c2b7">Pi-Bolt</text>
-<text x="630.0" y="138" font-size="11.5" text-anchor="end" fill="#ffffff">366 ms</text>
+<text x="630.0" y="138" font-size="11.5" text-anchor="end" fill="#ffffff">320 ms</text>
 <rect x="464.0" y="144" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
-<rect x="464.0" y="144" width="104.7" height="8" rx="4" fill="#3987e5"/>
+<rect x="464.0" y="144" width="87.9" height="8" rx="4" fill="#3987e5"/>
 <text x="464.0" y="172" font-size="11.5" fill="#c3c2b7">Bun</text>
-<text x="630.0" y="172" font-size="11.5" text-anchor="end" fill="#ffffff">493 ms</text>
+<text x="630.0" y="172" font-size="11.5" text-anchor="end" fill="#ffffff">524 ms</text>
 <rect x="464.0" y="178" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
-<rect x="464.0" y="178" width="141.0" height="8" rx="4" fill="#d95926"/>
+<rect x="464.0" y="178" width="143.8" height="8" rx="4" fill="#d95926"/>
 <text x="464.0" y="206" font-size="11.5" fill="#c3c2b7">Node</text>
-<text x="630.0" y="206" font-size="11.5" text-anchor="end" fill="#ffffff">580 ms</text>
+<text x="630.0" y="206" font-size="11.5" text-anchor="end" fill="#ffffff">605 ms</text>
 <rect x="464.0" y="212" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
 <rect x="464.0" y="212" width="166.0" height="8" rx="4" fill="#199e70"/>
 <rect x="662.0" y="12" width="198.0" height="224" rx="10" fill="#161b22" stroke="#30363d"/>
 <text x="678.0" y="42" font-size="13" font-weight="600" fill="#c3c2b7">Memory, long session</text>
-<text x="678.0" y="84" font-size="34" font-weight="700" fill="#3987e5">140<tspan font-size="18" font-weight="600" dx="4">MB</tspan></text>
-<text x="678.0" y="108" font-size="12.5" font-weight="600" fill="#ffffff">1.6× less than Bun</text>
+<text x="678.0" y="84" font-size="34" font-weight="700" fill="#3987e5">201<tspan font-size="18" font-weight="600" dx="4">MB</tspan></text>
+<text x="678.0" y="108" font-size="12.5" font-weight="600" fill="#ffffff">1.2× less than Bun</text>
 <text x="678.0" y="138" font-size="11.5" fill="#c3c2b7">Pi-Bolt</text>
-<text x="844.0" y="138" font-size="11.5" text-anchor="end" fill="#ffffff">140 MB</text>
+<text x="844.0" y="138" font-size="11.5" text-anchor="end" fill="#ffffff">201 MB</text>
 <rect x="678.0" y="144" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
-<rect x="678.0" y="144" width="44.0" height="8" rx="4" fill="#3987e5"/>
+<rect x="678.0" y="144" width="55.5" height="8" rx="4" fill="#3987e5"/>
 <text x="678.0" y="172" font-size="11.5" fill="#c3c2b7">Bun</text>
-<text x="844.0" y="172" font-size="11.5" text-anchor="end" fill="#ffffff">226 MB</text>
+<text x="844.0" y="172" font-size="11.5" text-anchor="end" fill="#ffffff">241 MB</text>
 <rect x="678.0" y="178" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
-<rect x="678.0" y="178" width="71.1" height="8" rx="4" fill="#d95926"/>
+<rect x="678.0" y="178" width="66.7" height="8" rx="4" fill="#d95926"/>
 <text x="678.0" y="206" font-size="11.5" fill="#c3c2b7">Node</text>
-<text x="844.0" y="206" font-size="11.5" text-anchor="end" fill="#ffffff">529 MB</text>
+<text x="844.0" y="206" font-size="11.5" text-anchor="end" fill="#ffffff">601 MB</text>
 <rect x="678.0" y="212" width="166.0" height="8" rx="4" fill="#30363d" opacity="0.5"/>
 <rect x="678.0" y="212" width="166.0" height="8" rx="4" fill="#199e70"/>
 </svg>
