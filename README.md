@@ -40,6 +40,9 @@ together with a prebuilt JavaScript heap, so at launch nothing is parsed, interp
   <img alt="Long answers and large files, Pi-Bolt vs Bun 1.4.2 vs Node 22: CPU streaming a 20,000-character answer 1.0 / 10.4 / 8.4 s; a 60,000-character answer 3.8 / 43.1 / 43.7 s; share of a core while streaming 8 / 85 / 87%; writing a 200 KB file through a tool call 0.8 / 27.8 / 44.3 s" src="docs/images/bench-long-light.svg">
 </picture>
 
+<sub>Pi 1.0.0 on Linux x86-64, compiled by Pi-Bolt, against the same release on stock Bun 1.4.2 and on Node 22. Medians of
+interleaved runs; lower is better. macOS figures and the method are under [Benchmarks](#benchmarks).</sub>
+
 ## Getting started
 
 Install the latest release:
@@ -131,38 +134,56 @@ pi-bolt install npm:opensec-pi-todo
 
 ## Benchmarks
 
+The same Pi 1.0.0 run three ways: compiled by Pi-Bolt, as released on stock Bun 1.4.2, and from its npm package on Node. Every
+figure is a median of fresh processes, interleaved across the runtimes; lower is better everywhere.
+
+**Linux x86-64** (AMD EPYC 7B13)
+
+| | Pi-Bolt | Pi on Bun 1.4.2 | Pi on Node 22 |
+|---|---:|---:|---:|
+| Ready to type | **45 ms** | 128 ms | 303 ms |
+| `pi --version` | **14 ms** | 82 ms | 228 ms |
+| One prompt (`pi -p`), CPU | **81 ms** | 329 ms | 572 ms |
+| Interactive session, CPU | **303 ms** | 844 ms | 1,242 ms |
+| Streaming a 60,000-character answer, CPU | **3.8 s** | 43.1 s | 43.7 s |
+| Writing a 200 KB file through a tool call | **0.8 s** | 27.8 s | 44.3 s |
+| Memory of a session in tmux | **27 MB** | 89 MB | 132 MB |
+| A tool turn with a real model, CPU | **0.20 s** | 0.49 s | 0.77 s |
+
+**macOS on Apple silicon** (M5 MacBook Air)
+
+| | Pi-Bolt | Pi on Bun 1.4.2 | Pi on Node 26 |
+|---|---:|---:|---:|
+| Ready to type | **31 ms** | 63 ms | 193 ms |
+| `pi --version` | **12 ms** | 33 ms | 157 ms |
+| One prompt (`pi -p`), CPU | **32 ms** | 138 ms | 290 ms |
+| Interactive session, CPU | **126 ms** | 363 ms | 544 ms |
+| Streaming a 60,000-character answer, CPU | **6.9 s** | 25.3 s | 24.0 s |
+| Writing a 200 KB file through a tool call | **0.3 s** | 12.0 s | 14.2 s |
+| Memory after a 4.2M-token session | **64 MB** | 95 MB | 1,890 MB |
+| Five prompts with a real model, CPU | **4.3–5.6 s** | 8.9–11.5 s | 8.0–10.1 s |
+
+With a real model the user waits the same on every runtime, because the model sets the pace; Pi-Bolt does the waiting with less
+than half the CPU. Most rows run against a local model server that streams a scripted conversation, so they measure Pi and its
+runtime, not the network or a model. The last row of each table uses a hosted model over the internet
+([With a real model](docs/BENCHMARKS.md#with-a-real-model)). Bun runs Pi 1.0.0 as released, built with Pi's own
+`bun build --compile` plus `--bytecode`; Node runs Pi's npm package. [macOS on Apple silicon](docs/BENCHMARKS.md#macos-on-apple-silicon)
+has the Mac's charts and caveats.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-speed-dark.svg">
-  <img alt="Time: launch to interactive, pi --version, one prompt, and time per prompt in a long session, for Pi-Bolt, Bun and Node" src="docs/images/bench-speed-light.svg">
+  <img alt="Time on Linux, Pi-Bolt vs Bun 1.4.2 vs Node 22: ready to type 45 / 128 / 303 ms; pi --version 14 / 82 / 228 ms; one prompt 79 / 172 / 404 ms; time per prompt in a 4.2M-token session 562 / 704 / 965 ms" src="docs/images/bench-speed-light.svg">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-cpu-dark.svg">
-  <img alt="CPU time of an interactive session, one prompt, pi --version, and per prompt in a long session" src="docs/images/bench-cpu-light.svg">
+  <img alt="CPU time on Linux, Pi-Bolt vs Bun 1.4.2 vs Node 22: interactive session 303 / 844 / 1,242 ms; one prompt 81 / 329 / 572 ms; pi --version 15 / 145 / 287 ms; per prompt in a 4.2M-token session 301 / 507 / 823 ms" src="docs/images/bench-cpu-light.svg">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-memory-dark.svg">
-  <img alt="Peak memory, own memory in tmux and after a long session, and CPU while replies stream" src="docs/images/bench-memory-light.svg">
+  <img alt="Memory and streaming on Linux, Pi-Bolt vs Bun 1.4.2 vs Node 22: peak memory 147 / 204 / 214 MB; own memory in tmux 27 / 89 / 132 MB; own memory after a 4.2M-token session 201 / 241 / 601 MB; CPU while replies stream 320 / 524 / 605 ms" src="docs/images/bench-memory-light.svg">
 </picture>
-
-These are Pi 1.0.0 on an AMD EPYC 7B13, pinned to 8 cores. Each scenario runs fresh processes, interleaved across runtimes,
-against a local model server that streams a scripted conversation. The figures therefore measure Pi and its runtime, not the
-network or a model. Bun 1.4.2 runs Pi 1.0.0 as released, built with Pi's own `bun build --compile` command plus `--bytecode`,
-which makes stock Bun faster. Node 22 runs Pi's npm package. Pi-Bolt is its own tree: Pi 1.0.0 with Pi-Bolt's changes to how the
-terminal is drawn.
-
-On a Mac with Apple silicon (an M5 MacBook Air), against the same Pi 1.0.0 on Bun 1.4.2:
-- ready to type in 31 ms instead of 63;
-- `pi -p` with a quarter of the CPU: 32 ms instead of 138;
-- less than half the CPU per prompt in a long session: 70 ms instead of 158;
-- two thirds of the memory: 64 MB instead of 95. Node takes 1.9 GB.
-
-See [macOS on Apple silicon](docs/BENCHMARKS.md#macos-on-apple-silicon).
-
-With a hosted model over the internet, the user waits the same on every runtime, because the model sets the pace. In those
-sessions Pi-Bolt uses about 40% of the CPU of Pi on Bun and a quarter to a half of Node's, with a third of Bun's memory. See
-[With a real model](docs/BENCHMARKS.md#with-a-real-model).
 
 ### Long answers and large files
 
