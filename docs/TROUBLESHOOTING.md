@@ -59,7 +59,7 @@ These are read by the executable at run time.
 
 Pi's own variables (`PI_CODING_AGENT_DIR`, `PI_OFFLINE`, ...) work as documented by Pi.
 
-A `.env` file in the working directory is not read (from 0.5.2). Pi's own Bun binary loads one into its environment, as Bun does for
+A `.env` file in the working directory is not read (from 0.6.0). Pi's own Bun binary loads one into its environment, as Bun does for
 any program; Pi on Node does not, and a project's `.env` (its API keys, its proxy settings) is the project's, not Pi's. Set what
 Pi should see in the shell that starts it.
 
