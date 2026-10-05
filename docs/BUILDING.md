@@ -50,8 +50,8 @@ scripts/build-runtime.sh            # release build with LTO -> .work/runtime/bu
 
 `fetch-sources.sh` reads [`sources.json`](../sources.json):
 
-- the upstream repositories and commits: WebKit from the `claude/sound-types-aot` branch of
-  [oven-sh/WebKit#743](https://github.com/oven-sh/WebKit/pull/743), and Bun from `main`;
+- the upstream repositories and commits: WebKit from [oven-sh/WebKit#743](https://github.com/oven-sh/WebKit/pull/743), and Bun
+  from `main`;
 - Pi-Bolt's changes to each, one patch apiece: [`patches/webkit.patch`](../patches/webkit.patch) and
   [`patches/bun.patch`](../patches/bun.patch), applied with `git am`.
 

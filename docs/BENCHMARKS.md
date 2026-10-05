@@ -234,6 +234,8 @@ The user waits the same on every runtime: the model sets the pace. Pi-Bolt does 
 - 40–50% of the CPU of Pi on Bun and a quarter to a half of Node's;
 - a third of Bun's memory, and less than a quarter of Node's.
 
+The measurements are in [`bench/results/2026-10-04-darwin-arm64-0.6.1-real-model`](../bench/results/2026-10-04-darwin-arm64-0.6.1-real-model).
+
 ## Setup and method
 
 | | |
