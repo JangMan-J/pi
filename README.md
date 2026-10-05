@@ -236,7 +236,7 @@ see [earendil-works/pi](https://github.com/earendil-works/pi).
 | [Benchmarks](docs/BENCHMARKS.md) | Method, results, raw data, and questions |
 | [Plugins](docs/PLUGINS.md) | Porting Pi extensions, compatibility, writing them for AOT |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Diagnostics, environment variables, known limitations |
-| [Releasing](docs/RELEASING.md) | The release pipeline, the self-hosted runner, signing, following Pi's releases |
+| [Releasing](docs/RELEASING.md) | CI, the release and publish workflows, signing, following Pi's releases |
 
 ## Development
 

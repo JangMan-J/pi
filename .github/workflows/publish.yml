@@ -1,0 +1,115 @@
+name: publish
+
+# Publishes a release the release workflow drafted and the maintainer signed: checks SHA256SUMS.sig against keys/release.pub and
+# every archive against SHA256SUMS, publishes the GitHub release as the latest, puts install.sh and the site on gh-pages
+# (https://pi-bolt.opensec.in), and publishes the npm packages.
+#
+# npm: with trusted publishing (npm's OpenID Connect link to this workflow, no token stored here). Set it up once for each of
+# pi-bolt, pi-bolt-linux-x64, pi-bolt-linux-x64-baseline, pi-bolt-linux-x64-jit, pi-bolt-darwin-arm64 and
+# pi-bolt-darwin-arm64-jit (docs/RELEASING.md), then set the repository variable NPM_TRUSTED_PUBLISHING to true. Until then the
+# npm job is skipped and the packages are published from the maintainer's machine.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The signed draft to publish (bolt-vX.Y.Z)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag }}
+
+jobs:
+  verify:
+    name: Signature and checksums
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: The tag
+        run: |
+          printf '%s' "$TAG" | grep -Eq '^bolt-v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "not a release tag: $TAG"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - id: version
+        run: echo "version=${TAG#bolt-v}" >> "$GITHUB_OUTPUT"
+      - name: Download the draft
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Check
+        working-directory: release
+        run: |
+          test -f SHA256SUMS.sig || { echo "::error::$TAG has no SHA256SUMS.sig: sign it first (scripts/sign-release.sh)"; exit 1; }
+          openssl version
+          openssl pkeyutl -verify -pubin -inkey ../keys/release.pub -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+          sha256sum -c SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 12
+
+  release:
+    name: GitHub release and site
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+      - name: Publish the release
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: install.sh and the site
+        run: |
+          git config user.name "OpenSec"
+          git config user.email "323596076+opensec-intelligence@users.noreply.github.com"
+          scripts/publish-installer.sh origin
+      - name: The installer serves it
+        run: |
+          for _ in $(seq 30); do
+            curl -fsSL "https://pi-bolt.opensec.in/install.sh?$(date +%s)" | cmp -s - install.sh && exit 0
+            sleep 10
+          done
+          echo "::warning::pi-bolt.opensec.in does not serve this install.sh yet"
+
+  npm:
+    name: npm
+    needs: [verify, release]
+    if: vars.NPM_TRUSTED_PUBLISHING == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Download the release
+        run: |
+          mkdir -p "dist/$VERSION"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "dist/$VERSION" --pattern '*.tar.xz' --pattern SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: The builds (pi-bolt-PLATFORM-VARIANT)
+        run: scripts/publish-npm-builds.sh "dist/$VERSION" -- --provenance
+      - name: The pi-bolt package
+        working-directory: npm
+        run: npm publish --access public --provenance
