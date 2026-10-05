@@ -64,9 +64,8 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      # ripgrep for the grep tool's tests. Not fd: two of Pi's tests expect it to be missing, so that its download is tried.
-      - name: ripgrep
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      - name: ripgrep and fd, which the grep and find tools use
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep fd-find && sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
       - name: Dependencies and build
         run: |
           npm ci --no-audit --no-fund
