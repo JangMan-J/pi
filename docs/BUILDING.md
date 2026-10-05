@@ -52,7 +52,8 @@ scripts/build-runtime.sh            # release build with LTO -> .work/runtime/bu
 
 - the upstream repositories and commits: WebKit from the `claude/sound-types-aot` branch of
   [oven-sh/WebKit#743](https://github.com/oven-sh/WebKit/pull/743), and Bun from `main`;
-- the patch series in [`patches/`](../patches), applied with `git am`.
+- Pi-Bolt's changes to each, one patch apiece: [`patches/webkit.patch`](../patches/webkit.patch) and
+  [`patches/bun.patch`](../patches/bun.patch), applied with `git am`.
 
 The sysroot is what makes the executables portable. Linked against it, they need only glibc 2.17, and they carry their own
 ICU, like official Bun builds.
@@ -73,12 +74,13 @@ scripts/build-runtime.sh            # -> .work/runtime/bun (ThinLTO, as released
 
 ### Working on the engine
 
-The checkouts in `.work/webkit` and `.work/bun` are ordinary git repositories. The patches are their commits on top of the
-pinned upstream commits. After changing the engine, rebuild with `scripts/build-runtime.sh`, then regenerate the patches:
+The checkouts in `.work/webkit` and `.work/bun` are ordinary git repositories, each with Pi-Bolt's changes as one commit on top
+of the pinned upstream commit. Make a change part of that commit (`git commit --amend`), rebuild with `scripts/build-runtime.sh`,
+then regenerate the patch:
 
 ```bash
-git -C .work/webkit format-patch -o "$PWD/patches/webkit" <pinned-commit>..HEAD
-git -C .work/bun format-patch -o "$PWD/patches/bun" <pinned-commit>..HEAD
+git -C .work/webkit format-patch --no-numbered --zero-commit --stdout <pinned-commit>..HEAD > patches/webkit.patch
+git -C .work/bun format-patch --no-numbered --zero-commit --stdout <pinned-commit>..HEAD > patches/bun.patch
 ```
 
 ## Building Pi

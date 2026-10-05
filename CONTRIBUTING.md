@@ -16,8 +16,8 @@ also happens with `BUN_AOT=0`, and with stock Pi.
 | Area | Where | Check with |
 |---|---|---|
 | Build scripts, tools, docs | `scripts/`, `bench/`, `docs/` | `shellcheck -x scripts/*.sh`, and a build |
-| The engine (JavaScriptCore AOT compiler, runtime) | `.work/webkit`, then regenerate `patches/webkit/` | `tests/aot/run.sh`, `bench/e2e_tools.py`, `bench/ui_check.py` |
-| The executable format | `.work/bun`, then regenerate `patches/bun/` | the same |
+| The engine (JavaScriptCore AOT compiler, runtime) | `.work/webkit`, then regenerate `patches/webkit.patch` | `tests/aot/run.sh`, `bench/e2e_tools.py`, `bench/ui_check.py` |
+| The executable format | `.work/bun`, then regenerate `patches/bun.patch` | the same |
 | A new Pi version | `sources.json`, `scripts/train-profile.sh` | all of the above, and `bench/benchmark.py` against stock Bun |
 
 [docs/BUILDING.md](docs/BUILDING.md) describes the setup and how to regenerate the patches.

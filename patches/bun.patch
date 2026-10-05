@@ -1,0 +1,3173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenSec <contactus@opensec.in>
+Date: Mon, 5 Oct 2026 19:25:52 +0530
+Subject: [PATCH] Pi-Bolt: ahead-of-time compiled executables
+
+Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
+
+- Executables with a prebuilt heap and a code image, made by `bun build --compile` and mapped from the
+  executable when it starts (bundler, StandaloneModuleGraph, ZigSourceProvider).
+- Builtin modules imported in the order Node evaluates them; the names of a builtin module required in
+  a wrapper read once, ahead of the wrapper's dependencies.
+- Stack traces and crash reports of ahead-of-time code: no CodeBlocks made to read a frame, crash
+  reports not uploaded unasked. The default Error.prepareStackTrace takes any object.
+- Memory: garbage collection markers for the prebuilt heap, the allocator's idle sweep every 250 ms,
+  static strings not reference counted from Rust; on macOS a starting heap budget that fits the
+  prebuilt heap, and a collection every 5 seconds while the program waits.
+- fetch: an idle connection waits in the keep-alive pool for 4 seconds, or as long as the server says.
+- macOS: the prebuilt heap and code image mapped from the __BUN section, with the executable where it
+  was linked to be; SharedArrayBuffer with the JIT off; a terminal reopened by its own device, which
+  kqueue can watch; the programs an executable starts are started by Pi-Bolt's launcher helper.
+---
+ scripts/build/deps/webkit.ts                  |  18 +
+ src/ast/import_record.rs                      |   4 +
+ src/bun_alloc/lib.rs                          |  14 +-
+ src/bun_core/env_var.rs                       |   1 +
+ src/bundler/LinkerContext.rs                  |  38 ++
+ src/bundler/bundle_v2.rs                      |  22 +
+ .../linker_context/convertStmtsForChunk.rs    |  68 +++
+ .../generateChunksInParallel.rs               |  21 +
+ .../linker_context/scanImportsAndExports.rs   |  21 +
+ src/bundler/prelinked_module_graph.rs         |  14 +-
+ src/crash_handler/lib.rs                      |  41 +-
+ src/http/HTTPContext.rs                       |  39 +-
+ src/http/HTTPThread.rs                        |  11 +
+ src/http/HeaderValueIterator.rs               |  20 +
+ src/http/InternalState.rs                     |   4 +
+ src/http/lib.rs                               |  39 +-
+ src/jsc/CachedBytecode.rs                     |  31 ++
+ src/jsc/GarbageCollectionController.rs        |  26 +-
+ src/jsc/JSType.rs                             | 144 +++---
+ src/jsc/VirtualMachine.rs                     |  18 +-
+ src/jsc/bindings/BunClientData.cpp            |   8 +-
+ src/jsc/bindings/BunClientData.h              |   2 +-
+ src/jsc/bindings/ErrorStackTrace.cpp          |  73 ++-
+ src/jsc/bindings/FormatStackTraceForJS.cpp    |  27 +-
+ src/jsc/bindings/InternalModuleRegistry.cpp   |  15 +-
+ src/jsc/bindings/ZigException.cpp             |  14 +-
+ src/jsc/bindings/ZigGlobalObject.cpp          |  45 ++
+ src/jsc/bindings/ZigSourceProvider.cpp        | 435 +++++++++++++++++-
+ src/jsc/bindings/c-bindings.cpp               | 113 +++++
+ src/jsc/web_worker.rs                         |   4 +
+ src/runtime/api/bun/subprocess.rs             |   2 +-
+ src/runtime/cli/run_command.rs                |   5 +
+ src/spawn/process.rs                          |  23 +-
+ src/spawn_sys/posix_spawn.rs                  | 173 ++++++-
+ src/spawn_sys/spawn_process.rs                |  14 +-
+ src/standalone_graph/StandaloneModuleGraph.rs | 215 ++++++++-
+ 36 files changed, 1618 insertions(+), 144 deletions(-)
+
+diff --git a/scripts/build/deps/webkit.ts b/scripts/build/deps/webkit.ts
+index bba31a2c..17a71224 100644
+--- a/scripts/build/deps/webkit.ts
++++ b/scripts/build/deps/webkit.ts
+@@ -275,6 +275,12 @@ export const webkit: Dependency = {
+     if (cfg.freebsd && cfg.crossTarget !== undefined) {
+       optFlags.push(`--target=${cfg.crossTarget}`, `--sysroot=${cfg.sysroot!}`);
+     }
++    // Linux glibc/musl against a sysroot (LINUX_GLIBC_SYSROOT, e.g. linux-aarch64 from an x86-64 host): the same for a
++    // local WebKit, whose ICU then comes from the sysroot.
++    const linuxCross = cfg.linux && cfg.abi !== "android" && cfg.crossTarget !== undefined && cfg.sysroot !== undefined;
++    if (linuxCross) {
++      optFlags.push(`--target=${cfg.crossTarget}`, `--sysroot=${cfg.sysroot!}`);
++    }
+     const optFlagStr = optFlags.join(" ");
+     let cxxOptFlagStr = optFlagStr;
+     if (cfg.abi === "android") {
+@@ -308,6 +314,18 @@ export const webkit: Dependency = {
+             CMAKE_FIND_ROOT_PATH_MODE_INCLUDE: "BOTH",
+           }
+         : {}),
++      ...(linuxCross
++        ? {
++            CMAKE_SYSTEM_NAME: "Linux",
++            CMAKE_SYSTEM_PROCESSOR: cfg.arm64 ? "aarch64" : "x86_64",
++            CMAKE_SYSROOT: cfg.sysroot!,
++            CMAKE_FIND_ROOT_PATH: cfg.sysroot!,
++            CMAKE_FIND_ROOT_PATH_MODE_PROGRAM: "NEVER",
++            CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: "ONLY",
++            CMAKE_FIND_ROOT_PATH_MODE_LIBRARY: "ONLY",
++            CMAKE_FIND_ROOT_PATH_MODE_INCLUDE: "ONLY",
++          }
++        : {}),
+       ...(cfg.freebsd && cfg.crossTarget !== undefined
+         ? {
+             CMAKE_SYSTEM_NAME: "FreeBSD",
+diff --git a/src/ast/import_record.rs b/src/ast/import_record.rs
+index 6e582f84..c41f7e5a 100644
+--- a/src/ast/import_record.rs
++++ b/src/ast/import_record.rs
+@@ -113,6 +113,10 @@ bitflags::bitflags! {
+         /// `IS_UNUSED` for its own reasons (an unused TypeScript import, a macro
+         /// import), and those records must never be resolved.
+         const IS_BARREL_DEFERRED = 1 << 19;
++        /// An `import` statement of a builtin module in a module that is evaluated later (wrapped as ESM), in an
++        /// executable compiled ahead of time: the linker requires the module where the importer is evaluated instead of
++        /// importing it before the program starts (`LinkerContext::requires_builtin_in_wrapper`).
++        const REQUIRED_IN_WRAPPER = 1 << 20;
+     }
+ }
+ 
+diff --git a/src/bun_alloc/lib.rs b/src/bun_alloc/lib.rs
+index 7888ef35..3d4f4e61 100644
+--- a/src/bun_alloc/lib.rs
++++ b/src/bun_alloc/lib.rs
+@@ -759,6 +759,11 @@ impl WTFStringImplStruct {
+     /// `m_refCount.fetch_add(s_refCountIncrement, std::memory_order_relaxed)`.
+     #[inline]
+     pub fn r#ref(&self) {
++        // As WTF's (patched): counting the references to what is never destroyed would only make a page that is a file's
++        // the process's (a static heap's strings are static).
++        if self.ref_count_atomic().load(Ordering::Relaxed) & Self::S_REF_COUNT_FLAG_IS_STATIC_STRING != 0 {
++            return;
++        }
+         let old = self
+             .ref_count_atomic()
+             .fetch_add(Self::S_REF_COUNT_INCREMENT, Ordering::Relaxed);
+@@ -774,12 +779,13 @@ impl WTFStringImplStruct {
+     ///
+     /// Hot path is a single `lock xadd`; only the last-ref branch crosses FFI
+     /// to `StringImpl::destroy`. `Relaxed` matches WebKit's
+-    /// `m_refCount.fetch_sub(s_refCountIncrement, std::memory_order_relaxed)`;
+-    /// WTF relies on the static-string flag bit (0x1) to keep static strings'
+-    /// counters from ever equalling `s_refCountIncrement`, so no separate
+-    /// `isStatic()` check is needed.
++    /// `m_refCount.fetch_sub(s_refCountIncrement, std::memory_order_relaxed)`.
++    /// A static string's count is not written at all, as in WTF's (patched).
+     #[inline]
+     pub fn deref(&self) {
++        if self.ref_count_atomic().load(Ordering::Relaxed) & Self::S_REF_COUNT_FLAG_IS_STATIC_STRING != 0 {
++            return;
++        }
+         let old = self
+             .ref_count_atomic()
+             .fetch_sub(Self::S_REF_COUNT_INCREMENT, Ordering::Relaxed);
+diff --git a/src/bun_core/env_var.rs b/src/bun_core/env_var.rs
+index b5b37d98..4ecdc6e7 100644
+--- a/src/bun_core/env_var.rs
++++ b/src/bun_core/env_var.rs
+@@ -62,6 +62,7 @@ new!(pub BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS: unsigned, "BUN_CONFIG_DNS_TIME_TO_
+ // if it fires the request fails with `error.Timeout`. Covers the TLS
+ // handshake through the response body. 0 disables. See `src/http/lib.rs`.
+ new!(pub BUN_CONFIG_HTTP_IDLE_TIMEOUT: unsigned, "BUN_CONFIG_HTTP_IDLE_TIMEOUT", { default: 300 });
++new!(pub BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT: unsigned, "BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT", { default: 4 });
+ // Opening-handshake timeout for the `new WebSocket()` client, in seconds.
+ // A peer that accepts the TCP connection but never answers the upgrade fails
+ // with error + close(1006). 0 disables; uSockets' 4 s sweep rounds small values up.
+diff --git a/src/bundler/LinkerContext.rs b/src/bundler/LinkerContext.rs
+index 354e7135..96f5b56a 100644
+--- a/src/bundler/LinkerContext.rs
++++ b/src/bundler/LinkerContext.rs
+@@ -1450,6 +1450,8 @@ pub struct LinkerOptions {
+     pub(crate) source_maps: SourceMapOption,
+     pub(crate) target: Target,
+     pub(crate) compile_mode: CompileMode,
++    /// See `LinkerContext::requires_builtin_in_wrapper`.
++    pub(crate) defer_builtin_imports: bool,
+     pub(crate) metafile: bool,
+     /// Path to write JSON metafile (for Bun.build API)
+     pub(crate) metafile_json_path: &'static [u8],
+@@ -1499,6 +1501,7 @@ impl Default for LinkerOptions {
+             source_maps: SourceMapOption::None,
+             target: Target::Browser,
+             compile_mode: CompileMode::None,
++            defer_builtin_imports: false,
+             metafile: false,
+             metafile_json_path: b"",
+             metafile_markdown_path: b"",
+@@ -4294,6 +4297,29 @@ impl<'a> LinkerContext<'a> {
+     /// import that resolved here is that module's namespace)?
+     /// The record of a named import in `source_index` is an `import()` or a
+     /// `require()`, so the name is read off the call's result.
++    /// An executable compiled ahead of time (`--compile` with `BUN_STATIC_HEAP=1 BUN_AOT=1`): a Node builtin module that a
++    /// module evaluated lazily (wrapped as ESM, `init_*()`) imports with an `import` statement is required where that
++    /// module is evaluated, rather than imported by the program before it starts. A program that loads a part of
++    /// itself later (`await import()`) no longer pays at its start for what only that part uses (`node:http` and what
++    /// it needs, ...). `convert_stmts_for_chunk` writes the statement as `var ns = require(..), a = ns.a, ...` ahead of
++    /// everything else in the wrapper: the names are what they were when the module was first evaluated, as an import's
++    /// are, and are there for whatever the wrapper goes on to evaluate (a module that imports this one back).
++    /// Not `process` (its namespace has what it inherits) nor Bun's own modules (`bun` is no module to load, and the
++    /// default of some is not their `module.exports`): those stay imports.
++    pub(crate) fn requires_builtin_in_wrapper(&self, record: &ImportRecord, importer: crate::IndexInt) -> bool {
++        self.options.defer_builtin_imports
++            && record.kind == ImportKind::Stmt
++            && !record.source_index.is_valid()
++            && record.tag == bun_ast::ImportRecordTag::Builtin
++            && !record.flags.intersects(
++                bun_ast::ImportRecordFlags::IS_UNUSED.union(bun_ast::ImportRecordFlags::PHASE_DEFER),
++            )
++            && self.graph.meta.items_flags()[importer as usize].wrap == WrapKind::Esm
++            && record.path.text != b"process"
++            && bun_resolve_builtins::HardcodedModule::Alias::get(record.path.text, Target::Bun, Default::default())
++                .is_some_and(|module| module.node_builtin)
++    }
++
+     fn is_call_record(&self, source_index: crate::IndexInt, record_index: u32) -> bool {
+         self.graph.ast.items_import_records()[source_index as usize]
+             .as_slice()
+@@ -5171,6 +5197,8 @@ pub struct StmtList {
+ 
+ pub struct InsideWrapperPrefix {
+     pub(crate) stmts: Vec<Stmt>,
++    // The builtin modules required in the wrapper (`append_builtin_require`) are the first statements.
++    pub(crate) builtin_requires_end: usize,
+     pub(crate) sync_dependencies_end: usize,
+     // if true it will exist at `sync_dependencies_end`
+     pub(crate) has_async_dependency: bool,
+@@ -5180,6 +5208,7 @@ impl InsideWrapperPrefix {
+     fn init() -> Self {
+         Self {
+             stmts: Vec::new(),
++            builtin_requires_end: 0,
+             sync_dependencies_end: 0,
+             has_async_dependency: false,
+         }
+@@ -5189,12 +5218,21 @@ impl InsideWrapperPrefix {
+ 
+     pub(crate) fn reset(&mut self) {
+         self.stmts.clear();
++        self.builtin_requires_end = 0;
+         self.sync_dependencies_end = 0;
+         self.has_async_dependency = false;
+     }
+ }
+ 
+ impl InsideWrapperPrefix {
++    /// Ahead of the dependencies: a builtin module is a leaf, and what the dependencies evaluate may use its names.
++    pub(crate) fn append_builtin_require(&mut self, stmt: Stmt) -> Result<(), AllocError> {
++        self.stmts.insert(self.builtin_requires_end, stmt);
++        self.builtin_requires_end += 1;
++        self.sync_dependencies_end += 1;
++        Ok(())
++    }
++
+     pub(crate) fn append_non_dependency(&mut self, stmt: Stmt) -> Result<(), AllocError> {
+         self.stmts.push(stmt);
+         Ok(())
+diff --git a/src/bundler/bundle_v2.rs b/src/bundler/bundle_v2.rs
+index 871b0495..df7b61c1 100644
+--- a/src/bundler/bundle_v2.rs
++++ b/src/bundler/bundle_v2.rs
+@@ -1544,6 +1544,12 @@ pub mod bv2_impl {
+                 depth: u32,
+                 names: &crate::bytecode_order::CodeNamesRef<'_>,
+             ) -> bool;
++            safe fn __bun_jsc_bytecode_link_encoder_set_prelinked_module_graph(
++                encoder: core::ptr::NonNull<BytecodeLinkEncoder>,
++                blob: &[u8],
++                slots: &[u32],
++                graph_module_of_each_add: &[u32],
++            );
+             safe fn __bun_jsc_bytecode_link_encoder_finish(
+                 encoder: core::ptr::NonNull<BytecodeLinkEncoder>,
+                 module_count: usize,
+@@ -1730,6 +1736,13 @@ pub mod bv2_impl {
+                 self.module_count += ok as usize;
+                 ok
+             }
++            /// The pre-resolved module graph and its slot table, and the graph module of each successful `add_*` call
++            /// (`u32::MAX` for none); the internal modules, added last, are of none.
++            pub(crate) fn set_prelinked_module_graph(&mut self, blob: &[u8], slots: &[u32], graph_modules_of_chunks: &[u32]) {
++                let mut of_each_add = graph_modules_of_chunks.to_vec();
++                of_each_add.resize(self.module_count, u32::MAX);
++                __bun_jsc_bytecode_link_encoder_set_prelinked_module_graph(self.encoder, blob, slots, &of_each_add);
++            }
+             pub(crate) fn finish(&mut self) -> Option<crate::bytecode_order::LinkedPayload> {
+                 __bun_jsc_bytecode_link_encoder_finish(self.encoder, self.module_count)
+             }
+@@ -3370,6 +3383,15 @@ pub mod bv2_impl {
+                 }
+             }
+             this.linker.options.compile_mode = this.transpiler.options.compile_mode;
++            {
++                unsafe extern "C" {
++                    safe fn Bun__shouldCompileAheadOfTime() -> bool;
++                }
++                this.linker.options.defer_builtin_imports = this.linker.options.compile_mode.is_executable()
++                    && this.linker.options.output_format == options::Format::Esm
++                    && this.linker.options.target.is_bun()
++                    && Bun__shouldCompileAheadOfTime();
++            }
+             this.linker.options.metafile = this.transpiler.options.metafile;
+             // SAFETY: same `'a`-owned `Transpiler` field as `banner` above.
+             this.linker.options.metafile_json_path =
+diff --git a/src/bundler/linker_context/convertStmtsForChunk.rs b/src/bundler/linker_context/convertStmtsForChunk.rs
+index 258b0dfb..be4fcff3 100644
+--- a/src/bundler/linker_context/convertStmtsForChunk.rs
++++ b/src/bundler/linker_context/convertStmtsForChunk.rs
+@@ -97,6 +97,74 @@ pub(crate) fn convert_stmts_for_chunk(
+                 bun_ast::StmtData::SImport(s) => {
+                     // "import * as ns from 'path'"
+                     // "import {foo} from 'path'"
++                    if ast.import_records[s.import_record_index as usize]
++                        .flags
++                        .contains(ImportRecordFlags::REQUIRED_IN_WRAPPER)
++                    {
++                        // var ns = require("path"), a = ns.a, b = ns.default;
++                        let namespace = |loc: Loc| {
++                            Expr::allocate(
++                                bump,
++                                E::Identifier {
++                                    ref_: s.namespace_ref,
++                                    ..Default::default()
++                                },
++                                loc,
++                            )
++                        };
++                        let mut decls: Vec<G::Decl> = Vec::with_capacity(2 + s.items.slice().len());
++                        decls.push(G::Decl {
++                            binding: Binding::alloc(bump, B::Identifier { r#ref: s.namespace_ref }, stmt.loc),
++                            value: Some(Expr::init(
++                                E::RequireString {
++                                    import_record_index: s.import_record_index,
++                                    ..Default::default()
++                                },
++                                stmt.loc,
++                            )),
++                        });
++                        if let Some(default_name) = &s.default_name {
++                            if let Some(ref_) = default_name.ref_.to_nullable() {
++                                decls.push(G::Decl {
++                                    binding: Binding::alloc(bump, B::Identifier { r#ref: ref_ }, default_name.loc),
++                                    value: Some(Expr::allocate(
++                                        bump,
++                                        E::Dot {
++                                            target: namespace(default_name.loc),
++                                            name: b"default".as_slice().into(),
++                                            name_loc: default_name.loc,
++                                            ..Default::default()
++                                        },
++                                        default_name.loc,
++                                    )),
++                                });
++                            }
++                        }
++                        for item in s.items.slice() {
++                            let Some(ref_) = item.name.ref_.to_nullable() else { continue };
++                            decls.push(G::Decl {
++                                binding: Binding::alloc(bump, B::Identifier { r#ref: ref_ }, item.name.loc),
++                                value: Some(Expr::allocate(
++                                    bump,
++                                    E::Dot {
++                                        target: namespace(item.alias_loc),
++                                        name: item.alias,
++                                        name_loc: item.alias_loc,
++                                        ..Default::default()
++                                    },
++                                    item.name.loc,
++                                )),
++                            });
++                        }
++                        stmts.inside_wrapper_prefix.append_builtin_require(Stmt::alloc(
++                            S::Local {
++                                decls: G::DeclList::from_slice(&decls),
++                                ..Default::default()
++                            },
++                            stmt.loc,
++                        ))?;
++                        continue 'stmt_loop;
++                    }
+                     if c.should_remove_import_export_stmt(
+                         stmts,
+                         stmt.loc,
+diff --git a/src/bundler/linker_context/generateChunksInParallel.rs b/src/bundler/linker_context/generateChunksInParallel.rs
+index 88212ec8..ef33e540 100644
+--- a/src/bundler/linker_context/generateChunksInParallel.rs
++++ b/src/bundler/linker_context/generateChunksInParallel.rs
+@@ -1429,6 +1429,7 @@ pub(crate) fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
+         let mut linked = LinkedBytecode {
+             encoder,
+             output_files: Vec::with_capacity(linked_bytecode_chunks.len()),
++            graph_modules: Vec::with_capacity(linked_bytecode_chunks.len()),
+             internal_names,
+             names_out: crate::bytecode_order::names_out().map(|path| (path, Vec::new())),
+         };
+@@ -1451,6 +1452,11 @@ pub(crate) fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
+                 names.as_ref(),
+             ) {
+                 linked.output_files.push(*bytecode_index);
++                linked.graph_modules.push(prelinked_graph.as_ref().map_or(u32::MAX, |(_, chunk_indices)| {
++                    chunk_indices
++                        .binary_search(&(*chunk_index as u32))
++                        .map_or(u32::MAX, |module| module as u32)
++                }));
+                 if names.is_none() {
+                     // JavaScriptCore compiled what the parser here does not take: nothing of the chunk can be listed
+                     // in an order file, or placed by one.
+@@ -1522,6 +1528,19 @@ pub(crate) fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
+             }
+         }
+         let encoded = linked.output_files;
++        // What compiling ahead of time links the modules by (BUN_AOT=1): the graph the executable's loader is given.
++        if let Some((graph, _)) = &prelinked_graph {
++            let table = module_info_strings.serialize();
++            let slots: Vec<u32> = table
++                .get(size_of::<u32>()..)
++                .unwrap_or_default()
++                .chunks_exact(size_of::<u32>())
++                .map(|word| u32::from_le_bytes(word.try_into().expect("four bytes")))
++                .collect();
++            linked
++                .encoder
++                .set_prelinked_module_graph(graph, &slots, &linked.graph_modules);
++        }
+         match linked.encoder.finish() {
+             Some(crate::bytecode_order::LinkedPayload {
+                 payload,
+@@ -1702,6 +1721,8 @@ fn debug_assert_no_placeholder_left(c: &LinkerContext, files: &[options::OutputF
+ struct LinkedBytecode {
+     encoder: crate::bundle_v2::dispatch::BytecodeLinkEncoderHandle,
+     output_files: Vec<u32>,
++    /// For each chunk added to the encoder, its module in the pre-resolved graph (`u32::MAX`: none).
++    graph_modules: Vec<u32>,
+     /// What the code of the internal modules that will join the link is called, in their order.
+     internal_names: Vec<Option<crate::bytecode_order::CodeNames>>,
+     /// `BUN_BYTECODE_ORDER_NAMES_OUT`, and what is written there.
+diff --git a/src/bundler/linker_context/scanImportsAndExports.rs b/src/bundler/linker_context/scanImportsAndExports.rs
+index 4611b2fe..101b1afe 100644
+--- a/src/bundler/linker_context/scanImportsAndExports.rs
++++ b/src/bundler/linker_context/scanImportsAndExports.rs
+@@ -1090,6 +1090,25 @@ pub(crate) fn scan_imports_and_exports(
+             );
+ 
+             let parts_len = col_ref!(parts_list)[id].len() as usize;
++            // The `import` statements of builtin modules that become a `require()` in this file's wrapper
++            // (`requires_builtin_in_wrapper`): said on the record, for what follows and for `convert_stmts_for_chunk`.
++            if this.options.defer_builtin_imports && col_ref!(flags)[id].wrap == WrapKind::Esm {
++                for part_index in 0..parts_len {
++                    for stmt in col_ref!(parts_list)[id].as_slice()[part_index].stmts.slice() {
++                        let bun_ast::StmtData::SImport(import) = stmt.data else { continue };
++                        let record_index = import.import_record_index as usize;
++                        let required = this.requires_builtin_in_wrapper(
++                            &col_ref!(import_records_list)[id].as_slice()[record_index],
++                            id as crate::IndexInt,
++                        );
++                        if required {
++                            col!(import_records_list)[id].as_mut_slice()[record_index]
++                                .flags
++                                .insert(ImportRecordFlags::REQUIRED_IN_WRAPPER);
++                        }
++                    }
++                }
++            }
+             for part_index in 0..parts_len {
+                 let mut to_esm_uses: u32 = 0;
+                 let mut to_common_js_uses: u32 = 0;
+@@ -1130,9 +1149,11 @@ pub(crate) fn scan_imports_and_exports(
+                         }
+ 
+                         // This is an external import. Check if it will be a "require()" call.
++                        let deferred = rec_flags.contains(ImportRecordFlags::REQUIRED_IN_WRAPPER);
+                         if kind == ImportKind::Require
+                             || !output_format.keep_es6_import_export_syntax()
+                             || kind == ImportKind::Dynamic
++                            || deferred
+                         {
+                             // We should use "__require" instead of "require" if we're not
+                             // generating a CommonJS output file, since it won't exist otherwise.
+diff --git a/src/bundler/prelinked_module_graph.rs b/src/bundler/prelinked_module_graph.rs
+index 497b0694..9517a930 100644
+--- a/src/bundler/prelinked_module_graph.rs
++++ b/src/bundler/prelinked_module_graph.rs
+@@ -12,7 +12,7 @@ use bun_js_printer::analyze_transpiled_module::{
+ use crate::analyze_transpiled_module::ModuleInfoSlotTableBuilder;
+ 
+ pub const MAGIC: u32 = 0x474d_4c50; // "PLMG"
+-pub const VERSION: u32 = 2;
++pub const VERSION: u32 = 4;
+ pub const NO_MODULE: u32 = u32::MAX;
+ /// Hash column value of an entry whose name is a sentinel (never looked up by name); sorts last.
+ const SENTINEL_HASH: u32 = u32::MAX;
+@@ -33,7 +33,7 @@ mod module_flags {
+ const PHASE_DEFER_BIT: u32 = 1 << 3;
+ 
+ const HEADER_WORDS: usize = 16;
+-const MODULE_WORDS: usize = 10;
++const MODULE_WORDS: usize = 12;
+ const REQUEST_WORDS: usize = 4;
+ const IMPORT_WORDS: usize = 6;
+ const EXPORT_WORDS: usize = 6;
+@@ -545,7 +545,9 @@ fn serialize(graph: &[Module], string_count: u32, hashes: &[Option<u32>]) -> Vec
+     let imports_offset = requests_offset + request_count * REQUEST_WORDS * 4;
+     let exports_offset = imports_offset + import_count * IMPORT_WORDS * 4;
+     let stars_offset = exports_offset + export_count * EXPORT_WORDS * 4;
+-    let total = stars_offset + star_count * 4;
++    // Version 4's `Binding`s (what the bundler knows of each top-level variable, for ahead-of-time compilation): none yet.
++    let bindings_offset = stars_offset + star_count * 4;
++    let total = bindings_offset;
+ 
+     let mut out: Vec<u8> = Vec::with_capacity(total);
+     let mut put = |v: u32| out.extend_from_slice(&v.to_le_bytes());
+@@ -570,8 +572,8 @@ fn serialize(graph: &[Module], string_count: u32, hashes: &[Option<u32>]) -> Vec
+         to_u32(imports_offset),
+         to_u32(exports_offset),
+         to_u32(stars_offset),
+-        0,
+-        0,
++        0, // bindingCount
++        to_u32(bindings_offset),
+         0,
+     ] {
+         put(v);
+@@ -591,6 +593,8 @@ fn serialize(graph: &[Module], string_count: u32, hashes: &[Option<u32>]) -> Vec
+             to_u32(m.exports.len()),
+             to_u32(first_star),
+             to_u32(m.star_exports.len()),
++            0, // firstBinding
++            0, // bindingCount
+         ] {
+             put(v);
+         }
+diff --git a/src/crash_handler/lib.rs b/src/crash_handler/lib.rs
+index 91e2ee80..c2db8ce8 100644
+--- a/src/crash_handler/lib.rs
++++ b/src/crash_handler/lib.rs
+@@ -1118,11 +1118,11 @@ mod draft {
+                                 }
+                             } else if matches!(reason, CrashReason::OutOfMemory) {
+                                 if writer.write_all(
+-                                b"Bun has run out of memory.\n\nTo send a redacted crash report to Bun's team,\nplease file a GitHub issue using the link below:\n\n",
++                                if is_ahead_of_time_executable() { PI_BOLT_OOM_MESSAGE } else { b"Bun has run out of memory.\n\nTo send a redacted crash report to Bun's team,\nplease file a GitHub issue using the link below:\n\n" },
+                             ).is_err() { abort(); }
+                             } else {
+                                 if writer.write_all(
+-                                b"Bun has crashed. This indicates a bug in Bun, not your code.\n\nTo send a redacted crash report to Bun's team,\nplease file a GitHub issue using the link below:\n\n",
++                                if is_ahead_of_time_executable() { PI_BOLT_CRASH_MESSAGE } else { b"Bun has crashed. This indicates a bug in Bun, not your code.\n\nTo send a redacted crash report to Bun's team,\nplease file a GitHub issue using the link below:\n\n" },
+                             ).is_err() { abort(); }
+                             }
+                         }
+@@ -1463,10 +1463,31 @@ mod draft {
+             if let Some(url) = env_var::BUN_CRASH_REPORT_URL::get() {
+                 return strings::without_trailing_slash(url);
+             }
++            if is_ahead_of_time_executable() {
++                return PI_BOLT_REPORT_BASE_URL.as_bytes();
++            }
+             DEFAULT_REPORT_BASE_URL.as_bytes()
+         })
+     }
+ 
++    /// An executable that runs code compiled ahead of time (Pi-Bolt) is not a Bun that Bun's team can decode a trace of: its
++    /// crashes go to Pi-Bolt, with the trace in the same encoding, which Pi-Bolt decodes against its own symbols.
++    const PI_BOLT_REPORT_BASE_URL: &str = "https://pi-bolt.opensec.in/crash";
++    const PI_BOLT_CRASH_MESSAGE: &[u8] = b"Pi-Bolt has crashed. This is a bug in Pi-Bolt, not in your code.\n\n\
++        Please report it at https://github.com/opensec-git/Pi-Bolt/issues/new\n\
++        with the link below and what you were doing:\n\n";
++    const PI_BOLT_OOM_MESSAGE: &[u8] = b"Pi-Bolt has run out of memory.\n\n\
++        Please report it at https://github.com/opensec-git/Pi-Bolt/issues/new\n\
++        with the link below and what you were doing:\n\n";
++
++    fn is_ahead_of_time_executable() -> bool {
++        unsafe extern "C" {
++            fn Bun__AOTImage__isMapped() -> bool;
++        }
++        // SAFETY: a plain query of a flag set at startup.
++        unsafe { Bun__AOTImage__isMapped() }
++    }
++
+     const ARCH_DISPLAY_STRING: &str = if cfg!(target_arch = "aarch64") {
+         if cfg!(target_os = "macos") {
+             "Silicon"
+@@ -1814,11 +1835,13 @@ mod draft {
+                 } else {
+                     let _ = writer.write_all(b": ");
+                 }
+-                let _ = writer.write_all(
++                let _ = writer.write_all(if is_ahead_of_time_executable() {
++                    PI_BOLT_CRASH_MESSAGE
++                } else {
+                     b"Bun has crashed. This indicates a bug in Bun, not your code.\n\n\
+                   To send a redacted crash report to Bun's team,\n\
+-                  please file a GitHub issue using the link below:\n\n ",
+-                );
++                  please file a GitHub issue using the link below:\n\n "
++                });
+                 if enable_ansi_colors_stderr() {
+                     let _ = writer.write_all(&Output::pretty_fmt::<true>("<cyan>"));
+                 }
+@@ -2720,6 +2743,14 @@ mod draft {
+             return enable_crash_reporting;
+         }
+ 
++        // Pi-Bolt's runtime is a canary build, which below would `curl <report URL>/ack` on every crash on Linux too: a request
++        // nobody opted into, to an endpoint that does not answer it (curl prints "The requested URL returned error: 404" under
++        // the crash message). The link is still printed for the user to follow; uploading is opt-in (BUN_ENABLE_CRASH_REPORTING=1
++        // or BUN_CRASH_REPORT_URL).
++        if is_ahead_of_time_executable() {
++            return false;
++        }
++
+         // Debug builds shouldn't report to the default url by default
+         if cfg!(debug_assertions) {
+             return false;
+diff --git a/src/http/HTTPContext.rs b/src/http/HTTPContext.rs
+index 4f00a0c2..7a19b78d 100644
+--- a/src/http/HTTPContext.rs
++++ b/src/http/HTTPContext.rs
+@@ -242,8 +242,20 @@ pub struct PooledSocket<const SSL: bool> {
+     pub(crate) h2_session: Option<RefPtr<h2::ClientSession>>,
+     /// `PoolOptions::id` of the fetch session that opened it.
+     pub(crate) pool_id: u64,
+-    /// `PoolOptions::idle_timeout_seconds` of the session that parked it.
++    /// How long it may sit parked, in seconds: `PoolOptions::idle_timeout_seconds` as it was parked with.
+     pub(crate) idle_timeout_seconds: u32,
++    /// When it was parked ([`parked_clock_ms`]). The idle timer that closes a parked socket runs on the
++    /// event loop's ticks, which stand still while the machine sleeps; this does not.
++    pub(crate) parked_at_ms: u64,
++}
++
++/// Milliseconds on a clock that keeps going while the machine is suspended: the wall clock. (It can be set
++/// back, which only makes a parked socket look younger until the idle timer gets to it, or forward, which
++/// costs a new connection.)
++pub(crate) fn parked_clock_ms() -> u64 {
++    std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map_or(0, |d| d.as_millis() as u64)
+ }
+ 
+ /// `&mut` access to a pooled / found-slot HTTP/2 session, for the field
+@@ -687,6 +699,7 @@ impl<const SSL: bool> HTTPContext<SSL> {
+                 h2_session,
+                 pool_id: pool.id,
+                 idle_timeout_seconds: pool.idle_timeout_seconds,
++                parked_at_ms: parked_clock_ms(),
+             };
+             let parked = match transport {
+                 Transport::Tcp => Self::park(self.pending_sockets.get_or_init(), pooled, pool),
+@@ -774,12 +787,17 @@ impl<const SSL: bool> HTTPContext<SSL> {
+         None
+     }
+ 
+-    /// How long a parked socket may sit idle; 0 is the 5 minute default.
+-    fn arm_idle_timeout(socket: HTTPSocket<SSL>, idle_timeout_seconds: u32) {
+-        socket.set_timeout(match idle_timeout_seconds {
++    /// How long a parked socket may sit idle, in seconds. 0 is 5 minutes: what is parked without a response
++    /// to go by (a preconnected socket, an HTTP/2 session, which has its own pings).
++    fn idle_timeout_or_default(idle_timeout_seconds: u32) -> u32 {
++        match idle_timeout_seconds {
+             0 => 5 * 60,
+             seconds => seconds,
+-        });
++        }
++    }
++
++    fn arm_idle_timeout(socket: HTTPSocket<SSL>, idle_timeout_seconds: u32) {
++        socket.set_timeout(Self::idle_timeout_or_default(idle_timeout_seconds));
+     }
+ 
+     #[allow(clippy::too_many_arguments)]
+@@ -915,6 +933,17 @@ impl<const SSL: bool> HTTPContext<SSL> {
+                     continue;
+                 }
+ 
++                // Parked for longer than it may be: the idle timer has not got to it yet (its ticks are
++                // seconds apart, and none while the machine sleeps). What is at the other end by now is
++                // not known; a new connection is.
++                if parked_clock_ms().saturating_sub(socket.parked_at_ms)
++                    > u64::from(Self::idle_timeout_or_default(socket.idle_timeout_seconds)) * 1000
++                {
++                    bun_core::scoped_log!(HTTPContext, "Keep-Alive socket parked for too long, closing");
++                    Self::close_socket(http_socket);
++                    continue;
++                }
++
+                 if http_socket.is_shutdown() || http_socket.get_error() != 0 {
+                     Self::terminate_socket(http_socket);
+                     continue;
+diff --git a/src/http/HTTPThread.rs b/src/http/HTTPThread.rs
+index b4f2c2f2..4c9a4d3c 100644
+--- a/src/http/HTTPThread.rs
++++ b/src/http/HTTPThread.rs
+@@ -1239,6 +1239,17 @@ mod _event_loop_draft {
+             core::sync::atomic::Ordering::Relaxed,
+         );
+ 
++        crate::KEEP_ALIVE_POOL_TIMEOUT_SECONDS.store(
++            u32::try_from(
++                bun_core::env_var::BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT
++                    .get()
++                    .unwrap_or(4),
++            )
++            .unwrap_or(u32::MAX)
++            .clamp(1, 600),
++            core::sync::atomic::Ordering::Relaxed,
++        );
++
+         // Critical side effect: `init_global` calls
+         // `internal_loop_data.set_parent_raw(2 /* mini */, mini_ptr)` on this
+         // thread's uSockets loop. Without it, the macOS DNS cache-miss path
+diff --git a/src/http/HeaderValueIterator.rs b/src/http/HeaderValueIterator.rs
+index f6219fdd..10fd3d85 100644
+--- a/src/http/HeaderValueIterator.rs
++++ b/src/http/HeaderValueIterator.rs
+@@ -58,6 +58,26 @@ pub fn fold_transfer_encoding(value: &[u8], coding: &mut Encoding) -> crate::Res
+     Ok(())
+ }
+ 
++/// The `timeout` parameter of a `Keep-Alive` response header, in seconds: how long the server keeps an idle
++/// connection (`Keep-Alive: timeout=5, max=100`). `None` if there is none or it is not a number.
++pub fn keep_alive_header_timeout(value: &[u8]) -> Option<u32> {
++    for token in HeaderValueIterator::init(value) {
++        let Some(eq) = token.iter().position(|&c| c == b'=') else {
++            continue;
++        };
++        let name = strings::trim(&token[..eq], b" \t");
++        if !strings::eql_case_insensitive_ascii_check_length(name, b"timeout") {
++            continue;
++        }
++        let digits = strings::trim(&token[eq + 1..], b" \t");
++        if digits.is_empty() || digits.len() > 9 || !digits.iter().all(u8::is_ascii_digit) {
++            return None;
++        }
++        return Some(digits.iter().fold(0u32, |n, &d| n * 10 + u32::from(d - b'0')));
++    }
++    None
++}
++
+ /// `Some(false)` if any token is `close` (wins), `Some(true)` if `keep-alive`, else `None`.
+ pub fn connection_header_keep_alive(value: &[u8]) -> Option<bool> {
+     let mut keep_alive = None;
+diff --git a/src/http/InternalState.rs b/src/http/InternalState.rs
+index 041c611e..300b5055 100644
+--- a/src/http/InternalState.rs
++++ b/src/http/InternalState.rs
+@@ -45,6 +45,9 @@ pub struct InternalState<'a> {
+     /// Prefix of `compressed_body` the decoder has already taken.
+     compressed_body_consumed: usize,
+     pub(crate) content_length: Option<usize>,
++    /// `timeout` of the response's `Keep-Alive` header, in seconds; 0 if it had none. See
++    /// `HTTPClient::pool_for_release`.
++    pub(crate) keep_alive_timeout: u32,
+     pub(crate) total_body_received: usize,
+     // Self-borrow into `original_request_body.bytes`; `RawSlice` carries the
+     // outlives-holder invariant (the backing `original_request_body` is a
+@@ -133,6 +136,7 @@ impl Default for InternalState<'_> {
+             compressed_body: MutableString::init_empty(),
+             compressed_body_consumed: 0,
+             content_length: None,
++            keep_alive_timeout: 0,
+             total_body_received: 0,
+             request_body: bun_ptr::RawSlice::EMPTY,
+             original_request_body: HTTPRequestBody::Bytes(b""),
+diff --git a/src/http/lib.rs b/src/http/lib.rs
+index 265ba9db..ba2c306b 100644
+--- a/src/http/lib.rs
++++ b/src/http/lib.rs
+@@ -123,7 +123,7 @@ pub enum Protocol {
+ 
+ pub use bun_http_types::Encoding::Encoding;
+ pub use header_value_iterator::{
+-    HeaderValueIterator, connection_header_keep_alive, fold_transfer_encoding,
++    HeaderValueIterator, connection_header_keep_alive, fold_transfer_encoding, keep_alive_header_timeout,
+     upgrade_header_is_not_h2,
+ };
+ pub use init_error::InitError;
+@@ -312,6 +312,16 @@ pub static OVERRIDDEN_DEFAULT_USER_AGENT: std::sync::OnceLock<&'static [u8]> =
+ /// [`normalize_idle_timeout_seconds`]).
+ pub(crate) static IDLE_TIMEOUT_SECONDS: AtomicU32 = AtomicU32::new(300);
+ 
++/// How long a connection that a response has come back on waits in the keep-alive pool for the next request,
++/// in seconds, when neither the fetch session nor the server says (see `HTTPClient::pool_for_release`).
++/// Overridable via `BUN_CONFIG_HTTP_KEEPALIVE_TIMEOUT`. Default is 4 seconds, undici's.
++pub(crate) static KEEP_ALIVE_POOL_TIMEOUT_SECONDS: AtomicU32 = AtomicU32::new(4);
++
++#[inline]
++pub(crate) fn keep_alive_pool_timeout_seconds() -> u32 {
++    KEEP_ALIVE_POOL_TIMEOUT_SECONDS.load(Ordering::Relaxed).max(1)
++}
++
+ /// Safe accessor for [`IDLE_TIMEOUT_SECONDS`].
+ #[inline]
+ pub(crate) fn idle_timeout_seconds() -> c_uint {
+@@ -2684,7 +2694,7 @@ impl<'a> HTTPClient<'a> {
+                 0,
+                 None,
+                 self.unix_socket_path,
+-                self.pool,
++                self.pool_for_release(),
+             );
+         } else {
+             GenHttpContext::<IS_SSL>::close_socket(socket);
+@@ -4117,6 +4127,24 @@ impl<'a> HTTPClient<'a> {
+             .unwrap_or_else(idle_timeout_seconds)
+     }
+ 
++    /// The keep-alive pool options to park this request's socket with: the session's, with how long the
++    /// socket may wait there for the next request settled. A session's own `idle_timeout_seconds` stands.
++    /// Otherwise it is what the server said it keeps an idle connection for (`Keep-Alive: timeout=N`), less
++    /// the time a request takes to get there, and 4 seconds if it said nothing: as undici does
++    /// (`keepAliveTimeout`, `keepAliveTimeoutThreshold`, `keepAliveMaxTimeout`). A connection that has sat
++    /// longer may be gone without a FIN or RST having come back (a NAT that forgot it, a load balancer that
++    /// dropped it, a laptop that slept), and a request written to it waits for an answer until it times out.
++    pub(crate) fn pool_for_release(&self) -> PoolOptions {
++        let mut pool = self.pool;
++        if pool.idle_timeout_seconds == 0 {
++            pool.idle_timeout_seconds = match self.state.keep_alive_timeout {
++                0 => keep_alive_pool_timeout_seconds(),
++                hint => hint.saturating_sub(2).clamp(1, 600),
++            };
++        }
++        pool
++    }
++
+     pub(crate) fn set_timeout<S: SocketTimeout>(&self, socket: &S) {
+         // Values are pre-normalised (global: `HTTPThread::on_start`;
+         // per-request: `AsyncHTTP::init`) so this is a plain pass-through.
+@@ -4339,7 +4367,7 @@ impl<'a> HTTPClient<'a> {
+                     },
+                     None,
+                     self.unix_socket_path,
+-                    self.pool,
++                    self.pool_for_release(),
+                 );
+             } else {
+                 if self.proxy_tunnel.is_some() {
+@@ -4993,6 +5021,11 @@ impl<'a> HTTPClient<'a> {
+                         None => {}
+                     }
+                 }
++                h if h == hash_header_const(b"Keep-Alive") => {
++                    if let Some(seconds) = keep_alive_header_timeout(header.value()) {
++                        self.state.keep_alive_timeout = seconds;
++                    }
++                }
+                 h if h == hash_header_const(b"Last-Modified") => {
+                     pretend_304 = self.flags.force_last_modified
+                         && response.status_code > 199
+diff --git a/src/jsc/CachedBytecode.rs b/src/jsc/CachedBytecode.rs
+index 2364c15d..60175edb 100644
+--- a/src/jsc/CachedBytecode.rs
++++ b/src/jsc/CachedBytecode.rs
+@@ -105,6 +105,15 @@ unsafe extern "C" {
+         depth: u32,
+         names: &CodeNamesRef<'_>,
+     ) -> bool;
++    fn Bun__BytecodeLinkEncoder__setPrelinkedModuleGraph(
++        this: *mut BytecodeLinkEncoder,
++        blob: *const u8,
++        blob_size: usize,
++        slots: *const u32,
++        slot_count: usize,
++        graph_module_of_each_add: *const u32,
++        add_count: usize,
++    );
+     fn Bun__BytecodeLinkEncoder__finish(
+         this: *mut BytecodeLinkEncoder,
+         output_byte_code: *mut Option<NonNull<u8>>,
+@@ -418,6 +427,28 @@ pub(crate) fn __bun_jsc_bytecode_link_encoder_add_internal_module_from_source(
+     }
+ }
+ 
++/// `JSC::BytecodeLinkEncoder::setPrelinkedModuleGraph`: what AOT compilation links the modules by (the encoder copies it).
++#[unsafe(no_mangle)]
++pub(crate) fn __bun_jsc_bytecode_link_encoder_set_prelinked_module_graph(
++    encoder: NonNull<BytecodeLinkEncoder>,
++    blob: &[u8],
++    slots: &[u32],
++    graph_module_of_each_add: &[u32],
++) {
++    // SAFETY: the slices are valid for the call; C++ copies them.
++    unsafe {
++        Bun__BytecodeLinkEncoder__setPrelinkedModuleGraph(
++            encoder.as_ptr(),
++            blob.as_ptr(),
++            blob.len(),
++            slots.as_ptr(),
++            slots.len(),
++            graph_module_of_each_add.as_ptr(),
++            graph_module_of_each_add.len(),
++        )
++    }
++}
++
+ /// The payload, each module's cache-entry offset in it (in the order of the successful `add_*` calls), where each of the
+ /// payload's regions ends (`JSC::BytecodeLinkEncoder`), how many of the order files' hot functions are functions
+ /// of this link, and for each module how many functions with code its names did not cover.
+diff --git a/src/jsc/GarbageCollectionController.rs b/src/jsc/GarbageCollectionController.rs
+index 96ff316e..5ca64ff9 100644
+--- a/src/jsc/GarbageCollectionController.rs
++++ b/src/jsc/GarbageCollectionController.rs
+@@ -79,7 +79,7 @@ impl GarbageCollectionController {
+         self.gc_timer_interval.set(
+             env_var::BUN_GC_TIMER_INTERVAL::get()
+                 .filter(|&v| v > 0)
+-                .unwrap_or(1000)
++                .unwrap_or(default_fast_interval_ms())
+                 .min(i32::MAX as u64) as i32,
+         );
+ 
+@@ -225,7 +225,7 @@ impl GarbageCollectionController {
+                 .saturating_add(1);
+             this.heap_size_didnt_change_for_repeating_timer_ticks_count
+                 .set(ticks);
+-            if ticks >= 30 {
++            if ticks >= quiet_ticks_until_slow(this.gc_timer_interval.get()) {
+                 this.gc_repeating_timer_fast.set(false);
+             }
+         } else {
+@@ -253,3 +253,25 @@ impl Drop for GarbageCollectionController {
+         self.deinit();
+     }
+ }
++
++/// The fast interval of the repeating timer, unless `BUN_GC_TIMER_INTERVAL` says. macOS, an executable compiled ahead of time:
++/// 5 s rather than 1 s. Such a program (an interactive one) left waiting still collected every second for half a minute, the
++/// only thing that woke it (Pi at its prompt: 1.4 ms of CPU a second); at 5 s it gives the same memory back as soon, in a fifth
++/// of the wake-ups.
++fn default_fast_interval_ms() -> u64 {
++    #[cfg(target_os = "macos")]
++    {
++        unsafe extern "C" {
++            safe fn Bun__AOTImage__isMapped() -> bool;
++        }
++        if Bun__AOTImage__isMapped() {
++            return 5000;
++        }
++    }
++    1000
++}
++
++/// Quiet fast ticks before the timer drops to its slow interval: about half a minute, whatever the fast interval.
++fn quiet_ticks_until_slow(fast_interval_ms: i32) -> u8 {
++    (30_000 / fast_interval_ms.max(1000)).clamp(1, 30) as u8
++}
+diff --git a/src/jsc/JSType.rs b/src/jsc/JSType.rs
+index 3c21ec7b..6503c62d 100644
+--- a/src/jsc/JSType.rs
++++ b/src/jsc/JSType.rs
+@@ -176,49 +176,51 @@ impl JSType {
+     /// const bar = () => 123
+     /// ```
+     pub const FunctionExecutable: JSType = JSType(12);
++    /// A FunctionExecutable in its short form (JSC AOT branch).
++    pub const ShortFunctionExecutable: JSType = JSType(13);
+ 
+-    pub const UnlinkedFunctionExecutable: JSType = JSType(13);
+-    pub const UnlinkedProgramCodeBlock: JSType = JSType(14);
+-    pub const UnlinkedModuleProgramCodeBlock: JSType = JSType(15);
+-    pub const UnlinkedEvalCodeBlock: JSType = JSType(16);
+-    pub const UnlinkedFunctionCodeBlock: JSType = JSType(17);
++    pub const UnlinkedFunctionExecutable: JSType = JSType(14);
++    pub const UnlinkedProgramCodeBlock: JSType = JSType(15);
++    pub const UnlinkedModuleProgramCodeBlock: JSType = JSType(16);
++    pub const UnlinkedEvalCodeBlock: JSType = JSType(17);
++    pub const UnlinkedFunctionCodeBlock: JSType = JSType(18);
+ 
+     /// Compiled bytecode block ready for execution.
+-    pub const CodeBlock: JSType = JSType(18);
++    pub const CodeBlock: JSType = JSType(19);
+ 
+-    pub const JSCellButterfly: JSType = JSType(19);
+-    pub const JSSourceCode: JSType = JSType(20);
++    pub const JSCellButterfly: JSType = JSType(20);
++    pub const JSSourceCode: JSType = JSType(21);
+ 
+     /// Slim promise reaction (no rejection handler / context payload).
+     /// Internal object used in the promise resolution mechanism.
+-    pub(crate) const SlimPromiseReaction: JSType = JSType(21);
++    pub(crate) const SlimPromiseReaction: JSType = JSType(22);
+ 
+     /// Full promise reaction (carries onFulfilled/onRejected and async context).
+     /// Internal object used in the promise resolution mechanism.
+-    pub(crate) const FullPromiseReaction: JSType = JSType(22);
++    pub(crate) const FullPromiseReaction: JSType = JSType(23);
+ 
+     /// Context object for Promise.all() operations.
+     /// Internal object used to track the state of Promise.all() resolution.
+     /// Note: Moved before ObjectType in recent WebKit.
+-    pub(crate) const PromiseAllContext: JSType = JSType(23);
++    pub(crate) const PromiseAllContext: JSType = JSType(24);
+ 
+     /// Global context for Promise.all() (new in recent WebKit).
+-    pub(crate) const PromiseAllGlobalContext: JSType = JSType(24);
++    pub(crate) const PromiseAllGlobalContext: JSType = JSType(25);
+ 
+     /// Base JavaScript object type.
+     /// ```js
+     /// {}
+     /// new Object()
+     /// ```
+-    pub const Object: JSType = JSType(33);
++    pub const Object: JSType = JSType(34);
+ 
+     /// Optimized object type for object literals with fixed properties.
+     /// ```js
+     /// { a: 1, b: 2 }
+     /// ```
+-    pub const FinalObject: JSType = JSType(34);
++    pub const FinalObject: JSType = JSType(35);
+ 
+-    pub const JSCallee: JSType = JSType(35);
++    pub const JSCallee: JSType = JSType(36);
+ 
+     /// JavaScript function object created from JavaScript source code.
+     /// ```js
+@@ -228,7 +230,7 @@ impl JSType {
+     ///   method() {}
+     /// }
+     /// ```
+-    pub const JSFunction: JSType = JSType(36);
++    pub const JSFunction: JSType = JSType(37);
+ 
+     /// Built-in function implemented in native code.
+     /// ```js
+@@ -237,21 +239,21 @@ impl JSType {
+     /// parseInt
+     /// console.log
+     /// ```
+-    pub const InternalFunction: JSType = JSType(37);
++    pub const InternalFunction: JSType = JSType(38);
+ 
+     /// Boxed Boolean object.
+     /// ```js
+     /// new Boolean(true)
+     /// new Boolean(false)
+     /// ```
+-    pub const BooleanObject: JSType = JSType(39);
++    pub const BooleanObject: JSType = JSType(40);
+ 
+     /// Boxed Number object.
+     /// ```js
+     /// new Number(42)
+     /// new Number(3.14)
+     /// ```
+-    pub const NumberObject: JSType = JSType(40);
++    pub const NumberObject: JSType = JSType(41);
+ 
+     /// JavaScript Error object and its subclasses.
+     /// ```js
+@@ -259,9 +261,9 @@ impl JSType {
+     /// new TypeError()
+     /// throw new RangeError()
+     /// ```
+-    pub const ErrorInstance: JSType = JSType(41);
++    pub const ErrorInstance: JSType = JSType(42);
+ 
+-    pub const GlobalProxy: JSType = JSType(42);
++    pub const GlobalProxy: JSType = JSType(43);
+ 
+     /// Arguments object for function parameters.
+     /// ```js
+@@ -270,10 +272,10 @@ impl JSType {
+     ///   console.log(arguments.length);
+     /// }
+     /// ```
+-    pub(crate) const DirectArguments: JSType = JSType(43);
++    pub(crate) const DirectArguments: JSType = JSType(44);
+ 
+-    pub(crate) const ScopedArguments: JSType = JSType(44);
+-    pub(crate) const ClonedArguments: JSType = JSType(45);
++    pub(crate) const ScopedArguments: JSType = JSType(45);
++    pub(crate) const ClonedArguments: JSType = JSType(46);
+ 
+     /// JavaScript Array object.
+     /// ```js
+@@ -282,94 +284,94 @@ impl JSType {
+     /// new Array(10)
+     /// Array.from(iterable)
+     /// ```
+-    pub const Array: JSType = JSType(46);
++    pub const Array: JSType = JSType(47);
+ 
+     /// Array subclass created through class extension.
+     /// ```js
+     /// class MyArray extends Array {}
+     /// const arr = new MyArray();
+     /// ```
+-    pub const DerivedArray: JSType = JSType(47);
++    pub const DerivedArray: JSType = JSType(48);
+ 
+     /// ArrayBuffer for binary data storage.
+     /// ```js
+     /// new ArrayBuffer(1024)
+     /// ```
+-    pub const ArrayBuffer: JSType = JSType(48);
++    pub const ArrayBuffer: JSType = JSType(49);
+ 
+     /// Typed array for 8-bit signed integers.
+     /// ```js
+     /// new Int8Array(buffer)
+     /// new Int8Array([1, -1, 127])
+     /// ```
+-    pub const Int8Array: JSType = JSType(49);
++    pub const Int8Array: JSType = JSType(50);
+ 
+     /// Typed array for 8-bit unsigned integers.
+     /// ```js
+     /// new Uint8Array(buffer)
+     /// new Uint8Array([0, 255])
+     /// ```
+-    pub const Uint8Array: JSType = JSType(50);
++    pub const Uint8Array: JSType = JSType(51);
+ 
+     /// Typed array for 8-bit unsigned integers with clamping.
+     /// ```js
+     /// new Uint8ClampedArray([0, 300]) // 300 becomes 255
+     /// ```
+-    pub const Uint8ClampedArray: JSType = JSType(51);
++    pub const Uint8ClampedArray: JSType = JSType(52);
+ 
+     /// Typed array for 16-bit signed integers.
+     /// ```js
+     /// new Int16Array(buffer)
+     /// ```
+-    pub const Int16Array: JSType = JSType(52);
++    pub const Int16Array: JSType = JSType(53);
+ 
+     /// Typed array for 16-bit unsigned integers.
+     /// ```js
+     /// new Uint16Array(buffer)
+     /// ```
+-    pub const Uint16Array: JSType = JSType(53);
++    pub const Uint16Array: JSType = JSType(54);
+ 
+     /// Typed array for 32-bit signed integers.
+     /// ```js
+     /// new Int32Array(buffer)
+     /// ```
+-    pub const Int32Array: JSType = JSType(54);
++    pub const Int32Array: JSType = JSType(55);
+ 
+     /// Typed array for 32-bit unsigned integers.
+     /// ```js
+     /// new Uint32Array(buffer)
+     /// ```
+-    pub const Uint32Array: JSType = JSType(55);
++    pub const Uint32Array: JSType = JSType(56);
+ 
+     /// Typed array for 16-bit floating point numbers.
+     /// ```js
+     /// new Float16Array(buffer)
+     /// ```
+-    pub const Float16Array: JSType = JSType(56);
++    pub const Float16Array: JSType = JSType(57);
+ 
+     /// Typed array for 32-bit floating point numbers.
+     /// ```js
+     /// new Float32Array(buffer)
+     /// ```
+-    pub const Float32Array: JSType = JSType(57);
++    pub const Float32Array: JSType = JSType(58);
+ 
+     /// Typed array for 64-bit floating point numbers.
+     /// ```js
+     /// new Float64Array(buffer)
+     /// ```
+-    pub const Float64Array: JSType = JSType(58);
++    pub const Float64Array: JSType = JSType(59);
+ 
+     /// Typed array for 64-bit signed BigInt values.
+     /// ```js
+     /// new BigInt64Array([123n, -456n])
+     /// ```
+-    pub const BigInt64Array: JSType = JSType(59);
++    pub const BigInt64Array: JSType = JSType(60);
+ 
+     /// Typed array for 64-bit unsigned BigInt values.
+     /// ```js
+     /// new BigUint64Array([123n, 456n])
+     /// ```
+-    pub const BigUint64Array: JSType = JSType(60);
++    pub const BigUint64Array: JSType = JSType(61);
+ 
+     /// DataView for flexible binary data access.
+     /// ```js
+@@ -377,7 +379,7 @@ impl JSType {
+     /// view.getInt32(0)
+     /// view.setFloat64(8, 3.14)
+     /// ```
+-    pub const DataView: JSType = JSType(61);
++    pub const DataView: JSType = JSType(62);
+ 
+     /// Global object containing all global variables and functions.
+     /// ```js
+@@ -385,12 +387,12 @@ impl JSType {
+     /// window // in browsers
+     /// global // in Node.js
+     /// ```
+-    pub const GlobalObject: JSType = JSType(62);
++    pub const GlobalObject: JSType = JSType(63);
+ 
+-    pub const GlobalLexicalEnvironment: JSType = JSType(63);
+-    pub const LexicalEnvironment: JSType = JSType(64);
+-    pub const ModuleEnvironment: JSType = JSType(65);
+-    pub const StrictEvalActivation: JSType = JSType(66);
++    pub const GlobalLexicalEnvironment: JSType = JSType(64);
++    pub const LexicalEnvironment: JSType = JSType(65);
++    pub const ModuleEnvironment: JSType = JSType(66);
++    pub const StrictEvalActivation: JSType = JSType(67);
+ 
+     /// Scope object for with statements.
+     /// ```js
+@@ -398,16 +400,16 @@ impl JSType {
+     ///   prop; // looks up prop in obj first
+     /// }
+     /// ```
+-    pub const WithScope: JSType = JSType(67);
++    pub const WithScope: JSType = JSType(68);
+ 
+     /// Namespace object for ES6 modules.
+     /// ```js
+     /// import * as ns from 'module';
+     /// ns.exportedFunction()
+     /// ```
+-    pub const ModuleNamespaceObject: JSType = JSType(70);
++    pub const ModuleNamespaceObject: JSType = JSType(71);
+ 
+-    pub(crate) const ShadowRealm: JSType = JSType(71);
++    pub(crate) const ShadowRealm: JSType = JSType(72);
+ 
+     /// Regular expression object.
+     /// ```js
+@@ -415,7 +417,7 @@ impl JSType {
+     /// new RegExp('pattern', 'flags')
+     /// /abc/gi
+     /// ```
+-    pub const RegExpObject: JSType = JSType(72);
++    pub const RegExpObject: JSType = JSType(73);
+ 
+     /// JavaScript Date object for date/time operations.
+     /// ```js
+@@ -423,7 +425,7 @@ impl JSType {
+     /// new Date('2023-01-01')
+     /// Date.now()
+     /// ```
+-    pub const JSDate: JSType = JSType(73);
++    pub const JSDate: JSType = JSType(74);
+ 
+     /// Proxy object that intercepts operations on another object.
+     /// ```js
+@@ -431,7 +433,7 @@ impl JSType {
+     ///   get(obj, prop) { return obj[prop]; }
+     /// })
+     /// ```
+-    pub const ProxyObject: JSType = JSType(74);
++    pub const ProxyObject: JSType = JSType(75);
+ 
+     /// Generator object created by generator functions.
+     /// ```js
+@@ -439,7 +441,7 @@ impl JSType {
+     /// const g = gen();
+     /// g.next()
+     /// ```
+-    pub(crate) const Generator: JSType = JSType(75);
++    pub(crate) const Generator: JSType = JSType(76);
+ 
+     /// Async generator object for asynchronous iteration.
+     /// ```js
+@@ -447,17 +449,17 @@ impl JSType {
+     ///   yield await promise;
+     /// }
+     /// ```
+-    pub(crate) const AsyncGenerator: JSType = JSType(77);
++    pub(crate) const AsyncGenerator: JSType = JSType(78);
+ 
+     /// Iterator for Array objects.
+     /// ```js
+     /// [1,2,3][Symbol.iterator]()
+     /// for (const x of array) {}
+     /// ```
+-    pub(crate) const JSArrayIterator: JSType = JSType(78);
++    pub(crate) const JSArrayIterator: JSType = JSType(79);
+ 
+-    pub(crate) const Iterator: JSType = JSType(79);
+-    pub(crate) const IteratorHelper: JSType = JSType(80);
++    pub(crate) const Iterator: JSType = JSType(80);
++    pub(crate) const IteratorHelper: JSType = JSType(81);
+ 
+     /// Iterator for Map objects.
+     /// ```js
+@@ -466,30 +468,30 @@ impl JSType {
+     /// map.entries()
+     /// for (const [k,v] of map) {}
+     /// ```
+-    pub(crate) const MapIterator: JSType = JSType(81);
++    pub(crate) const MapIterator: JSType = JSType(82);
+ 
+     /// Iterator for Set objects.
+     /// ```js
+     /// set.values()
+     /// for (const value of set) {}
+     /// ```
+-    pub(crate) const SetIterator: JSType = JSType(82);
++    pub(crate) const SetIterator: JSType = JSType(83);
+ 
+     /// Iterator for String objects.
+     /// ```js
+     /// 'hello'[Symbol.iterator]()
+     /// for (const char of string) {}
+     /// ```
+-    pub(crate) const StringIterator: JSType = JSType(83);
++    pub(crate) const StringIterator: JSType = JSType(84);
+ 
+-    pub(crate) const WrapForValidIterator: JSType = JSType(84);
++    pub(crate) const WrapForValidIterator: JSType = JSType(85);
+ 
+     /// Iterator for RegExp string matching.
+     /// ```js
+     /// 'abc'.matchAll(/./g)
+     /// for (const match of string.matchAll(regex)) {}
+     /// ```
+-    pub(crate) const RegExpStringIterator: JSType = JSType(85);
++    pub(crate) const RegExpStringIterator: JSType = JSType(86);
+ 
+     /// JavaScript Promise object for asynchronous operations.
+     /// ```js
+@@ -497,7 +499,7 @@ impl JSType {
+     /// Promise.resolve(42)
+     /// async function foo() { await promise; }
+     /// ```
+-    pub const JSPromise: JSType = JSType(87);
++    pub const JSPromise: JSType = JSType(88);
+ 
+     /// JavaScript Map object for key-value storage.
+     /// ```js
+@@ -505,7 +507,7 @@ impl JSType {
+     /// map.set(key, value)
+     /// map.get(key)
+     /// ```
+-    pub const Map: JSType = JSType(88);
++    pub const Map: JSType = JSType(89);
+ 
+     /// JavaScript Set object for unique value storage.
+     /// ```js
+@@ -513,33 +515,33 @@ impl JSType {
+     /// set.add(value)
+     /// set.has(value)
+     /// ```
+-    pub const Set: JSType = JSType(89);
++    pub const Set: JSType = JSType(90);
+ 
+     /// WeakMap for weak key-value references.
+     /// ```js
+     /// new WeakMap()
+     /// weakMap.set(object, value)
+     /// ```
+-    pub const WeakMap: JSType = JSType(90);
++    pub const WeakMap: JSType = JSType(91);
+ 
+     /// WeakSet for weak value references.
+     /// ```js
+     /// new WeakSet()
+     /// weakSet.add(object)
+     /// ```
+-    pub const WeakSet: JSType = JSType(91);
++    pub const WeakSet: JSType = JSType(92);
+ 
+-    pub(crate) const WebAssemblyModule: JSType = JSType(92);
+-    pub(crate) const WebAssemblyInstance: JSType = JSType(93);
+-    pub(crate) const WebAssemblyGCObject: JSType = JSType(94);
++    pub(crate) const WebAssemblyModule: JSType = JSType(93);
++    pub(crate) const WebAssemblyInstance: JSType = JSType(94);
++    pub(crate) const WebAssemblyGCObject: JSType = JSType(95);
+ 
+     /// Boxed String object.
+     /// ```js
+     /// new String("hello")
+     /// ```
+-    pub const StringObject: JSType = JSType(95);
++    pub const StringObject: JSType = JSType(96);
+ 
+-    pub const DerivedStringObject: JSType = JSType(96);
++    pub const DerivedStringObject: JSType = JSType(97);
+ 
+     pub const Event: JSType = JSType(0b11101111);
+     pub const DOMWrapper: JSType = JSType(0b11101110);
+diff --git a/src/jsc/VirtualMachine.rs b/src/jsc/VirtualMachine.rs
+index 3848fa53..816ff36b 100644
+--- a/src/jsc/VirtualMachine.rs
++++ b/src/jsc/VirtualMachine.rs
+@@ -1455,9 +1455,25 @@ impl VirtualMachine {
+         }
+         const MIN_BUDGET: usize = 8 * 1024 * 1024;
+         const MAX_BUDGET: usize = 128 * 1024 * 1024;
+-        let budget = graph
++        #[allow(unused_mut)]
++        let mut budget = graph
+             .module_graph_load_bytes()
+             .clamp(MIN_BUDGET, MAX_BUDGET);
++        // macOS: with a static heap the modules are not loaded from the graph's bytes, and what starting allocates outlives
++        // it a third as much (Pi: 7 of 21 MB); a budget of all those bytes only lets the heap grow larger before its first
++        // collection. Measured on Pi (budgets of 12, 16, 20 and 24 MB): at 12, a sixth less memory at the peak of a session
++        // and a few percent less CPU over it, for two small collections while it starts (2-3 ms of CPU, the same time to
++        // the first frame).
++        #[cfg(target_os = "macos")]
++        {
++            unsafe extern "C" {
++                safe fn Bun__AOTImage__isMapped() -> bool;
++            }
++            const STATIC_HEAP_BUDGET: usize = 12 * 1024 * 1024;
++            if Bun__AOTImage__isMapped() {
++                budget = budget.min(STATIC_HEAP_BUDGET);
++            }
++        }
+         if budget > MIN_BUDGET {
+             JSC__Heap__setInitialAllocationBudget(self.jsc_vm(), budget);
+         }
+diff --git a/src/jsc/bindings/BunClientData.cpp b/src/jsc/bindings/BunClientData.cpp
+index 6434aa34..97ac963d 100644
+--- a/src/jsc/bindings/BunClientData.cpp
++++ b/src/jsc/bindings/BunClientData.cpp
+@@ -1,6 +1,7 @@
+ #include "root.h"
+ 
+ #include "BunClientData.h"
++#include <JavaScriptCore/StaticHeap.h>
+ #include "WorkerMessagingProxy.h"
+ #include "WebCoreJSBuiltins.h"
+ 
+@@ -278,10 +279,15 @@ DOMClientIsoSubspaces::~DOMClientIsoSubspaces()
+     deleteSubspaceTable<JSC::GCClient::IsoSubspace>(this);
+ }
+ 
+-void JSVMClientData::setDecoderStringTable(std::span<const uint8_t> bytes)
++void JSVMClientData::setDecoderStringTable(JSC::VM& vm, std::span<const uint8_t> bytes)
+ {
+     if (m_decoderStringTable)
+         return; // slots may already hold cells this VM visits; never replace
++    // With the executable's static heap mapped, every string of the table is already there.
++    if (auto table = JSC::StaticHeap::tryCreateStringTable(vm, bytes)) {
++        m_decoderStringTable = WTF::move(table);
++        return;
++    }
+     m_decoderStringTable = makeUnique<JSC::DecoderStringTable>(bytes);
+ }
+ 
+diff --git a/src/jsc/bindings/BunClientData.h b/src/jsc/bindings/BunClientData.h
+index 34af44c7..004ab02b 100644
+--- a/src/jsc/bindings/BunClientData.h
++++ b/src/jsc/bindings/BunClientData.h
+@@ -301,7 +301,7 @@ public:
+     WTF::UncheckedKeyHashMap<WTF::String, RefPtr<JSC::SourceProvider>> isolationSourceProviderCache;
+ 
+     JSC::DecoderStringTable* decoderStringTable() final { return m_decoderStringTable.get(); }
+-    void setDecoderStringTable(std::span<const uint8_t>);
++    void setDecoderStringTable(JSC::VM&, std::span<const uint8_t>);
+ 
+     // The executable's pre-resolved module graph for this VM, created on first use over decoderStringTable() from the
+     // standalone module graph; null when there is none (or it does not validate).
+diff --git a/src/jsc/bindings/ErrorStackTrace.cpp b/src/jsc/bindings/ErrorStackTrace.cpp
+index 0b0e9e59..9aea36cf 100644
+--- a/src/jsc/bindings/ErrorStackTrace.cpp
++++ b/src/jsc/bindings/ErrorStackTrace.cpp
+@@ -31,16 +31,6 @@ using namespace WebCore;
+ 
+ namespace Zig {
+ 
+-static ImplementationVisibility getImplementationVisibility(JSC::CodeBlock* codeBlock)
+-{
+-
+-    if (auto* executable = codeBlock->ownerExecutable()) {
+-        return executable->implementationVisibility();
+-    }
+-
+-    return ImplementationVisibility::Public;
+-}
+-
+ bool isImplementationVisibilityPrivate(JSC::StackVisitor& visitor)
+ {
+     ImplementationVisibility implementationVisibility = [&]() -> ImplementationVisibility {
+@@ -53,8 +43,12 @@ bool isImplementationVisibilityPrivate(JSC::StackVisitor& visitor)
+             }
+         }
+ 
+-        if (auto* codeBlock = visitor->codeBlock()) {
+-            return getImplementationVisibility(codeBlock);
++        // ownerExecutable(), not codeBlock(): for a frame of code compiled ahead of time codeBlock() makes one, in the middle of
++        // the stack walk (StackVisitor.h: "Nothing else there is to ask of a Frame does that").
++        if (visitor->hasCode()) {
++            if (auto* executable = visitor->ownerExecutable())
++                return executable->implementationVisibility();
++            return ImplementationVisibility::Public;
+         }
+ 
+ #if ENABLE(WEBASSEMBLY)
+@@ -84,8 +78,10 @@ bool isImplementationVisibilityPrivate(const JSC::StackFrame& frame)
+             }
+         }
+ 
+-        if (auto* codeBlock = frame.codeBlock()) {
+-            return getImplementationVisibility(codeBlock);
++        // ownerExecutable(), not codeBlock(), which makes a CodeBlock for a frame of code compiled ahead of time.
++        if (frame.hasLineAndColumnInfo()) {
++            if (auto* executable = frame.ownerExecutable())
++                return executable->implementationVisibility();
+         }
+ 
+         return ImplementationVisibility::Public;
+@@ -228,7 +224,8 @@ JSCStackFrame::JSCStackFrame(JSC::VM& vm, const JSC::StackFrame& frame)
+         auto lineColumn = frame.computeLineAndColumn();
+         m_sourcePositions = { OrdinalNumber::fromOneBasedInt(lineColumn.line), OrdinalNumber::fromOneBasedInt(lineColumn.column) };
+         m_sourcePositionsState = SourcePositionsState::Calculated;
+-        auto codeType = frame.codeBlock()->codeType();
++        // frame.codeBlock() can be null here (ahead-of-time compiled code, at the end of a collection): ask the frame.
++        auto codeType = frame.codeType();
+         if (codeType == JSC::FunctionCode || codeType == JSC::EvalCode) {
+             m_isFunctionOrEval = true;
+         }
+@@ -280,6 +277,13 @@ ALWAYS_INLINE String JSCStackFrame::retrieveSourceURL()
+         return url;
+     }
+ 
++    // No CodeBlock, but code: a frame of code compiled ahead of time for which none could be made. Its executable says.
++    if (!m_codeBlock && m_stackFrame->hasLineAndColumnInfo()) {
++        url = Zig::sourceURL(m_vm, *m_stackFrame);
++        if (!url.isEmpty())
++            return url;
++    }
++
+     if (m_callee && m_callee->isObject()) {
+         if (auto* jsFunction = dynamicDowncast<JSFunction>(m_callee)) {
+             WTF::String url = Zig::sourceURL(m_vm, jsFunction);
+@@ -408,10 +412,26 @@ String sourceURL(JSC::VM& vm, const JSC::StackFrame& frame)
+     }
+ 
+     if (!frame.hasLineAndColumnInfo()) [[unlikely]] {
++        // An await frame without code to say where it is (JSC::Interpreter::getAsyncStackTrace makes one for a function compiled
++        // ahead of time whose code is not linked, and Bun's collectAsyncStackFramesFromPromise for every one of those): the file
++        // is still the function's, as JSC::StackFrame::sourceURL() says. Reads cells only, so it also runs at the end of a GC.
++        if (frame.isAsyncFrame() && frame.callee()) {
++            if (auto* function = dynamicDowncast<JSC::JSFunction>(frame.callee())) {
++                if (auto url = sourceURL(vm, function); !url.isEmpty())
++                    return url;
++            }
++        }
+         return "[native code]"_s;
+     }
+ 
+-    return sourceURL(frame.codeBlock());
++    // Read the source from the executable rather than frame.codeBlock(): code compiled ahead of time has no CodeBlock until
++    // one is made, and none can be made at the end of a collection, where stacks are also formatted. A CodeBlock's source
++    // is its owner executable's, so this reads the same either way.
++    if (auto* codeBlock = frame.codeBlockIfExists())
++        return sourceURL(codeBlock);
++    if (auto* executable = frame.ownerExecutable())
++        return sourceURL(executable->source());
++    return String();
+ }
+ 
+ String sourceURL(JSC::StackVisitor& visitor)
+@@ -421,7 +441,10 @@ String sourceURL(JSC::StackVisitor& visitor)
+     case JSC::StackVisitor::Frame::Module:
+     case JSC::StackVisitor::Frame::Function:
+     case JSC::StackVisitor::Frame::Global: {
+-        return sourceURL(visitor->codeBlock());
++        // The executable's source is the CodeBlock's; codeBlock() would make one for a frame of code compiled ahead of time.
++        if (auto* executable = visitor->ownerExecutable())
++            return sourceURL(executable->source());
++        return String();
+     }
+     case JSC::StackVisitor::Frame::Native:
+         return "[native code]"_s;
+@@ -513,12 +536,14 @@ String functionName(JSC::VM& vm, const JSC::StackFrame& frame, unsigned int* fla
+     JSC::JSObject* callee = frame.callee() ? frame.callee()->getObject() : nullptr;
+ 
+     if (frame.hasLineAndColumnInfo()) {
+-        auto* codeblock = frame.codeBlock();
+-        if (codeblock->isConstructor()) {
++        // Ask the frame, not frame.codeBlock(): a frame of code compiled ahead of time has no CodeBlock until one is made, and
++        // StackFrame::makeCodeBlock() returns null at the end of a collection, where this also runs
++        // (ErrorInstance::reconcileWeakReferencesAtGCEnd -> VM::onComputeErrorInfo). Dereferencing that null crashed.
++        if (frame.isConstructor()) {
+             isConstructor = true;
+         }
+ 
+-        auto codeType = codeblock->codeType();
++        auto codeType = frame.codeType();
+         switch (codeType) {
+         case JSC::CodeType::FunctionCode:
+         case JSC::CodeType::EvalCode: {
+@@ -532,7 +557,7 @@ String functionName(JSC::VM& vm, const JSC::StackFrame& frame, unsigned int* fla
+             if (callee) {
+                 functionName = Zig::functionName(vm, callee);
+ 
+-                if (flags && codeblock->unlinkedCodeBlock()->isBuiltinFunction()) {
++                if (flags && frame.isBuiltinFunction()) {
+                     *flags |= static_cast<unsigned int>(FunctionNameFlags::Builtin);
+                 }
+             }
+@@ -543,8 +568,10 @@ String functionName(JSC::VM& vm, const JSC::StackFrame& frame, unsigned int* fla
+         }
+         }
+ 
+-        if (functionName.isEmpty()) {
+-            functionName = Zig::functionName(vm, codeblock);
++        if (functionName.isEmpty() && codeType == JSC::FunctionCode) {
++            // What Zig::functionName(vm, CodeBlock*) returns, from the executable the frame already has.
++            if (auto* executable = dynamicDowncast<JSC::FunctionExecutable>(frame.ownerExecutable()))
++                functionName = executable->ecmaNameWithoutGC();
+         }
+     } else if (callee) {
+         functionName = Zig::functionName(vm, callee);
+diff --git a/src/jsc/bindings/FormatStackTraceForJS.cpp b/src/jsc/bindings/FormatStackTraceForJS.cpp
+index cebb7c8f..a49505f3 100644
+--- a/src/jsc/bindings/FormatStackTraceForJS.cpp
++++ b/src/jsc/bindings/FormatStackTraceForJS.cpp
+@@ -335,7 +335,15 @@ WTF::String formatStackTrace(
+         remappedFrame.position.byte_position = -1;
+         originalLineColumns[i] = {};
+ 
+-        if (!frame.hasLineAndColumnInfo()) continue;
++        if (!frame.hasLineAndColumnInfo()) {
++            // An await frame without code (e.g. of a function compiled ahead of time) still has the function's file, rather
++            // than "unknown"; with no line there is nothing to remap.
++            if (frame.isAsyncFrame() && frame.callee()) {
++                if (auto* function = dynamicDowncast<JSC::JSFunction>(frame.callee()))
++                    sourceURLs[i] = Zig::sourceURL(vm, function);
++            }
++            continue;
++        }
+ 
+         originalLineColumns[i] = frame.computeLineAndColumn();
+ 
+@@ -696,8 +704,16 @@ static void protectFrameCells(JSC::MarkedArgumentBuffer& cells, const Vector<Sta
+     for (auto& frame : stackTrace) {
+         if (auto* callee = frame.callee())
+             cells.append(callee);
+-        if (auto* codeBlock = frame.codeBlock())
++        // Root what StackFrame::isMarked() asks about, without frame.codeBlock(): for a frame of code compiled ahead of time
++        // that makes a CodeBlock (allocating, and decoding an unlinked code block, for each such function that ever appears
++        // in a formatted stack, kept for the life of the program) and returns null when no AOT function is found, which left
++        // the frame's executable (JSFrameData::aotExecutable) unrooted while Error.prepareStackTrace runs.
++        if (auto* codeBlock = frame.codeBlockIfExists())
+             cells.append(codeBlock);
++        else if (frame.hasLineAndColumnInfo()) {
++            if (auto* executable = frame.ownerExecutable())
++                cells.append(executable);
++        }
+     }
+ }
+ 
+@@ -764,10 +780,13 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionDefaultErrorPrepareStackTrace, (JSGlobalObjec
+     auto scope = DECLARE_THROW_SCOPE(vm);
+     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
+ 
+-    auto errorObject = dynamicDowncast<JSC::ErrorInstance>(callFrame->argument(0));
++    // Any object: Error.captureStackTrace() takes any, and a prepareStackTrace that wraps this one (source-map
++    // support, Babel's) hands it what it was given. V8 heads the stack of an object that is not an Error the same
++    // way, with its `name` and `message`.
++    JSC::JSObject* errorObject = callFrame->argument(0).getObject();
+     auto callSites = dynamicDowncast<JSC::JSArray>(callFrame->argument(1));
+     if (!errorObject) {
+-        throwTypeError(lexicalGlobalObject, scope, "First argument must be an Error object"_s);
++        throwTypeError(lexicalGlobalObject, scope, "First argument must be an object"_s);
+         return {};
+     }
+     if (!callSites) {
+diff --git a/src/jsc/bindings/InternalModuleRegistry.cpp b/src/jsc/bindings/InternalModuleRegistry.cpp
+index baf1b157..d2182382 100644
+--- a/src/jsc/bindings/InternalModuleRegistry.cpp
++++ b/src/jsc/bindings/InternalModuleRegistry.cpp
+@@ -7,6 +7,7 @@
+ #include <JavaScriptCore/VMTrapsInlines.h>
+ #include <JavaScriptCore/JSModuleLoader.h>
+ #include <JavaScriptCore/Debugger.h>
++#include <JavaScriptCore/StaticHeap.h>
+ #include <atomic>
+ #include <utility>
+ 
+@@ -113,18 +114,24 @@ JSC::JSValue generateInternalModule(JSC::JSGlobalObject* globalObject, JSC::VM&
+     maybeAddCodeCoverage(vm, source);
+ 
+     UnlinkedFunctionExecutable* executable = nullptr;
++    JSC::FunctionExecutable* linked = nullptr;
+     const uint8_t* cachedBytes = nullptr;
+     size_t cachedSize = 0;
+     uint32_t cachedEntryOffset = 0;
+     if (Bun__standaloneInternalModuleBytecode(::bunVM(globalObject), id, &cachedBytes, &cachedSize, &cachedEntryOffset)) {
+-        executable = JSC::decodeBuiltinFunction(vm, embeddedBytecode({ const_cast<uint8_t*>(cachedBytes), cachedSize }, cachedEntryOffset), *source.provider(), bun_internal_modules_header.sourceStamp);
+-        if (executable)
++        // The executable's static heap made it when the program was built, and code compiled ahead of time knows it as that one.
++        linked = JSC::StaticHeap::builtinFunctionFor(globalObject, cachedEntryOffset, bun_internal_modules_header.sourceStamp, source.provider()->source().toString(), source.provider()->sourceOrigin(), source.provider()->sourceURL());
++        if (!linked)
++            executable = JSC::decodeBuiltinFunction(vm, embeddedBytecode({ const_cast<uint8_t*>(cachedBytes), cachedSize }, cachedEntryOffset), *source.provider(), bun_internal_modules_header.sourceStamp);
++        if (linked || executable)
+             s_internalModulesFromBytecode.fetch_add(1, std::memory_order_relaxed);
+     }
+-    if (!executable)
++    if (!linked && !executable)
+         executable = createInternalModuleExecutable(vm, source, moduleName);
++    if (!linked)
++        linked = executable->link(vm, nullptr, source);
+ 
+-    JSFunction* func = JSFunction::create(vm, globalObject, executable->link(vm, nullptr, source), static_cast<JSC::JSGlobalObject*>(globalObject));
++    JSFunction* func = JSFunction::create(vm, globalObject, linked, static_cast<JSC::JSGlobalObject*>(globalObject));
+ 
+     RETURN_IF_EXCEPTION(throwScope, {});
+     if (globalObject->hasDebugger() && globalObject->debugger()->isInteractivelyDebugging()) [[unlikely]] {
+diff --git a/src/jsc/bindings/ZigException.cpp b/src/jsc/bindings/ZigException.cpp
+index cfd1059c..e6aa41f7 100644
+--- a/src/jsc/bindings/ZigException.cpp
++++ b/src/jsc/bindings/ZigException.cpp
+@@ -30,6 +30,7 @@
+ #include "JavaScriptCore/JSObject.h"
+ #include "JavaScriptCore/JSString.h"
+ #include "JavaScriptCore/StackFrame.h"
++#include "JavaScriptCore/DeferGC.h"
+ #include "JavaScriptCore/VM.h"
+ #include "ZigGlobalObject.h"
+ #include "helpers.h"
+@@ -84,9 +85,9 @@ static void populateStackFrameMetadata(JSC::VM& vm, const JSC::StackFrame& stack
+ 
+     auto sourceURL = Zig::sourceURL(vm, stackFrame);
+     frame.source_url = Bun::toStringRef(sourceURL);
+-    auto m_codeBlock = stackFrame.codeBlock();
+-    if (m_codeBlock) {
+-        switch (m_codeBlock->codeType()) {
++    // Ask the frame, not stackFrame.codeBlock(): for code compiled ahead of time that makes a CodeBlock just to read these.
++    if (stackFrame.hasLineAndColumnInfo()) {
++        switch (stackFrame.codeType()) {
+         case JSC::EvalCode: {
+             frame.code_type = ZigStackFrameCodeEval;
+             return;
+@@ -100,7 +101,7 @@ static void populateStackFrameMetadata(JSC::VM& vm, const JSC::StackFrame& stack
+             return;
+         }
+         case JSC::FunctionCode: {
+-            frame.code_type = !m_codeBlock->isConstructor() ? ZigStackFrameCodeFunction : ZigStackFrameCodeConstructor;
++            frame.code_type = !stackFrame.isConstructor() ? ZigStackFrameCodeFunction : ZigStackFrameCodeConstructor;
+             break;
+         }
+         default:
+@@ -412,6 +413,11 @@ public:
+ static void populateStackTrace(JSC::VM& vm, const WTF::Vector<JSC::StackFrame>& frames, ZigStackTrace& trace, PopulateStackTraceFlags flags)
+ {
+     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++    // `frames` is often an ErrorInstance's own weak trace (fromErrorInstance, JSC__JSValue__toZigException). A collection that
++    // finds one of its frames dead materializes it and frees the vector (ErrorInstance::reconcileWeakReferencesAtGCEnd), so none
++    // may run while it is read. StackFrame::codeBlock() allocates for a frame of code compiled ahead of time
++    // (populateStackFramePosition still needs a CodeBlock for the divot).
++    JSC::DeferGCForAWhile deferGC(vm);
+     if (flags == PopulateStackTraceFlags::OnlyPosition) {
+         uint8_t frame_i = 0;
+         size_t stack_frame_i = 0;
+diff --git a/src/jsc/bindings/ZigGlobalObject.cpp b/src/jsc/bindings/ZigGlobalObject.cpp
+index 9de807ad..bb219910 100644
+--- a/src/jsc/bindings/ZigGlobalObject.cpp
++++ b/src/jsc/bindings/ZigGlobalObject.cpp
+@@ -1,4 +1,5 @@
+ #include "root.h"
++#include <mimalloc.h>
+ 
+ #include "ZigGlobalObject.h"
+ #include "BunModuleRegistry.h"
+@@ -268,6 +269,18 @@ static consteval unsigned getWebKitBytecodeCacheVersion()
+ {
+     return WTF::SuperFastHash::computeHash(WEBKIT_BYTECODE_CACHE_HASH_KEY);
+ }
++
++// The static heap is stamped with the bytecode cache version, and it is mapped before JSCInitialize() runs.
++extern "C" void Bun__setBytecodeCacheVersion()
++{
++    JSC::dangerouslyOverrideJSCBytecodeCacheVersion(getWebKitBytecodeCacheVersion());
++}
++
++// ZigSourceProvider.cpp: an executable's code compiled ahead of time, and building one.
++extern "C" bool Bun__shouldCompileAheadOfTime();
++extern "C" void Bun__setOptionsForAheadOfTimeCode();
++extern "C" bool Bun__AOTImage__isMapped();
++extern "C" void Bun__AOTImage__register();
+ #undef WEBKIT_BYTECODE_CACHE_HASH_KEY
+ 
+ // Declare fuzzilli function registration from FuzzilliREPRL.cpp
+@@ -288,6 +301,15 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+     static std::once_flag jsc_init_flag;
+     // NOLINTBEGIN
+     std::call_once(jsc_init_flag, [evalMode, oneShotStartup, shortLivedGlobals, envp, envc, onCrash]() {
++        // Before any option is set: with the AOT engine, Options::notifyOptionsChanged() turns useJIT off for good if the compilers
++        // are not installed (CompilerHooks.h). This also installs the compiler of images for `bun build --compile`.
++        JSC::installCompilers();
++#if OS(DARWIN)
++        // Bun is no sandboxed process: mach exception handlers are allowed. Unknown, JSC takes a JIT turned off (as in an
++        // ahead-of-time executable) for a sign of a sandbox that blocks them, and turns SharedArrayBuffer and Wasm's fast
++        // memory off with it.
++        JSC::Options::machExceptionHandlerSandboxPolicy = JSC::Options::SandboxPolicy::Allow;
++#endif
+         Bun__ensureICUDefaultLocale();
+         JSC::Config::enableRestrictedOptions();
+         // JSC options come from BUN_JSC_* (applied in the callback below), not JSC_*.
+@@ -363,6 +385,19 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+                 JSC::Options::thresholdForFTLOptimizeAfterWarmUp() = 1000000;
+             }
+ 
++            // Code compiled ahead of time only fits bytecode made the way it was compiled from (BUN_JSC_* can still override).
++            if (Bun__AOTImage__isMapped() || Bun__shouldCompileAheadOfTime())
++                Bun__setOptionsForAheadOfTimeCode();
++            if (Bun__AOTImage__isMapped())
++                JSC::Options::useAOT() = true;
++
++            // A program compiled ahead of time is an interactive one: its collections are small and many, and waking seven
++            // marker threads for each costs more in wake-ups than the threads save in marking (measured on Pi: three fifths
++            // of a session's futex calls, a tenth of its CPU while a reply streams). The collector and one helper mark.
++            // BUN_JSC_numberOfGCMarkers, below, overrides.
++            if (Bun__AOTImage__isMapped() && JSC::Options::numberOfGCMarkers() > 2)
++                JSC::Options::numberOfGCMarkers() = 2;
++
+             if (envc > 0) [[likely]] {
+                 auto envc_copy = envc;
+                 while (envc_copy--) {
+@@ -378,8 +413,18 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+                     }
+                 }
+             }
++            // Again after BUN_JSC_*: code compiled ahead of time is only right for bytecode made the way it was compiled from.
++            if (Bun__AOTImage__isMapped())
++                Bun__setOptionsForAheadOfTimeCode();
+             JSC::Options::assertOptionsAreCoherent();
+         }); // end JSC::initialize lambda
++        Bun__AOTImage__register();
++        // The same program parks its thread many times a second (every wait for the model or the terminal), and each park
++        // may sweep the heap for free blocks to give back. Every quarter of a second gives back as much within moments, for
++        // less work than every tenth (measured on Pi: a tenth less CPU while a reply streams, the same memory once idle).
++        // MIMALLOC_PURGE_HOLES_MIN_INTERVAL overrides.
++        if (Bun__AOTImage__isMapped() && !getenv("MIMALLOC_PURGE_HOLES_MIN_INTERVAL"))
++            mi_option_set(mi_option_purge_holes_min_interval, 250);
+ 
+ #if OS(WINDOWS) && (CPU(X86_64) || CPU(ARM64))
+         // JSC::initialize() registered unwind info + a language-specific SEH
+diff --git a/src/jsc/bindings/ZigSourceProvider.cpp b/src/jsc/bindings/ZigSourceProvider.cpp
+index fbfaa2ff..b2bab3c0 100644
+--- a/src/jsc/bindings/ZigSourceProvider.cpp
++++ b/src/jsc/bindings/ZigSourceProvider.cpp
+@@ -2,6 +2,14 @@
+ 
+ #include "helpers.h"
+ 
++#if !OS(WINDOWS)
++#include <sys/mman.h>
++#if OS(DARWIN)
++#include <dlfcn.h>
++#include <mach-o/dyld.h>
++#include <mach-o/loader.h>
++#endif
++#endif
+ #include "ZigSourceProvider.h"
+ #include "MimallocWTFMalloc.h"
+ #include "BunAnalyzeTranspiledModule.h"
+@@ -16,8 +24,17 @@
+ #include <JavaScriptCore/SourceCodeKey.h>
+ #include <mimalloc.h>
+ #include <JavaScriptCore/CodeCache.h>
++#include <JavaScriptCore/StaticHeap.h>
++#include <JavaScriptCore/CachedTypes.h>
++#include <JavaScriptCore/MacroAssembler.h>
++#include <JavaScriptCore/Options.h>
++#include <wtf/text/AtomStringTable.h>
+ #include "BunBuiltinNames.h"
+ 
++namespace JSC::AOT {
++JS_EXPORT_PRIVATE uint64_t imageStamp(); // AOTImage.h, which is not a forwarding header.
++}
++
+ namespace Zig {
+ 
+ using SourceOrigin = JSC::SourceOrigin;
+@@ -105,6 +122,28 @@ Ref<SourceProvider> SourceProvider::create(
+             if (resolvedSource.bytecode_cache_persistent)
+                 bytecode->setPayloadIsPersistent();
+             bytecode->setEntryOffset(resolvedSource.bytecode_cache_entry_offset);
++            // A module of the static heap: its executables were made at build time and point at the provider's place.
++            static_assert(sizeof(SourceProvider) <= JSC::StaticHeap::sizeOfPlaceForSourceProvider);
++            JSC::SourceProvider* made = nullptr;
++            if (void* place = JSC::StaticHeap::takePlaceForSourceProvider(globalObject->vm(), resolvedSource.bytecode_cache_entry_offset, sizeof(SourceProvider), made)) {
++                auto* placed = new (NotNull, place) SourceProvider(
++                    globalObject->bunVM(),
++                    resolvedSource,
++                    string.isNull() ? Ref { *StringImpl::empty() } : Ref { *string.impl() },
++                    JSC::SourceTaintedOrigin::Untainted,
++                    origin,
++                    WTF::move(sourceURLString), TextPosition(),
++                    sourceType);
++                placed->m_hash = resolvedSource.source_code_hash;
++                placed->m_cachedBytecode = WTF::move(bytecode);
++                placed->setAOTModuleID(resolvedSource.bytecode_cache_entry_offset + 1);
++                placed->becomeShareableBetweenThreads();
++                placed->ref(); // Never destroyed: the static heap refers to it.
++                JSC::StaticHeap::didMakeSourceProvider(place);
++                return adoptRef(*placed);
++            }
++            if (made)
++                return Ref { *static_cast<SourceProvider*>(made) };
+             auto provider = adoptRef(*new SourceProvider(
+                 globalObject->bunVM(),
+                 resolvedSource,
+@@ -224,7 +263,7 @@ extern "C" void JSC__Heap__setInitialAllocationBudget(JSC::VM* vm, size_t bytes)
+ extern "C" void Bun__DecoderStringTable__install(JSC::VM* vm, const uint8_t* bytes, size_t len)
+ {
+     ASSERT(vm->clientData);
+-    static_cast<WebCore::JSVMClientData*>(vm->clientData)->setDecoderStringTable(std::span<const uint8_t>(bytes, len));
++    static_cast<WebCore::JSVMClientData*>(vm->clientData)->setDecoderStringTable(*vm, std::span<const uint8_t>(bytes, len));
+ }
+ 
+ extern "C" uint32_t Bun__EncoderStringTable__slotForLatin1(JSC::EncoderStringTable* table, const Latin1Character* chars, size_t length)
+@@ -290,17 +329,383 @@ extern "C" bool generateCachedCommonJSProgramByteCodeFromSourceCode(const BunStr
+     return generateCachedByteCodeFromSourceCode(sourceProviderURL, inputSourceCode, false, depth, optimize, outputByteCode, outputByteCodeSize, cachedBytecodePtr, externalStrings);
+ }
+ 
++// BUN_STATIC_HEAP=1 while building: JSC::StaticHeap is also built for the link's payload, and the executable maps it instead of
++// decoding. The link's string table, and the image while Bun__StaticHeap__takeBuilt has not taken it.
++static JSC::EncoderStringTable* s_stringsOfLinkEncoder;
++static Vector<uint8_t> s_builtStaticHeap;
++
++extern "C" bool Bun__AOTImage__isMapped();
++static bool shouldBuildStaticHeap()
++{
++    const char* value = getenv("BUN_STATIC_HEAP");
++    return value && value[0] == '1';
++}
++
++// BUN_AOT=1 as well: every function of the link is compiled ahead of time (JSC::AOT::Image), and the image follows the static heap
++// in what Bun__StaticHeap__takeBuilt hands out, on a page boundary, with a trailer that says where (AOTImageTrailer).
++extern "C" bool Bun__shouldCompileAheadOfTime()
++{
++    const char* value = getenv("BUN_AOT");
++    return value && value[0] == '1' && shouldBuildStaticHeap();
++}
++
++struct AOTImageTrailer {
++    static constexpr uint64_t expectedMagic = 0x33474d49544f4142ULL; // "BAOTIMG3"
++    // Engine options that the code takes for granted, and that the image's stamp (AOT::imageStamp()) includes: the executable sets
++    // them itself, before it checks the stamp.
++    static constexpr uint64_t immutableIntrinsics = 1;
++    // Not taken for granted by the code, but chosen when it was built (BUN_AOT_JIT=0): the program runs with the JIT off, as code
++    // compiled ahead of time is meant to. Less memory and no runtime code generation; every function runs the image's code.
++    static constexpr uint64_t withoutJIT = 2;
++    uint64_t offsetOfImage;
++    uint64_t sizeOfImage;
++    uint64_t cpuFeatures; // What the code was compiled to use (cpuFeaturesOfCode()). A CPU without one of them runs without the image.
++    uint64_t optionsOfCode;
++    uint64_t magic;
++};
++static uint64_t s_optionsOfMappedCode;
++
++// The instruction set extensions that the compiler picks instructions by (MacroAssemblerX86_64::supports*(), and
++// MacroAssemblerARM64's), as of now: when the image is compiled, what it was compiled for; when the program runs, what this CPU has.
++static uint64_t cpuFeaturesOfCode()
++{
++    uint64_t features = 0;
++#if CPU(X86_64)
++    using M = JSC::MacroAssemblerX86_64;
++    // (The states, which are public, rather than supports*(): restrictCPUFeaturesForCodeIfAsked() sets them.)
++    if (M::s_sse3CheckState == M::CPUIDCheckState::NotChecked)
++        M::collectCPUFeatures();
++    unsigned bit = 0;
++    for (auto state : { M::s_sse3CheckState, M::s_supplementalSSE3CheckState, M::s_sse4_1CheckState, M::s_popcntCheckState, M::s_avxCheckState, M::s_avx2CheckState, M::s_lzcntCheckState, M::s_bmi1CheckState }) {
++        bool has = state == M::CPUIDCheckState::Set;
++        if (has)
++            features |= 1ull << bit;
++        ++bit;
++    }
++#elif CPU(ARM64)
++    // (supports*(), as these states are private; each is true without asking where the runtime is built to need it anyway.)
++    using M = JSC::MacroAssemblerARM64;
++    unsigned bit = 0;
++    for (bool has : { M::supportsLSE(), M::supportsDoubleToInt32ConversionUsingJavaScriptSemantics(), M::supportsFloat16(), M::supportsRoundFloatToIntegerFloat(), M::supportsSHA3(), M::supportsDotProd() }) {
++        if (has)
++            features |= 1ull << bit;
++        ++bit;
++    }
++#endif
++    return features;
++}
++
++// BUN_AOT_CPU=baseline while building: code for any x86-64 CPU that Bun's baseline build runs on (Nehalem: SSE4.2 and POPCNT,
++// without AVX, AVX2, LZCNT or BMI1). Otherwise the code uses what the building CPU has, and only runs on CPUs that have it too.
++static void restrictCPUFeaturesForCodeIfAsked()
++{
++#if CPU(X86_64)
++    const char* value = getenv("BUN_AOT_CPU");
++    if (!value || strcmp(value, "baseline"))
++        return;
++    using M = JSC::MacroAssemblerX86_64;
++    M::collectCPUFeatures();
++    M::s_avxCheckState = M::CPUIDCheckState::Clear;
++    M::s_avx2CheckState = M::CPUIDCheckState::Clear;
++    M::s_lzcntCheckState = M::CPUIDCheckState::Clear;
++    M::s_bmi1CheckState = M::CPUIDCheckState::Clear;
++#endif
++}
++static constexpr size_t pageSizeOfStaticHeap = 16 * 1024;
++static Vector<uint8_t> s_builtAOTImage;
++
++// What the program's code was compiled for is how its bytecode is made, which is set before any is.
++extern "C" void Bun__setOptionsForAheadOfTimeCode()
++{
++    if (s_optionsOfMappedCode & AOTImageTrailer::immutableIntrinsics)
++        JSC::Options::useImmutableIntrinsics() = true;
++    if (s_optionsOfMappedCode & AOTImageTrailer::withoutJIT)
++        JSC::Options::useJIT() = false;
++    // Building: what JSC records for the JIT in the cells it makes (watchpoints, profiles) is not what the program finds when it
++    // runs, so the bundler's VM must not JIT. (Running: the trailer decides, above.)
++    if (!Bun__AOTImage__isMapped() && shouldBuildStaticHeap())
++        JSC::Options::useJIT() = false;
++    JSC::Options::resolveAllScopeSlotsStatically() = true;
++    JSC::Options::evaluateObjectLiteralValuesFirst() = true;
++    JSC::Options::definePlainInstanceFieldsInConstructor() = true;
++    // With the JIT off, JSC otherwise runs in "mini mode" (no generational GC, synchronous sweeping, 1.2x heap growth): meant for a VM
++    // that interprets everything, not for one whose code is compiled ahead of time. (OptionsList.h says so; nothing did it.)
++    JSC::Options::useMiniVMModeWithoutJIT() = false;
++}
++
++#if OS(DARWIN)
++// What of the heap points into this executable (moved, unless at the address it was linked for: c-bindings.cpp), and whether
++// anything points at a function or object of the system's libraries, which move at every boot: a heap must not. (A word in
++// their range that is not at the start of a symbol is taken for a number: the range is gigabytes wide.)
++static void checkPointersOutOfStaticHeap(std::span<const uint8_t> heap)
++{
++    const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(0));
++    uintptr_t slide = _dyld_get_image_vmaddr_slide(0);
++    uintptr_t executableStart = 0, executableEnd = 0;
++    const auto* command = reinterpret_cast<const load_command*>(header + 1);
++    for (uint32_t i = 0; i < header->ncmds; ++i) {
++        if (command->cmd == LC_SEGMENT_64) {
++            const auto* segment = reinterpret_cast<const segment_command_64*>(command);
++            if (strcmp(segment->segname, "__PAGEZERO") && strcmp(segment->segname, "__LINKEDIT")) {
++                uintptr_t start = segment->vmaddr + slide;
++                if (!executableStart || start < executableStart)
++                    executableStart = start;
++                executableEnd = std::max<uintptr_t>(executableEnd, start + segment->vmsize);
++            }
++        }
++        command = reinterpret_cast<const load_command*>(reinterpret_cast<const uint8_t*>(command) + command->cmdsize);
++    }
++    size_t sharedCacheSize = 0;
++    uintptr_t sharedCache = 0;
++    // (Not in the SDK's headers.)
++    if (auto* range = reinterpret_cast<const void* (*)(size_t*)>(dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_range")))
++        sharedCache = reinterpret_cast<uintptr_t>(range(&sharedCacheSize));
++    size_t intoExecutable = 0, intoSystem = 0;
++    for (size_t at = 0; at + sizeof(uint64_t) <= heap.size(); at += sizeof(uint64_t)) {
++        uint64_t word;
++        memcpy(&word, heap.data() + at, sizeof(word));
++        if (word >= executableStart && word < executableEnd) {
++            ++intoExecutable;
++            continue;
++        }
++        if (word < sharedCache || word >= sharedCache + sharedCacheSize || word % 4)
++            continue;
++        Dl_info info;
++        // (A library's header, __dso_handle, is where nothing points: a round number that happens to be one. So is an address in a
++        // library of the cache that this process has not loaded.)
++        if (!dladdr(reinterpret_cast<const void*>(word), &info) || reinterpret_cast<uintptr_t>(info.dli_saddr) != word || info.dli_saddr == info.dli_fbase)
++            continue;
++        bool isLoaded = false;
++        for (uint32_t i = 0, count = _dyld_image_count(); i < count && !isLoaded; ++i)
++            isLoaded = _dyld_get_image_header(i) == info.dli_fbase;
++        if (!isLoaded)
++            continue;
++        if (intoSystem++ < 20)
++            fprintf(stderr, "warning: the static heap points at %s in %s (%llx, at %zu); it moves at every boot\n", info.dli_sname ? info.dli_sname : "?", info.dli_fname ? info.dli_fname : "?", static_cast<unsigned long long>(word), at);
++    }
++    if (getenv("BUN_STATIC_HEAP_VERBOSE") || intoSystem)
++        fprintf(stderr, "[static heap] %zu words point into the executable, %zu at the system's libraries\n", intoExecutable, intoSystem);
++}
++#endif
++
++extern "C" bool Bun__StaticHeap__takeBuilt(uint8_t** data, size_t* size)
++{
++    if (s_builtStaticHeap.isEmpty())
++        return false;
++#if OS(DARWIN)
++    if (_dyld_get_image_vmaddr_slide(0)) {
++        // (c-bindings.cpp starts a build with BUN_STATIC_HEAP=1 again without ASLR; that did not work.)
++        fprintf(stderr, "error: the static heap can only be built with the executable at the address it was linked for (ASLR off); building without it\n");
++        s_builtStaticHeap = { };
++        s_builtAOTImage = { };
++        return false;
++    }
++    checkPointersOutOfStaticHeap(s_builtStaticHeap.span());
++#endif
++    size_t offsetOfImage = WTF::roundUpToMultipleOf<pageSizeOfStaticHeap>(s_builtStaticHeap.size());
++    *size = s_builtAOTImage.isEmpty() ? s_builtStaticHeap.size() : offsetOfImage + s_builtAOTImage.size() + sizeof(AOTImageTrailer);
++    *data = static_cast<uint8_t*>(mi_zalloc(*size));
++    memcpy(*data, s_builtStaticHeap.span().data(), s_builtStaticHeap.size());
++    if (!s_builtAOTImage.isEmpty()) {
++        memcpy(*data + offsetOfImage, s_builtAOTImage.span().data(), s_builtAOTImage.size());
++        uint64_t options = JSC::Options::useImmutableIntrinsics() ? AOTImageTrailer::immutableIntrinsics : 0;
++        if (const char* jit = getenv("BUN_AOT_JIT"); jit && jit[0] == '0')
++            options |= AOTImageTrailer::withoutJIT;
++        AOTImageTrailer trailer { offsetOfImage, s_builtAOTImage.size(), cpuFeaturesOfCode(), options, AOTImageTrailer::expectedMagic };
++        memcpy(*data + *size - sizeof(trailer), &trailer, sizeof(trailer));
++    }
++    s_builtStaticHeap = { };
++    s_builtAOTImage = { };
++    return true;
++}
++
++extern "C" void Bun__StaticHeap__freeBuilt(uint8_t* data)
++{
++    mi_free(data);
++}
++
++// The code image that follows the static heap, if there is one (AOTImageTrailer): mapped where the static heap was built to find it,
++// the code executable and the rest read-only, and registered by Bun__AOTImage__register() once JSC is initialized.
++static std::span<const uint8_t> s_mappedAOTImage;
++static const void* s_codeOfMappedAOTImage;
++static const char* s_whyNotMapped; // When mapAOTImage() returns false for an image that is there.
++
++static bool hasAOTImageTrailer(const uint8_t* blob, size_t size)
++{
++    AOTImageTrailer trailer;
++    if (size < sizeof(trailer))
++        return false;
++    memcpy(&trailer, blob + size - sizeof(trailer), sizeof(trailer));
++    return trailer.magic == AOTImageTrailer::expectedMagic;
++}
++
++// False if the blob has an image that cannot be used: then the static heap, which was built for that code, is not used either.
++static bool mapAOTImage(const uint8_t* image, size_t size, int fd, uint64_t offsetInFile)
++{
++    bool verbose = getenv("BUN_STATIC_HEAP_VERBOSE");
++    // BUN_AOT=0: run without the code compiled ahead of time (to compare, or to rule it out).
++    if (const char* value = getenv("BUN_AOT"); value && value[0] == '0') {
++        if (verbose)
++            fprintf(stderr, "[aot] not used: BUN_AOT=0\n");
++        return !hasAOTImageTrailer(image, size);
++    }
++    if (!hasAOTImageTrailer(image, size))
++        return true; // A static heap without code.
++    AOTImageTrailer trailer;
++    memcpy(&trailer, image + size - sizeof(trailer), sizeof(trailer));
++    if (trailer.offsetOfImage % pageSizeOfStaticHeap || trailer.offsetOfImage > size || trailer.sizeOfImage > size - trailer.offsetOfImage)
++        return false;
++    // (Before anything compares stamps: JSCInitialize() sets them again, as Options::initialize() resets every option.)
++    s_optionsOfMappedCode = trailer.optionsOfCode;
++    if (trailer.optionsOfCode & AOTImageTrailer::immutableIntrinsics)
++        JSC::Options::useImmutableIntrinsics() = true;
++    if (uint64_t missing = trailer.cpuFeatures & ~cpuFeaturesOfCode()) {
++        if (verbose)
++            fprintf(stderr, "[aot] not used: the code was compiled for CPU features this CPU lacks (%llx)\n", static_cast<unsigned long long>(missing));
++        s_whyNotMapped = "this CPU lacks an instruction set the code was compiled for";
++        return false;
++    }
++    std::span<const uint8_t> inFile { image + trailer.offsetOfImage, static_cast<size_t>(trailer.sizeOfImage) };
++    auto range = JSC::aotImageCodeRange(inFile);
++    if (!range || range->first % pageSizeOfStaticHeap) {
++        if (verbose)
++            fprintf(stderr, "[aot] the image is not one for this engine\n");
++        s_whyNotMapped = "the image is not one for this engine";
++        return false;
++    }
++    using Region = bmalloc::StaticRegion;
++    uint64_t at = offsetInFile + trailer.offsetOfImage;
++    if (!Region::map(Region::Arena::Image, fd, static_cast<off_t>(at), range->first, 0, false)
++        || !Region::map(Region::Arena::Image, fd, static_cast<off_t>(at + range->first), WTF::roundUpToMultipleOf(WTF::pageSize(), range->second), range->first, true)) {
++        if (verbose)
++            fprintf(stderr, "[aot] the image could not be mapped\n");
++        s_whyNotMapped = "the image could not be mapped executable";
++        return false;
++    }
++    auto* base = reinterpret_cast<const uint8_t*>(Region::startOf(Region::Arena::Image));
++    s_mappedAOTImage = { base, inFile.size() };
++    s_codeOfMappedAOTImage = base + range->first;
++    if (verbose)
++        fprintf(stderr, "[aot] image of %zu bytes mapped, %zu of them code\n", inFile.size(), range->second);
++    return true;
++}
++
++extern "C" bool Bun__AOTImage__isMapped()
++{
++    return !s_mappedAOTImage.empty();
++}
++
++// After JSC::initialize(), before any JavaScript runs.
++extern "C" void Bun__AOTImage__register()
++{
++    if (s_mappedAOTImage.empty())
++        return;
++    bool registered = JSC::registerAOTImage(s_mappedAOTImage, s_codeOfMappedAOTImage);
++    if (getenv("BUN_STATIC_HEAP_VERBOSE"))
++        fprintf(stderr, "[aot] image registered: %s\n", registered ? "true" : "false");
++    if (!registered) {
++        // The static heap, which is mapped and was built with this code, cannot run without it (short-form executables point into
++        // it), and the engine is initialized by now: stop here, rather than at the first call.
++        fprintf(stderr, "bun: the executable's ahead-of-time code image was rejected by the engine; run with BUN_AOT=0 to use the bytecode instead\n");
++        exit(70); // EX_SOFTWARE
++    }
++}
++
++// Call on a thread that will run a VM other than the first, before it makes any atom string: that VM then uses the static heap
++// too (JSC::StaticHeap::install() for it needs this). A no-op without a heap, or with the JIT on (its compiler threads would read
++// cells whose locks are not taken).
++extern "C" void Bun__StaticHeap__prepareThread()
++{
++    JSC::StaticHeap::prepareThread();
++}
++
++// At startup, on the main thread, before anything makes an atom string: the executable's static heap, page-aligned at
++// `offsetInFile` of `fd`. False if it is not for this engine or the address range is taken; the program then decodes as usual.
++extern "C" void Bun__setBytecodeCacheVersion();
++
++// The code takes Structures to be in the 4 GB right after the static region (AOT::structureIDBaseOfImages), where JSC puts them if
++// it can when it initializes. Whether it can is known now: an address space limit (RLIMIT_AS, vm.overcommit_memory=2) or a taken
++// address would otherwise be found out by an assertion at the first call into the image.
++static bool structureHeapCanBeWhereTheCodeExpects()
++{
++    using Region = bmalloc::StaticRegion;
++    void* wanted = reinterpret_cast<void*>(Region::base + Region::reservation);
++    size_t size = 4ULL << 30;
++    void* result = mmap(wanted, size, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
++    if (result == MAP_FAILED)
++        return false;
++    munmap(result, size);
++    return result == wanted;
++}
++
++static void noteNotUsed(const char* why)
++{
++    // One line, once: the program still runs, from its bytecode, with the JIT; only slower to start.
++    fprintf(stderr, "bun: the executable's ahead-of-time compiled code is not used (%s); running from bytecode\n", why);
++}
++
++extern "C" bool Bun__StaticHeap__map(const uint8_t* image, size_t size, int fd, uint64_t offsetInFile)
++{
++    Bun__setBytecodeCacheVersion();
++    bool asked = !(getenv("BUN_AOT") && getenv("BUN_AOT")[0] == '0');
++#if OS(DARWIN)
++    // The heap points into this executable where it was linked to be (c-bindings.cpp starts it again there). (Also with BUN_AOT=0:
++    // a static heap without code would be mapped then.)
++    if (_dyld_get_image_vmaddr_slide(0)) {
++        if (asked)
++            noteNotUsed("the executable could not be loaded where its prebuilt heap expects it");
++        return false;
++    }
++#endif
++    if (asked && (bmalloc::StaticRegion::bssMapped() < bmalloc::StaticRegion::arenaReservation || (hasAOTImageTrailer(image, size) && !structureHeapCanBeWhereTheCodeExpects()))) {
++        noteNotUsed("the address space for it is not available");
++        return false;
++    }
++    // The code first: a static heap that was built with code only works with it. Without either, the program decodes its bytecode.
++    if (!mapAOTImage(image, size, fd, offsetInFile)) {
++        if (asked)
++            noteNotUsed(s_whyNotMapped ? s_whyNotMapped : "the image could not be mapped");
++        return false;
++    }
++    bool mapped = JSC::StaticHeap::map(std::span { image, size }, fd, static_cast<off_t>(offsetInFile));
++    if (!mapped)
++        s_mappedAOTImage = { };
++    if (!mapped && asked && hasAOTImageTrailer(image, size))
++        noteNotUsed("the prebuilt heap could not be mapped");
++    if (!mapped && getenv("BUN_STATIC_HEAP_VERBOSE")) {
++        // Why not, in the order StaticHeap::map() checks.
++        uint64_t magic = size >= 16 ? reinterpret_cast<const uint64_t*>(image)[0] : 0;
++        uint64_t stamp = size >= 16 ? reinterpret_cast<const uint64_t*>(image)[1] : 0;
++        size_t atoms = WTF::Thread::currentSingleton().atomStringTable()->table().size();
++        fprintf(stderr, "[static heap] not mapped: magic %llx, stamp %llx vs engine %llx, %zu atoms already on this thread, offset %llu\n",
++            static_cast<unsigned long long>(magic), static_cast<unsigned long long>(stamp), static_cast<unsigned long long>(JSC::AOT::imageStamp()), atoms, static_cast<unsigned long long>(offsetInFile));
++    }
++    return mapped;
++}
++
++extern "C" void Bun__StaticHeap__install(JSC::VM* vm)
++{
++    JSC::StaticHeap::install(*vm);
++}
++
+ // `bun build --compile --bytecode` with a payload order file (--bytecode-order): one payload for the whole link.
+ // Created, fed and finished on the bundler's bytecode thread (it uses that thread's bytecode VM).
+ extern "C" JSC::BytecodeLinkEncoder* Bun__BytecodeLinkEncoder__create(JSC::EncoderStringTable* externalStrings, const uint64_t* hotFunctions, size_t hotFunctionCount, const uint64_t* knownFunctions, size_t knownFunctionCount, const uint64_t* evaluatedModules, size_t evaluatedModuleCount, const uint64_t* notEvaluatedModules, size_t notEvaluatedModuleCount)
+ {
+     JSC::VM& vm = vmForBytecodeCache();
+     JSC::JSLockHolder locker(vm);
++    s_stringsOfLinkEncoder = externalStrings;
++    // (What a link that did not get as far as embedding left behind is not this link's.)
++    s_builtStaticHeap = { };
++    s_builtAOTImage = { };
+     JSC::BytecodeLinkEncoder::Hints hints;
+     hints.hotFunctions.append(std::span { hotFunctions, hotFunctionCount });
+     hints.knownFunctions.append(std::span { knownFunctions, knownFunctionCount });
+     hints.evaluatedModules.append(std::span { evaluatedModules, evaluatedModuleCount });
+     hints.notEvaluatedModules.append(std::span { notEvaluatedModules, notEvaluatedModuleCount });
++    hints.compileAheadOfTime = Bun__shouldCompileAheadOfTime();
++    if (hints.compileAheadOfTime)
++        restrictCPUFeaturesForCodeIfAsked();
+     return new JSC::BytecodeLinkEncoder(vm, externalStrings, WTF::move(hints));
+ }
+ 
+@@ -331,6 +736,22 @@ extern "C" bool Bun__BytecodeLinkEncoder__addModule(JSC::BytecodeLinkEncoder* en
+     return true;
+ }
+ 
++// Hints::compileAheadOfTime: how the bundler linked the chunks (the executable's `.prelinked-module-graph` and the module-info
++// slot table it is read with), and for each successful add* call so far the chunk's module in that graph or
++// JSC::PrelinkedModuleGraph::noModule. Copied: finish() reads them.
++static Vector<uint8_t> s_prelinkedGraphOfLink;
++static Vector<uint32_t> s_prelinkedGraphSlotsOfLink;
++extern "C" void Bun__BytecodeLinkEncoder__setPrelinkedModuleGraph(JSC::BytecodeLinkEncoder* encoder, const uint8_t* blob, size_t blobSize, const uint32_t* slots, size_t slotCount, const uint32_t* graphModuleOfEachAdd, size_t addCount)
++{
++    // Only compilation ahead of time goes by it; a static heap without code is built as before.
++    if (!Bun__shouldCompileAheadOfTime())
++        return;
++    JSC::JSLockHolder locker(vmOfBytecodeLinkEncoder(*encoder));
++    s_prelinkedGraphOfLink = Vector<uint8_t>(std::span { blob, blobSize });
++    s_prelinkedGraphSlotsOfLink = Vector<uint32_t>(std::span { slots, slotCount });
++    encoder->setPrelinkedModuleGraph(s_prelinkedGraphOfLink.span(), s_prelinkedGraphSlotsOfLink.span(), Vector<uint32_t>(std::span { graphModuleOfEachAdd, addCount }));
++}
++
+ // `entryOffsets` has room for one number per successful add* call; `regionEnds` for
+ // JSC::BytecodeLinkEncoder::numberOfRegions.
+ static_assert(JSC::BytecodeLinkEncoder::numberOfRegions == 6, "bun_resolver::LINKED_BYTECODE_REGION_COUNT");
+@@ -340,6 +761,18 @@ extern "C" bool Bun__BytecodeLinkEncoder__finish(JSC::BytecodeLinkEncoder* encod
+     auto result = encoder->finish();
+     if (!result.payload || result.entryOffsets.size() != entryOffsetCount)
+         return false;
++    // What JSC records for the JIT in the cells it makes (watchpoints, profiles) is not what the program finds when it runs.
++    if (s_stringsOfLinkEncoder && shouldBuildStaticHeap() && JSC::Options::useJIT()) {
++        // Bun__setOptionsForAheadOfTimeCode() turns it off for a build; BUN_JSC_useJIT=1 would put it back.
++        fprintf(stderr, "error: BUN_STATIC_HEAP=1 needs the build to run with the JIT off\n");
++        return false;
++    }
++    if (s_stringsOfLinkEncoder && shouldBuildStaticHeap()) {
++        auto strings = s_stringsOfLinkEncoder->serialize();
++        s_builtStaticHeap = JSC::StaticHeap::build(encoder->vm(), strings.span(), result.payload->span(), result.entryOffsetsOfModules.span(), result.aotImage.span(), 0, nullptr, result.reportableSites.span(), result.variablesExportedByModules.span());
++        s_builtAOTImage = s_builtStaticHeap.isEmpty() ? Vector<uint8_t> { } : WTF::move(result.aotImage);
++        dataLogLnIf(JSC::Options::verboseDiskCache() || getenv("BUN_STATIC_HEAP_VERBOSE"), "[Bytecode Build] static heap: ", s_builtStaticHeap.size(), " bytes for ", result.entryOffsetsOfModules.size(), " modules; AOT image: ", s_builtAOTImage.size(), " bytes");
++    }
+     memcpySpan(std::span { entryOffsets, entryOffsetCount }, result.entryOffsets.span());
+     memcpySpan(std::span { regionEnds, JSC::BytecodeLinkEncoder::numberOfRegions }, std::span<const uint32_t> { result.regionEnds });
+     *namedHotFunctions = result.namedHotFunctions;
+diff --git a/src/jsc/bindings/c-bindings.cpp b/src/jsc/bindings/c-bindings.cpp
+index a3fd0268..27a3940a 100644
+--- a/src/jsc/bindings/c-bindings.cpp
++++ b/src/jsc/bindings/c-bindings.cpp
+@@ -21,6 +21,7 @@
+ #include <sys/socket.h>
+ #if OS(DARWIN)
+ #include <mach-o/loader.h>
++#include <libproc.h>
+ #endif
+ #else
+ #include <uv.h>
+@@ -857,9 +858,31 @@ extern "C" int32_t open_as_nonblocking_tty(int32_t fd, int32_t mode)
+     }
+ 
+     char pathbuf[PATH_MAX + 1];
++#if OS(DARWIN)
++    // The path of the terminal, from the kernel: ttyname_r() lists /dev and stats each entry until it finds it (some 370 of
++    // them, most of a millisecond at every start that reads its terminal). Only of a terminal, as ttyname_r() answers
++    // (/dev/null, say, has a path in /dev too).
++    if (!isatty(fd))
++        return -1;
++    if (fcntl(fd, F_GETPATH, pathbuf) != 0 || strncmp(pathbuf, "/dev/", 5) != 0) {
++        if (ttyname_r(fd, pathbuf, sizeof(pathbuf)) != 0)
++            return -1;
++    }
++    // A terminal opened as /dev/tty (`pi-bolt </dev/tty`, as a script piped to sh starts a program) has that path, and
++    // ttyname_r() says the same; kqueue cannot watch a file opened from it (EINVAL). The device behind it is the
++    // controlling terminal's.
++    if (!strcmp(pathbuf, "/dev/tty")) {
++        struct proc_bsdinfo info;
++        if (proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &info, sizeof(info)) == static_cast<int>(sizeof(info)) && info.e_tdev != NODEV) {
++            if (const char* name = devname(info.e_tdev, S_IFCHR))
++                snprintf(pathbuf, sizeof(pathbuf), "/dev/%s", name);
++        }
++    }
++#else
+     if (ttyname_r(fd, pathbuf, sizeof(pathbuf)) != 0) {
+         return -1;
+     }
++#endif
+ 
+     return open(pathbuf, mode | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+ }
+@@ -1182,6 +1205,10 @@ struct BlobHeader {
+ 
+ #if OS(DARWIN)
+ 
++#include <limits.h>
++#include <mach-o/dyld.h>
++#include <spawn.h>
++
+ extern "C" BlobHeader __attribute__((section("__BUN,__bun"))) BUN_COMPILED = { 0, 0 };
+ 
+ extern "C" uint64_t* Bun__getStandaloneModuleGraphMachoLength()
+@@ -1189,6 +1216,92 @@ extern "C" uint64_t* Bun__getStandaloneModuleGraphMachoLength()
+     return &BUN_COMPILED.size;
+ }
+ 
++// A static heap (StandaloneModuleGraph's Flags::HAS_STATIC_HEAP) holds pointers into this executable: to native functions, to
++// what describes the engine's classes, to the text of static strings. On Linux the executable is not position independent, so
++// they are good in every process; macOS loads it somewhere else each time (ASLR, and an ARM64 executable must be position
++// independent). So an executable with a static heap, and the build that makes one (BUN_STATIC_HEAP=1), run with the main
++// executable where it was linked to be: they start again at once, before anything else, with ASLR turned off for it. The
++// system's libraries move as before; the static heap must not point into them (JSC::StaticHeap checks while building). With
++// BUN_AOT=0 the static heap is not used, and the executable runs as it was started.
++static constexpr const char* reexecutedWithoutASLR = "BUN_INTERNAL_STATIC_HEAP_NO_ASLR";
++
++static bool hasStaticHeap()
++{
++    constexpr size_t sizeOfOffsets = 32; // StandaloneModuleGraph's Offsets, then a trailer of 16 bytes.
++    constexpr size_t sizeOfTrailer = 16;
++    constexpr uint32_t hasStaticHeapFlag = 1u << 14;
++    uint64_t size = BUN_COMPILED.size;
++    if (size < sizeOfOffsets + sizeOfTrailer || memcmp(BUN_COMPILED.data + size - sizeOfTrailer, "\n---- Bun! ----\n", sizeOfTrailer))
++        return false;
++    uint32_t flags;
++    memcpy(&flags, BUN_COMPILED.data + size - sizeOfTrailer - sizeOfOffsets + 28, sizeof(flags));
++    return flags & hasStaticHeapFlag;
++}
++
++// macOS passes ASLR being off on to every process this one starts. Pi-Bolt's launcher (scripts/lib/darwin-launcher.c) forks a
++// helper with ASLR before it starts this executable without it, and says so in BUN_INTERNAL_SPAWN_HELPER: <pid>:<socket>:<path
++// of pi-spawn>. posix_spawn.rs then starts pi-spawn in the place of a program, which has the helper start it.
++static constexpr const char* spawnHelperVariable = "BUN_INTERNAL_SPAWN_HELPER";
++extern "C" int Bun__spawnHelperFd = -1;
++extern "C" const char* Bun__spawnProxyPath = nullptr;
++
++static void takeSpawnHelper()
++{
++    const char* value = getenv(spawnHelperVariable);
++    if (!value)
++        return;
++    char* end;
++    long pid = strtol(value, &end, 10);
++    long fd = *end == ':' ? strtol(end + 1, &end, 10) : -1;
++    struct stat info;
++    // Only for this process: a program started from here, given the same environment, is not.
++    if (*end == ':' && end[1] == '/' && pid == getpid() && fd >= 0 && !fstat(static_cast<int>(fd), &info) && S_ISSOCK(info.st_mode)) {
++        Bun__spawnProxyPath = strdup(end + 1);
++        if (Bun__spawnProxyPath) {
++            Bun__spawnHelperFd = static_cast<int>(fd);
++            fcntl(Bun__spawnHelperFd, F_SETFD, FD_CLOEXEC);
++        }
++    }
++    unsetenv(spawnHelperVariable);
++}
++
++__attribute__((constructor(101))) static void Bun__reexecWithoutASLRForStaticHeap(int, char** argv, char**)
++{
++    if (getenv(reexecutedWithoutASLR)) {
++        // Whether or not it worked: once. (Bun__StaticHeap__map() checks where the executable is.)
++        unsetenv(reexecutedWithoutASLR);
++        takeSpawnHelper();
++        return;
++    }
++    // Started again just below, this process's next executable takes it.
++    struct TakeSpawnHelper {
++        ~TakeSpawnHelper() { takeSpawnHelper(); }
++    } takeSpawnHelperUnlessStartedAgain;
++    if (!_dyld_get_image_vmaddr_slide(0))
++        return;
++    const char* aot = getenv("BUN_AOT");
++    if (aot && aot[0] == '0')
++        return;
++    const char* building = getenv("BUN_STATIC_HEAP");
++    if (!(building && building[0] == '1') && !hasStaticHeap())
++        return;
++    char path[PATH_MAX];
++    uint32_t length = sizeof(path);
++    if (_NSGetExecutablePath(path, &length))
++        return;
++    posix_spawnattr_t attributes;
++    if (posix_spawnattr_init(&attributes))
++        return;
++    constexpr short disableASLR = 0x100; // _POSIX_SPAWN_DISABLE_ASLR
++    posix_spawnattr_setflags(&attributes, disableASLR | POSIX_SPAWN_SETEXEC);
++    setenv(reexecutedWithoutASLR, "1", 1);
++    extern char** environ;
++    posix_spawn(nullptr, path, nullptr, &attributes, argv, environ);
++    // Not started again: go on as it is (the static heap is then not used).
++    unsetenv(reexecutedWithoutASLR);
++    posix_spawnattr_destroy(&attributes);
++}
++
+ #else // __linux__ / __FreeBSD__ — both ELF, same .bun section approach
+ 
+ extern "C" BlobHeader __attribute__((section(".bun"), aligned(BLOB_HEADER_ALIGNMENT), used)) BUN_COMPILED = { 0 };
+diff --git a/src/jsc/web_worker.rs b/src/jsc/web_worker.rs
+index 486a196f..299d3f13 100644
+--- a/src/jsc/web_worker.rs
++++ b/src/jsc/web_worker.rs
+@@ -154,6 +154,7 @@ pub enum Status {
+ // even when C++ mutates through it. `proxy` is the opaque C++ `WorkerMessagingProxy*`
+ // round-tripped from `create()`; it is only ever handed back to C++.
+ unsafe extern "C" {
++    fn Bun__StaticHeap__prepareThread();
+     safe fn WebWorker__workerThreadStarted(proxy: *mut c_void);
+     safe fn WebWorker__workerGlobalScopeStarted(proxy: *mut c_void, global: &JSGlobalObject);
+     safe fn WebWorker__workerGlobalScopeDestroyed(
+@@ -465,6 +466,9 @@ impl WebWorker {
+         let spawn = std::thread::Builder::new()
+             .stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize)
+             .spawn(move || {
++                // Before this thread makes any atom string: the worker's VM then shares the executable's static heap (and runs
++                // its code compiled ahead of time) instead of decoding bytecode and interpreting it. A no-op without a heap.
++                unsafe { Bun__StaticHeap__prepareThread() };
+                 let start = start;
+                 start.worker.thread_main(start.init);
+                 // The thread's ref (and the parent ticket) drop here.
+diff --git a/src/runtime/api/bun/subprocess.rs b/src/runtime/api/bun/subprocess.rs
+index 4ae01e96..296759b7 100644
+--- a/src/runtime/api/bun/subprocess.rs
++++ b/src/runtime/api/bun/subprocess.rs
+@@ -848,7 +848,7 @@ impl Subprocess<'_> {
+     }
+ 
+     pub(crate) fn pid(&self) -> i32 {
+-        self.process().pid
++        self.process().visible_pid()
+     }
+ 
+     #[bun_jsc::host_fn(getter)]
+diff --git a/src/runtime/cli/run_command.rs b/src/runtime/cli/run_command.rs
+index aea7e78e..5cede4c3 100644
+--- a/src/runtime/cli/run_command.rs
++++ b/src/runtime/cli/run_command.rs
+@@ -1116,6 +1116,11 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
+     ) -> crate::Result<()> {
+         use bun_standalone_graph::StandaloneModuleGraph::Flags as GraphFlags;
+ 
++        // Before JSC makes its first atom string: the static heap must own every atom there is.
++        let static_heap_mapped = graph.map_static_heap();
++        if std::env::var_os("BUN_STATIC_HEAP_VERBOSE").is_some() {
++            eprintln!("[static heap] {} bytes in executable, mapped: {}", graph.static_heap.len(), static_heap_mapped);
++        }
+         // argv belongs to the compiled program, so a `-e` or `-p` in it is not ours.
+         bun_jsc::initialize(bun_jsc::InitializeOptions::default());
+         bun_analytics::features::standalone_executable.fetch_add(1, Ordering::Relaxed);
+diff --git a/src/spawn/process.rs b/src/spawn/process.rs
+index 4ae154d4..193fe0b2 100644
+--- a/src/spawn/process.rs
++++ b/src/spawn/process.rs
+@@ -119,6 +119,10 @@ fn call_exit_handler(
+ #[derive(bun_ptr::ThreadSafeRefCounted)]
+ pub struct Process {
+     pub pid: PidT,
++    /// The pid that is signalled, and shown: on macOS, a program that pi-spawn stands in for (posix_spawn.rs) has a pid of
++    /// its own. Otherwise `pid`.
++    #[cfg(unix)]
++    pub signal_pid: PidT,
+     #[cfg(any(target_os = "linux", target_os = "android"))]
+     pub(crate) pidfd: PidFdType,
+     pub status: Status,
+@@ -206,6 +210,14 @@ impl Drop for ProcessHandle {
+ }
+ 
+ impl Process {
++    /// The pid that JavaScript sees, and signals: see `signal_pid`.
++    pub fn visible_pid(&self) -> PidT {
++        #[cfg(unix)]
++        return self.signal_pid;
++        #[cfg(not(unix))]
++        return self.pid;
++    }
++
+     pub fn memory_cost(&self) -> usize {
+         core::mem::size_of::<Self>()
+     }
+@@ -284,6 +296,11 @@ impl Process {
+         bun_core::heap::into_raw(Box::new(Process {
+             ref_count: bun_ptr::ThreadSafeRefCount::init(),
+             pid: posix.pid,
++            signal_pid: if posix.signal_pid != 0 {
++                posix.signal_pid
++            } else {
++                posix.pid
++            },
+             #[cfg(any(target_os = "linux", target_os = "android"))]
+             pidfd: posix.pidfd.unwrap_or(0),
+             js_poster: event_loop.js_poster(),
+@@ -698,7 +715,7 @@ impl Process {
+                         #[link_name = "kill"]
+                         safe fn libc_kill(pid: libc::pid_t, sig: c_int) -> c_int;
+                     }
+-                    let err = libc_kill(self.pid, signal as c_int);
++                    let err = libc_kill(self.signal_pid, signal as c_int);
+                     if err != 0 {
+                         let errno_ = bun_sys::get_errno(err as isize);
+                         // if the process was already killed don't throw
+@@ -3164,7 +3181,7 @@ mod spawn_process_body {
+                 if no_orphans {
+                     -i64::from(process.pid)
+                 } else {
+-                    i64::from(process.pid)
++                    i64::from(process.signal_pid())
+                 },
+                 core::sync::atomic::Ordering::Relaxed,
+             );
+@@ -3386,7 +3403,7 @@ mod spawn_process_body {
+                     array_list.clear();
+                     array_list.shrink_to_fit();
+                 }
+-                let _ = kill(process.pid, 1);
++                let _ = kill(process.signal_pid(), 1);
+             }
+ 
+             for fd in out_fds {
+diff --git a/src/spawn_sys/posix_spawn.rs b/src/spawn_sys/posix_spawn.rs
+index 6555894c..41e25d24 100644
+--- a/src/spawn_sys/posix_spawn.rs
++++ b/src/spawn_sys/posix_spawn.rs
+@@ -610,6 +610,167 @@ pub mod posix_spawn {
+         Ok((posix_actions, posix_attr))
+     }
+ 
++    /// pi-bin, Pi-Bolt's executable on macOS, runs without ASLR, and macOS passes that on to every process it starts. When
++    /// Pi-Bolt's launcher has made a helper with ASLR (see `Bun__spawnHelperFd` in c-bindings.cpp), the program is started by
++    /// it: this starts pi-spawn (Pi-Bolt's scripts/lib/darwin-spawn-proxy.c) in the program's place, with everything the
++    /// program would get, and two more files: the helper's socket, and a pipe on which pi-spawn says how it went. pi-spawn
++    /// then waits for the program and exits as it did, so its pid is the one to wait for; the program's pid is the one to
++    /// signal. `None`: start the program directly.
++    #[cfg(target_os = "macos")]
++    fn spawn_through_proxy(
++        path: &CStr,
++        actions: Option<&Actions>,
++        attr: Option<&Attr>,
++        argv: *const *const c_char,
++        envp: *const *const c_char,
++    ) -> Option<sys::Result<(pid_t, pid_t)>> {
++        unsafe extern "C" {
++            static Bun__spawnHelperFd: c_int;
++            static Bun__spawnProxyPath: *const c_char;
++        }
++        // SAFETY: written once, by a constructor that runs before main.
++        let (helper, proxy) = unsafe { (Bun__spawnHelperFd, Bun__spawnProxyPath) };
++        if helper < 0 || proxy.is_null() {
++            return None;
++        }
++        // `bun run`'s exec (POSIX_SPAWN_SETEXEC) replaces this process: nothing to stand in for.
++        if attr.is_some_and(|a| a.flags & 0x0040 != 0) {
++            return None;
++        }
++        // The descriptors the program gets must not be where pi-spawn's two are.
++        let highest = actions.map_or(2, |a| {
++            a.actions
++                .iter()
++                .map(|action| match action.kind {
++                    bun_spawn::FileActionType::Dup2 => action.fds[1],
++                    bun_spawn::FileActionType::Open => action.fds[0],
++                    _ => 2,
++                })
++                .max()
++                .unwrap_or(2)
++        });
++        if highest >= helper {
++            return None;
++        }
++        let mut pipe: [c_int; 2] = [-1; 2];
++        // SAFETY: valid out-array of two ints.
++        if unsafe { system::pipe(pipe.as_mut_ptr()) } != 0 {
++            return None;
++        }
++        let (status_read, status_write) = (pipe[0], pipe[1]);
++        // SAFETY: plain fcntl/close on descriptors this function owns.
++        let status_write = unsafe {
++            system::fcntl(status_read, system::F_SETFD, system::FD_CLOEXEC);
++            let moved = system::fcntl(status_write, system::F_DUPFD_CLOEXEC, highest.max(63) + 1);
++            system::close(status_write);
++            moved
++        };
++        let close_status = |also_write: bool| {
++            // SAFETY: descriptors owned by this function.
++            unsafe {
++                system::close(status_read);
++                if also_write {
++                    system::close(status_write);
++                }
++            }
++        };
++        if status_write < 0 {
++            close_status(false);
++            return None;
++        }
++        let Ok((mut posix_actions, posix_attr)) = convert_spawn_objects(actions, attr) else {
++            close_status(true);
++            return None;
++        };
++        if posix_actions.inherit(Fd::from_native(helper)).is_err()
++            || posix_actions.inherit(Fd::from_native(status_write)).is_err()
++        {
++            close_status(true);
++            return None;
++        }
++
++        let helper_arg = CString::new(helper.to_string()).expect("no NUL");
++        let status_arg = CString::new(status_write.to_string()).expect("no NUL");
++        let mut proxy_argv: Vec<*const c_char> =
++            vec![proxy, helper_arg.as_ptr(), status_arg.as_ptr(), path.as_ptr()];
++        let mut at = argv;
++        // SAFETY: argv is a NULL-terminated array of C strings (caller contract).
++        unsafe {
++            while !(*at).is_null() {
++                proxy_argv.push(*at);
++                at = at.add(1);
++            }
++        }
++        proxy_argv.push(ptr::null());
++
++        let mut pid: pid_t = 0;
++        // SAFETY: all pointers valid; argv/envp NULL-terminated (see spawn_z).
++        let rc = unsafe {
++            system::posix_spawn(
++                &raw mut pid,
++                proxy,
++                &raw const posix_actions.actions,
++                &raw const posix_attr.attr,
++                proxy_argv.as_ptr().cast::<*mut c_char>(),
++                envp.cast::<*mut c_char>(),
++            )
++        };
++        // SAFETY: owned descriptor; pi-spawn has its own copy.
++        unsafe { system::close(status_write) };
++        if rc != 0 {
++            close_status(false);
++            return None;
++        }
++
++        // What pi-spawn says: the program's pid, or why posix_spawn failed; nothing when it started the program in its own
++        // place (the helper could not).
++        let mut message = [0u8; 8];
++        let mut got = 0usize;
++        while got < message.len() {
++            // SAFETY: reading into the rest of a local buffer.
++            let n = unsafe {
++                system::read(
++                    status_read,
++                    message[got..].as_mut_ptr().cast(),
++                    message.len() - got,
++                )
++            };
++            if n < 0 && errno(-1) == Errno::INTR {
++                continue;
++            }
++            if n <= 0 {
++                break;
++            }
++            got += n as usize;
++        }
++        close_status(false);
++        if got != message.len() {
++            return Some(sys::Result::Ok((pid, pid)));
++        }
++        let kind = i32::from_ne_bytes(message[0..4].try_into().unwrap());
++        let value = i32::from_ne_bytes(message[4..8].try_into().unwrap());
++        const STARTED: i32 = 1;
++        const FAILED: i32 = 2;
++        match kind {
++            STARTED if value > 0 => Some(sys::Result::Ok((pid, value))),
++            FAILED => {
++                // pi-spawn exits at once; nothing else waits for it.
++                let mut status: c_int = 0;
++                // SAFETY: valid out-pointer.
++                while unsafe { system::waitpid(pid, &raw mut status, 0) } < 0
++                    && errno(-1) == Errno::INTR
++                {}
++                Some(sys::Result::Err(sys::Error {
++                    errno: value as sys::ErrorInt,
++                    syscall: SYSCALL_POSIX_SPAWN,
++                    path: path.to_bytes().into(),
++                    ..Default::default()
++                }))
++            }
++            _ => Some(sys::Result::Ok((pid, pid))),
++        }
++    }
++
+     #[cfg(unix)]
+     pub(crate) fn spawn_z(
+         path: &CStr,
+@@ -617,7 +778,7 @@ pub mod posix_spawn {
+         attr: Option<&Attr>,
+         argv: *const *const c_char,
+         envp: *const *const c_char,
+-    ) -> sys::Result<pid_t> {
++    ) -> sys::Result<(pid_t, pid_t)> {
+         let pty_slave_fd = attr.map_or(-1, |a| a.pty_slave_fd);
+         let detached = attr.is_some_and(|a| a.detached);
+         let uid = attr.and_then(|a| a.uid);
+@@ -665,12 +826,16 @@ pub mod posix_spawn {
+                 },
+                 argv,
+                 envp,
+-            );
++            )
++            .map(|pid| (pid, pid));
+         }
+ 
+         // macOS without PTY: use system posix_spawn
+         #[cfg(target_os = "macos")]
+         {
++            if let Some(proxied) = spawn_through_proxy(path, actions, attr, argv, envp) {
++                return proxied;
++            }
+             let (posix_actions, posix_attr) = match convert_spawn_objects(actions, attr) {
+                 Ok(converted) => converted,
+                 Err(e) => return sys::Result::Err(e.with_path(path.to_bytes())),
+@@ -702,7 +867,7 @@ pub mod posix_spawn {
+             }
+ 
+             if rc == 0 {
+-                return sys::Result::Ok(pid);
++                return sys::Result::Ok((pid, pid));
+             }
+ 
+             return sys::Result::Err(sys::Error {
+@@ -750,7 +915,7 @@ pub mod posix_spawn {
+             // Unlike most syscalls, posix_spawn returns 0 on success and an errno on failure.
+             // That is why bun.sys.getErrno() is not used here, since that checks for -1.
+             if rc == 0 {
+-                return sys::Result::Ok(pid);
++                return sys::Result::Ok((pid, pid));
+             }
+ 
+             sys::Result::Err(sys::Error {
+diff --git a/src/spawn_sys/spawn_process.rs b/src/spawn_sys/spawn_process.rs
+index 0de81dcb..e59e0d6e 100644
+--- a/src/spawn_sys/spawn_process.rs
++++ b/src/spawn_sys/spawn_process.rs
+@@ -458,6 +458,8 @@ impl PosixStdio {
+ #[derive(Default)]
+ pub struct PosixSpawnResult {
+     pub pid: PidT,
++    /// When not 0, the pid to signal: see `posix_spawn::spawn_z`.
++    pub signal_pid: PidT,
+     pub pidfd: Option<PidFdType>,
+     pub stdin: Option<Fd>,
+     pub stdout: Option<Fd>,
+@@ -494,6 +496,15 @@ impl ExtraPipe {
+ }
+ 
+ impl PosixSpawnResult {
++    /// The pid to signal: the program's, also when pi-spawn stands in for it.
++    pub fn signal_pid(&self) -> PidT {
++        if self.signal_pid != 0 {
++            self.signal_pid
++        } else {
++            self.pid
++        }
++    }
++
+     #[cfg(any(target_os = "linux", target_os = "android"))]
+     fn pidfd_flags_for_linux() -> u32 {
+         // PIDFD_NONBLOCK is only supported on kernel 5.10+ (the EINVAL retry
+@@ -1024,8 +1035,9 @@ pub unsafe fn spawn_process_posix(
+         Err(err) => {
+             return Ok(Err(err));
+         }
+-        Ok(pid) => {
++        Ok((pid, signal_pid)) => {
+             spawned.pid = pid;
++            spawned.signal_pid = signal_pid;
+             spawned.extra_pipes = extra_fds;
+ 
+             #[cfg(any(target_os = "linux", target_os = "android"))]
+diff --git a/src/standalone_graph/StandaloneModuleGraph.rs b/src/standalone_graph/StandaloneModuleGraph.rs
+index a1cfe230..8fcf89ac 100644
+--- a/src/standalone_graph/StandaloneModuleGraph.rs
++++ b/src/standalone_graph/StandaloneModuleGraph.rs
+@@ -63,6 +63,8 @@ pub struct StandaloneModuleGraph {
+     /// point's static import closure, i.e. what loads before the first `import()`.
+     pub startup_module_count: u32,
+     pub runtime_options: RuntimeOptions,
++    /// `Flags::HAS_STATIC_HEAP`: the image `JSC::StaticHeap::map` takes; empty when there is none.
++    pub static_heap: &'static [u8],
+ }
+ 
+ /// Runtime defaults chosen at build time (`Flags::HAS_RUNTIME_OPTIONS` record: `u32 flags`, `u32 value`).
+@@ -535,6 +537,72 @@ mod macho {
+         fn _dyld_get_image_name(image_index: u32) -> *const core::ffi::c_char;
+     }
+ 
++    /// `<sys/proc_info.h>` `struct proc_regioninfo` (libc has `vnode_info_path`, not this).
++    #[repr(C)]
++    struct proc_regioninfo {
++        pri_protection: u32,
++        pri_max_protection: u32,
++        pri_inheritance: u32,
++        pri_flags: u32,
++        pri_offset: u64,
++        pri_behavior: u32,
++        pri_user_wired_count: u32,
++        pri_user_tag: u32,
++        pri_pages_resident: u32,
++        pri_pages_shared_now_private: u32,
++        pri_pages_swapped_out: u32,
++        pri_pages_dirtied: u32,
++        pri_ref_count: u32,
++        pri_shadow_depth: u32,
++        pri_share_mode: u32,
++        pri_private_pages_resident: u32,
++        pri_shared_pages_resident: u32,
++        pri_obj_id: u32,
++        pri_depth: u32,
++        pri_address: u64,
++        pri_size: u64,
++    }
++    #[repr(C)]
++    struct proc_regionwithpathinfo {
++        prp_prinfo: proc_regioninfo,
++        prp_vip: libc::vnode_info_path,
++    }
++    const _: () = assert!(size_of::<proc_regionwithpathinfo>() == 1272);
++    // (Not PROC_PIDREGIONPATHINFO, 8, which counts the resident pages of the region: all 130 MB of `__BUN`, at every start.)
++    const PROC_PIDREGIONPATHINFO2: core::ffi::c_int = 22;
++
++    /// The file the byte at `address` (in the main program's mapped image) comes from, opened, and where in it that byte
++    /// is: what the kernel says is mapped there, so that a file that has since been replaced at the executable's path is
++    /// not taken for it (the equivalent of `/proc/self/exe`).
++    pub(super) fn open_file_of(address: usize) -> Option<(bun_sys::File, u64)> {
++        // SAFETY: plain old data; zero is a valid value for every field.
++        let mut info: proc_regionwithpathinfo = unsafe { core::mem::zeroed() };
++        let size = size_of::<proc_regionwithpathinfo>() as core::ffi::c_int;
++        // SAFETY: `info` is `size` writable bytes.
++        let got = unsafe { libc::proc_pidinfo(libc::getpid(), PROC_PIDREGIONPATHINFO2, address as u64, (&raw mut info).cast(), size) };
++        let region = &info.prp_prinfo;
++        // (The region found is the one at or after `address`.)
++        if got != size || (address as u64) < region.pri_address || (address as u64) >= region.pri_address + region.pri_size {
++            return None;
++        }
++        let offset = region.pri_offset + (address as u64 - region.pri_address);
++        info.prp_vip.vip_path[31][31] = 0;
++        // SAFETY: NUL-terminated (above) path the kernel wrote.
++        let path = unsafe { bun_core::ZStr::from_c_ptr(info.prp_vip.vip_path.as_ptr().cast()) };
++        let file = bun_sys::File::open(path, bun_sys::O::RDONLY | bun_sys::O::CLOEXEC, 0).ok()?;
++        // SAFETY: plain old data, written by fstat.
++        let mut stat: libc::stat = unsafe { core::mem::zeroed() };
++        // SAFETY: valid fd and out-pointer.
++        if unsafe { libc::fstat(file.fd().native(), &raw mut stat) } != 0 {
++            return None;
++        }
++        let mapped = &info.prp_vip.vip_vi.vi_stat;
++        if stat.st_ino != mapped.vst_ino || stat.st_dev as u32 != mapped.vst_dev {
++            return None;
++        }
++        Some((file, offset))
++    }
++
+     /// `F_RDADVISE` on the executable for the file bytes backing `[lo, hi)`: an
+     /// asynchronous read into the page cache that returns at once.
+     /// (`MADV_WILLNEED` blocks on Darwin until the pages are in, so it is no use
+@@ -648,6 +716,35 @@ mod elf {
+         Some((unsafe { target.add(8) }, payload_len as usize))
+     }
+ 
++    /// Where in the executable's file the byte at `address` (in the main program's mapped image) comes from.
++    pub(super) fn file_offset_of(address: usize) -> Option<u64> {
++        struct Ctx {
++            address: usize,
++            offset: Option<u64>,
++        }
++        extern "C" fn callback(info: *mut libc::dl_phdr_info, _size: libc::size_t, data: *mut core::ffi::c_void) -> core::ffi::c_int {
++            // SAFETY: dl_iterate_phdr passes a valid info pointer; `data` is the `Ctx` below.
++            let (info, ctx) = unsafe { (&*info, &mut *data.cast::<Ctx>()) };
++            // SAFETY: dlpi_phdr points to dlpi_phnum entries.
++            let phdrs = unsafe { core::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
++            for phdr in phdrs {
++                if phdr.p_type != libc::PT_LOAD {
++                    continue;
++                }
++                let start = (info.dlpi_addr as usize).wrapping_add(phdr.p_vaddr as usize);
++                if ctx.address >= start && ctx.address < start + phdr.p_filesz as usize {
++                    ctx.offset = Some(phdr.p_offset + (ctx.address - start) as u64);
++                    return 1;
++                }
++            }
++            0
++        }
++        let mut ctx = Ctx { address, offset: None };
++        // SAFETY: the callback only reads what it is handed and writes `ctx`, which outlives the call.
++        unsafe { libc::dl_iterate_phdr(Some(callback), (&raw mut ctx).cast()) };
++        ctx.offset
++    }
++
+     /// `MADV_WILLNEED` over `[lo, hi)`: queues page-cache readahead for the
+     /// file bytes backing the mapping and returns once the I/O is submitted.
+     /// Issued in 128 KiB pieces because one call reads at most
+@@ -940,7 +1037,10 @@ bitflags::bitflags! {
+         /// `bytecode_order::REGION_COUNT` regions ends (`u32` each; the first two regions are what the recorded run
+         /// read). A module's `bytecode` then runs from its cache entry to the end of that payload.
+         const HAS_LINKED_BYTECODE_PAYLOAD   = 1 << 13;
+-        // _padding: u19
++        /// After the linked-payload record: `StringPointer` to `JSC::StaticHeap` built for that payload
++        /// (`BUN_STATIC_HEAP=1` at build time). Starts on a `STATIC_HEAP_ALIGNMENT` boundary of the mapped section.
++        const HAS_STATIC_HEAP               = 1 << 14;
++        // _padding: u18
+     }
+ }
+ 
+@@ -957,6 +1057,47 @@ fn wtf_latin1_string_hash(bytes: &[u8]) -> u32 {
+ }
+ 
+ impl StandaloneModuleGraph {
++    /// Maps `Flags::HAS_STATIC_HEAP`'s image where JSC keeps it. Call before anything has made an atom string. False if
++    /// there is none, or JSC declines it (another engine build, the address range taken); the program then decodes as usual.
++    pub fn map_static_heap(&self) -> bool {
++        if self.static_heap.is_empty() {
++            return false;
++        }
++        #[cfg(target_os = "linux")]
++        {
++            unsafe extern "C" {
++                fn Bun__StaticHeap__map(image: *const u8, size: usize, fd: i32, offset_in_file: u64) -> bool;
++            }
++            let Some(offset) = elf::file_offset_of(self.static_heap.as_ptr() as usize) else {
++                return false;
++            };
++            let Ok(file) = bun_sys::File::open(bun_core::zstr!("/proc/self/exe"), bun_sys::O::RDONLY | bun_sys::O::CLOEXEC, 0) else {
++                return false;
++            };
++            // SAFETY: the image is mapped for the life of the process; JSC maps the file again itself, so `file` may close after.
++            return unsafe { Bun__StaticHeap__map(self.static_heap.as_ptr(), self.static_heap.len(), file.fd().native(), offset) };
++        }
++        #[cfg(target_os = "macos")]
++        {
++            unsafe extern "C" {
++                fn Bun__StaticHeap__map(image: *const u8, size: usize, fd: i32, offset_in_file: u64) -> bool;
++            }
++            // (The `__BUN` section's pages are covered by the executable's code signature, so its code may be mapped
++            // executable from the file, as on Linux: no writable code, no MAP_JIT.)
++            let Some((file, offset)) = macho::open_file_of(self.static_heap.as_ptr() as usize) else {
++                // (Bun__StaticHeap__map() says why for every other reason.)
++                if !std::env::var_os("BUN_AOT").is_some_and(|value| value.as_encoded_bytes().starts_with(b"0")) {
++                    eprintln!("bun: the executable's ahead-of-time compiled code is not used (the executable's file could not be opened); running from bytecode");
++                }
++                return false;
++            };
++            // SAFETY: as above.
++            return unsafe { Bun__StaticHeap__map(self.static_heap.as_ptr(), self.static_heap.len(), file.fd().native(), offset) };
++        }
++        #[allow(unreachable_code)]
++        false
++    }
++
+     fn from_bytes(
+         raw_ptr: *mut u8,
+         raw_len: usize,
+@@ -977,6 +1118,7 @@ impl StandaloneModuleGraph {
+                 prelinked_module_graph: &[],
+                 prelinked_module_files: Vec::new(),
+                 startup_module_count: 0,
++                static_heap: &[],
+                 runtime_options: RuntimeOptions::default(),
+             });
+         }
+@@ -1180,6 +1322,18 @@ impl StandaloneModuleGraph {
+             // refers to what lies before it, like a module's, so it cannot be decoded as a payload of its own either.
+             builtin_bytecode.clear();
+         }
++        let mut static_heap: &'static [u8] = &[];
++        if offsets.flags.contains(Flags::HAS_STATIC_HEAP) && record_at + 2 * size_of::<u32>() <= raw_len {
++            let ptr = StringPointer {
++                offset: read_u32(record_at),
++                length: read_u32(record_at + 4),
++            };
++            record_at += 2 * size_of::<u32>();
++            if (ptr.offset as usize).saturating_add(ptr.length as usize) <= raw_len {
++                // SAFETY: bounds checked above; the section is mapped for the life of the process and JSC only reads it.
++                static_heap = unsafe { core::slice::from_raw_parts(raw_ptr.add(ptr.offset as usize), ptr.length as usize) };
++            }
++        }
+         let _ = record_at;
+         let has_linked_bytecode_payload =
+             offsets.flags.contains(Flags::HAS_LINKED_BYTECODE_PAYLOAD);
+@@ -1329,6 +1483,7 @@ impl StandaloneModuleGraph {
+             prelinked_module_files,
+             startup_module_count: startup_module_count.min(module_count as u32),
+             runtime_options,
++            static_heap,
+         })
+     }
+ 
+@@ -1482,6 +1637,10 @@ pub(crate) fn to_bytes(
+     let mut has_entry_point = false;
+     let mut string_builder = bun_core::StringBuilder::default();
+     let mut module_count: usize = 0;
++    let static_heap = take_built_static_heap();
++    if let Some(heap) = &static_heap {
++        string_builder.cap += heap.len() + STATIC_HEAP_ALIGNMENT + 2 * size_of::<u32>();
++    }
+     for output_file in output_files {
+         string_builder.count_z(&output_file.dest_path);
+         string_builder.count_z(prefix);
+@@ -1591,6 +1750,9 @@ pub(crate) fn to_bytes(
+             .find(|f| f.output_kind == options::OutputKind::BytecodePayload)
+             .map(|f| bun_bundler::bytecode_order::split_payload_file(f.value.as_slice()));
+     let mut linked_payload_ptr = StringPointer::default();
++    // Beside the payload it was built from, in the data region (the records come after everything).
++    let static_heap_for_link = static_heap.as_deref().filter(|_| linked_payload.is_some() && target.is_host_platform());
++    let mut static_heap_ptr = StringPointer::default();
+ 
+     // `Flags::HAS_PRELINKED_MODULE_GRAPH`: graph module index -> file-table position, so the runtime registers a whole
+     // import closure by index without looking any path up. Empty (and the graph is not embedded) unless every graph
+@@ -1630,6 +1792,9 @@ pub(crate) fn to_bytes(
+             ));
+             if let Some((payload, _)) = linked_payload {
+                 linked_payload_ptr = append_bytecode_aligned(&mut string_builder, payload);
++                if let Some(heap) = static_heap_for_link {
++                    static_heap_ptr = append_static_heap_aligned(&mut string_builder, heap);
++                }
+             }
+         }
+         let buf_bytes = output_file.value.as_slice();
+@@ -1773,6 +1938,9 @@ pub(crate) fn to_bytes(
+         );
+         if let Some((payload, _)) = linked_payload {
+             linked_payload_ptr = append_bytecode_aligned(&mut string_builder, payload);
++            if let Some(heap) = static_heap_for_link {
++                static_heap_ptr = append_static_heap_aligned(&mut string_builder, heap);
++            }
+         }
+         shared
+     });
+@@ -1914,6 +2082,13 @@ pub(crate) fn to_bytes(
+         let _ = string_builder.append_count(&record);
+         flags |= Flags::HAS_LINKED_BYTECODE_PAYLOAD;
+     }
++    if static_heap_ptr.length != 0 {
++        let mut record = [0u8; 8];
++        record[0..4].copy_from_slice(&static_heap_ptr.offset.to_le_bytes());
++        record[4..8].copy_from_slice(&static_heap_ptr.length.to_le_bytes());
++        let _ = string_builder.append_count(&record);
++        flags |= Flags::HAS_STATIC_HEAP;
++    }
+     if !target.is_host_platform()
+         && output_files
+             .iter()
+@@ -3348,6 +3523,44 @@ fn append_bytecode_aligned(
+     }
+ }
+ 
++/// `JSC::StaticHeap` maps its arenas from the executable with `mmap`, in pages of this size.
++const STATIC_HEAP_ALIGNMENT: usize = 16 * 1024;
++
++/// Like `append_bytecode_aligned`, but on a `STATIC_HEAP_ALIGNMENT` boundary of the mapped section (which starts on a page
++/// boundary of the file, 8 bytes before the data).
++fn append_static_heap_aligned(string_builder: &mut bun_core::StringBuilder, image: &[u8]) -> StringPointer {
++    let header = size_of::<u64>();
++    let padding = (STATIC_HEAP_ALIGNMENT - (string_builder.len + header) % STATIC_HEAP_ALIGNMENT) % STATIC_HEAP_ALIGNMENT;
++    string_builder.writable()[0..padding].fill(0);
++    string_builder.len += padding;
++    let offset = string_builder.len;
++    string_builder.writable()[0..image.len()].copy_from_slice(image);
++    string_builder.len += image.len();
++    StringPointer {
++        offset: offset as u32,
++        length: image.len() as u32,
++    }
++}
++
++/// The static heap `bun build --compile --bytecode --bytecode-order` built while linking, with `BUN_STATIC_HEAP=1`.
++fn take_built_static_heap() -> Option<Vec<u8>> {
++    unsafe extern "C" {
++        fn Bun__StaticHeap__takeBuilt(data: *mut *mut u8, size: *mut usize) -> bool;
++        fn Bun__StaticHeap__freeBuilt(data: *mut u8);
++    }
++    let mut data: *mut u8 = core::ptr::null_mut();
++    let mut size: usize = 0;
++    // SAFETY: out-pointers to locals; on true, `data` is a malloc'd buffer of `size` bytes that we free below.
++    if !unsafe { Bun__StaticHeap__takeBuilt(&mut data, &mut size) } {
++        return None;
++    }
++    // SAFETY: as above.
++    let image = unsafe { core::slice::from_raw_parts(data, size) }.to_vec();
++    // SAFETY: `data` came from Bun__StaticHeap__takeBuilt.
++    unsafe { Bun__StaticHeap__freeBuilt(data) };
++    Some(image)
++}
++
+ /// Allocates a StandaloneModuleGraph in the process-static `INSTANCE`,
+ /// populates it from bytes, sets it globally, and returns the pointer.
+ fn from_bytes_alloc(
+-- 
+2.54.0 (Apple Git-157)
+

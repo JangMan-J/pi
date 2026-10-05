@@ -1,76 +1,68 @@
-From 0a53fe06ec26c32207f3394083df43c01a2a2912 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: OpenSec <contactus@opensec.in>
-Date: Fri, 2 Oct 2026 12:04:34 +0000
-Subject: [PATCH] AOT: x86-64 back end and runtime improvements for
- ahead-of-time code
+Date: Mon, 5 Oct 2026 19:25:56 +0530
+Subject: [PATCH] Pi-Bolt: JavaScriptCore's ahead-of-time compiler
 
-Ports the ahead-of-time (AOT) compiler of oven-sh/WebKit's AOT branch,
-which had ARM64 stubs only, to Linux x86-64, and improves what compiled
-programs spend their time on.
+JavaScriptCore's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
 
-x86-64 back end
-- aot/AOTStubsX86_64.cpp: the stub layer (calls, property and element access,
-  polymorphic and megamorphic caches, scopes, arithmetic and comparisons,
-  allocation front ends and helpers, call intrinsics including Map/Set,
-  bound-function calls), with C-convention adapters and RIP-relative linking.
-- Stubs on the hot path keep to caller-saved registers ("light" stubs), so
-  compiled code can keep values in rbx/r12 across them (useAOTLightStubs).
-- Image code for regular expressions on x86-64, including unicode patterns:
-  the surrogate-pair slow path is emitted into the pattern's own code.
-- Inline double-to-int32 for bit operations; frame pointers kept.
-
-Compiler
-- Inline polymorphic property reads in loops (4-entry probe) and the
-  out-of-line/holder cases of monomorphic reads.
-- Verbose inlining diagnostics (AOT-INLINE) for builds with
-  verboseAOTCompilation.
-
-Runtime
-- RegExp first-code-unit prefilter: patterns whose matches start with a rare
-  code unit (lone-surrogate stripping, CJK/Thai sanitizers) skip ahead with
-  SIMD and fail at once on Latin-1 subjects.
-- aotRecordRegExpsPath / aotRegExpsPath: regular expressions a program builds
-  at run time are recorded and compiled into the image like literals.
-- Image regexps may lack 16-bit code; such subjects fall back to the
-  interpreter, and only when the regexp JIT is off.
-- BumpPointerPool grows geometrically (the Yarr interpreter no longer maps and
-  unmaps pages around every match).
-- Realms other than the program's reserve their AOT instance without
-  committing it; memory becomes writable as it is used.
-- StaticRegion reserves what the address space allows and reports it, so an
-  embedder can decline the static heap under ulimit -v or strict overcommit.
-- Fixes: far calls from JIT code into an image, image code in a second VM,
-  callee-save handling of tail calls.
+- An x86-64 back end for ahead-of-time code, and the runtime work it needs.
+- Optimizations: inlining of helpers held in module constants and of methods by name, variables
+  narrowed in loops, stores cached by computed key, integral doubles boxed as int32, integer
+  remainders; a size limit for what is compiled.
+- Correctness: a write barrier after every Structure transition; frames of ahead-of-time code make no
+  CodeBlock during a collection; string type checks; endsWith() of long strings; closure environments
+  that stay when a name is only found as the code runs; image builds that are the same every time and
+  free of a race between their threads; a build that stops, and says why, when a function is declined.
+- ARM64 and Darwin: 64-bit constants told apart from addresses, callee numbers loaded with movz and
+  movk, unicode regular expressions in image code, a map of the image's functions, stubs and regular
+  expressions.
+- Intl on Darwin: the plain language tags of ICU's lists of locales made without ICU.
 ---
- Source/JavaScriptCore/aot/AOTCompiler.cpp     |   53 +-
+ Source/JavaScriptCore/aot/AOTCompiler.cpp     |  161 +-
+ Source/JavaScriptCore/aot/AOTCompiler.h       |    3 +-
  Source/JavaScriptCore/aot/AOTConvention.h     |   89 +-
- .../JavaScriptCore/aot/AOTEscapeAnalysis.cpp  |    2 +-
- Source/JavaScriptCore/aot/AOTImage.cpp        |   60 +-
- Source/JavaScriptCore/aot/AOTImage.h          |    6 +
- Source/JavaScriptCore/aot/AOTInlining.cpp     |   15 +-
- Source/JavaScriptCore/aot/AOTLowerAccess.cpp  |  131 +-
- Source/JavaScriptCore/aot/AOTLowerArith.cpp   |   39 +-
- Source/JavaScriptCore/aot/AOTLowerCalls.cpp   |    5 +-
- Source/JavaScriptCore/aot/AOTLowerCore.cpp    |  141 +-
+ .../JavaScriptCore/aot/AOTEscapeAnalysis.cpp  |   19 +-
+ Source/JavaScriptCore/aot/AOTGraph.cpp        |  226 +-
+ Source/JavaScriptCore/aot/AOTGraph.h          |   34 +-
+ Source/JavaScriptCore/aot/AOTImage.cpp        |  105 +-
+ Source/JavaScriptCore/aot/AOTImage.h          |   15 +
+ Source/JavaScriptCore/aot/AOTInlining.cpp     |  291 +-
+ .../aot/AOTLoopOptimization.cpp               |   79 +-
+ Source/JavaScriptCore/aot/AOTLowerAccess.cpp  |  135 +-
+ Source/JavaScriptCore/aot/AOTLowerArith.cpp   |   64 +-
+ .../JavaScriptCore/aot/AOTLowerBuiltins.cpp   |    7 +
+ Source/JavaScriptCore/aot/AOTLowerCalls.cpp   |    9 +-
+ Source/JavaScriptCore/aot/AOTLowerCore.cpp    |  173 +-
+ Source/JavaScriptCore/aot/AOTLowerGuards.cpp  |   75 +-
  Source/JavaScriptCore/aot/AOTLowerMisc.cpp    |    2 +-
- Source/JavaScriptCore/aot/AOTRuntime.cpp      |   42 +-
- Source/JavaScriptCore/aot/AOTRuntime.h        |    3 +
- Source/JavaScriptCore/aot/AOTStubs.cpp        |   71 +-
- Source/JavaScriptCore/aot/AOTStubs.h          |   30 +
- Source/JavaScriptCore/aot/AOTStubsX86_64.cpp  | 3453 +++++++++++++++++
+ Source/JavaScriptCore/aot/AOTLowering.h       |    1 +
+ Source/JavaScriptCore/aot/AOTProgram.cpp      |   73 +
+ Source/JavaScriptCore/aot/AOTProgram.h        |   85 +
+ Source/JavaScriptCore/aot/AOTRuntime.cpp      |  101 +-
+ Source/JavaScriptCore/aot/AOTRuntime.h        |    5 +
+ Source/JavaScriptCore/aot/AOTStubs.cpp        |  121 +-
+ Source/JavaScriptCore/aot/AOTStubs.h          |   51 +
+ Source/JavaScriptCore/aot/AOTStubsX86_64.cpp  | 3494 +++++++++++++++++
  Source/JavaScriptCore/aot/AOTThunks.cpp       |  326 +-
  Source/JavaScriptCore/aot/AOTThunks.h         |   15 +-
+ .../JavaScriptCore/aot/AOTTypeInference.cpp   |   77 +-
+ .../b3/B3AbstractHeapRepository.h             |    2 +
  .../JavaScriptCore/bytecode/CallLinkInfo.cpp  |    5 +-
  .../bytecode/UnlinkedFunctionExecutable.cpp   |    8 +-
  Source/JavaScriptCore/heap/StaticHeap.cpp     |    2 +-
  .../JavaScriptCore/interpreter/CallFrame.cpp  |    7 +
- Source/JavaScriptCore/runtime/CachedTypes.cpp |  121 +
+ .../interpreter/StackVisitor.cpp              |    6 +
+ Source/JavaScriptCore/runtime/CachedTypes.cpp |  189 +-
  Source/JavaScriptCore/runtime/CodeCache.cpp   |    2 +
- Source/JavaScriptCore/runtime/OptionsList.h   |    5 +
+ .../runtime/CyclicModuleRecord.cpp            |    3 +-
+ Source/JavaScriptCore/runtime/IntlObject.cpp  |   58 +-
+ Source/JavaScriptCore/runtime/OptionsList.h   |   13 +
  Source/JavaScriptCore/runtime/RegExp.cpp      |   76 +-
  Source/JavaScriptCore/runtime/RegExp.h        |    9 +
  Source/JavaScriptCore/runtime/RegExpInlines.h |   48 +
- Source/JavaScriptCore/yarr/YarrJIT.cpp        |  109 +-
+ Source/JavaScriptCore/runtime/StackFrame.cpp  |   11 +-
+ .../runtime/StringPrototype.cpp               |   14 +
+ Source/JavaScriptCore/yarr/YarrJIT.cpp        |  124 +-
  Source/JavaScriptCore/yarr/YarrJIT.h          |   14 +
  Source/JavaScriptCore/yarr/YarrPattern.cpp    |  114 +
  Source/JavaScriptCore/yarr/YarrPattern.h      |    3 +
@@ -78,14 +70,83 @@ Runtime
  Source/bmalloc/bmalloc/StaticRegion.cpp       |   28 +-
  Source/bmalloc/bmalloc/StaticRegion.h         |    1 +
  Source/cmake/WebKitCompilerFlags.cmake        |    4 +-
- 36 files changed, 4949 insertions(+), 98 deletions(-)
+ 52 files changed, 6356 insertions(+), 229 deletions(-)
  create mode 100644 Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
 
 diff --git a/Source/JavaScriptCore/aot/AOTCompiler.cpp b/Source/JavaScriptCore/aot/AOTCompiler.cpp
-index 944a17bfb4..daf501e292 100644
+index 944a17bfb4..c813752040 100644
 --- a/Source/JavaScriptCore/aot/AOTCompiler.cpp
 +++ b/Source/JavaScriptCore/aot/AOTCompiler.cpp
-@@ -131,7 +131,7 @@ bool hasNoFrame(const Graph& graph, B3::Air::Code& code)
+@@ -32,8 +32,68 @@
+ #include <wtf/StringPrintStream.h>
+ #include <wtf/text/StringHash.h>
+ 
++#if OS(DARWIN)
++#include <dlfcn.h>
++#include <mach/mach.h>
++#include <mach/mach_vm.h>
++#endif
++
+ namespace JSC { namespace AOT {
+ 
++// Whether `address` is in memory this process has mapped. An address that a lowering put in the code by mistake is of something that
++// is there, so a 64-bit constant that is in none of the mappings is a number (what B3 made of two numbers, say: x + 2147483648 with x
++// 4294967295), not an address. Only asked of the few constants that look like addresses, so the mappings are read each time.
++static bool isMappedInThisProcess(uint64_t address)
++{
++#if OS(LINUX)
++    FILE* maps = fopen("/proc/self/maps", "r");
++    if (!maps)
++        return true;
++    bool found = false;
++    unsigned long long start = 0, end = 0;
++    char line[512];
++    while (!found && fgets(line, sizeof(line), maps)) {
++        if (sscanf(line, "%llx-%llx", &start, &end) == 2 && address >= start && address < end)
++            found = true;
++    }
++    fclose(maps);
++    return found;
++#elif OS(DARWIN)
++    // The system's shared cache spans tens of gigabytes that numbers fall in: in it, only the start of a symbol is taken for an
++    // address (a C function or object that a lowering pointed at).
++    static const auto sharedCache = [] {
++        size_t size = 0;
++        uintptr_t start = 0;
++        if (auto* range = reinterpret_cast<const void* (*)(size_t*)>(dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_range")))
++            start = reinterpret_cast<uintptr_t>(range(&size));
++        return std::pair { start, size };
++    }();
++    if (address >= sharedCache.first && address - sharedCache.first < sharedCache.second) {
++        Dl_info info;
++        return dladdr(reinterpret_cast<const void*>(address), &info) && reinterpret_cast<uintptr_t>(info.dli_saddr) == address;
++    }
++    // The region at `address` or the first one after it.
++    mach_vm_address_t start = address;
++    mach_vm_size_t size = 0;
++    vm_region_basic_info_data_64_t info;
++    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
++    mach_port_t object = MACH_PORT_NULL;
++    kern_return_t result = mach_vm_region(mach_task_self(), &start, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
++    if (result == KERN_INVALID_ADDRESS)
++        return false; // Nothing there or after it.
++    if (result != KERN_SUCCESS)
++        return true; // (As on Linux when the mappings cannot be read.)
++    if (object != MACH_PORT_NULL)
++        mach_port_deallocate(mach_task_self(), object);
++    // A reservation that nothing can be read from (the system keeps hundreds of gigabytes of them) holds nothing to point at: what
++    // is used of it is a region of its own.
++    return address >= start && address - start < size && info.protection != VM_PROT_NONE;
++#else
++    UNUSED_PARAM(address);
++    return true;
++#endif
++}
++
+ static ScopeChain unknownScopeChain()
+ {
+     ScopeChain chain;
+@@ -131,7 +191,7 @@ bool hasNoFrame(const Graph& graph, B3::Air::Code& code)
          for (B3::Air::BasicBlock* block : code) {
              for (B3::Air::Inst& inst : *block) {
                  if (inst.kind.opcode == B3::Air::Patch)
@@ -94,7 +155,7 @@ index 944a17bfb4..daf501e292 100644
                  else
                      found |= inst.kind.opcode == B3::Air::ColdCCall;
              }
-@@ -141,12 +141,48 @@ bool hasNoFrame(const Graph& graph, B3::Air::Code& code)
+@@ -141,12 +201,48 @@ bool hasNoFrame(const Graph& graph, B3::Air::Code& code)
      return !*graph.callsAreLeft;
  }
  
@@ -144,7 +205,7 @@ index 944a17bfb4..daf501e292 100644
      jit.emitFunctionEpilogue();
  }
  
-@@ -154,7 +190,7 @@ void emitRestoreBeforeLeaving(CCallHelpers& jit, const Graph& graph, B3::Air::Co
+@@ -154,13 +250,32 @@ void emitRestoreBeforeLeaving(CCallHelpers& jit, const Graph& graph, B3::Air::Co
  {
      RELEASE_ASSERT(!hasNoFrame(graph, code));
      AllowMacroScratchRegisterUsage allowScratch(jit);
@@ -153,7 +214,85 @@ index 944a17bfb4..daf501e292 100644
  }
  
  // Options::preferUnsplitAOTLoops(). Of a graph whose loops have not been split.
-@@ -287,7 +323,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
++// A read of a closure or module variable that is written with nothing but what has fast paths (numbers, strings, booleans, arrays,
++// typed arrays), and that starts as undefined or the hole: in the fast copy of a loop it is taken for what is written (see
++// Node::typeOfVariableRead).
++static bool variableReadNarrowsUsefully(Graph& graph, Node* node)
++{
++    VariableSummaries* summaries = graph.variableSummaries();
++    if (!Options::useAOTVariableNarrowing() || !summaries || !(node->type & (TUndefined | TEmpty)))
++        return false;
++    Variable variable = graph.variableAccessedBy(node);
++    if (!variable)
++        return false;
++    Type written = summaries->readWritten(variable, node->graph->codeBlock()->identifier(node->as<OpGetFromScope>().m_var).impl(), VariableSummaries::nobody);
++    return !!typeOfVariableReadInFastCopy(node->type, written);
++}
++
+ static bool loopsWillDoWhole(Graph& graph)
+ {
+     bool hasLoop = false;
++    bool readsNarrowably = false;
++    // (A call made part of the loop was a call when the guards were chosen, which leaves the loop whole anyway: no fast copy to
++    // narrow anything in.)
++    bool hasInlinedCode = false;
+     for (BasicBlock* block : graph.m_rpo) {
+         if (!block->isInLoop)
+             continue;
+@@ -168,6 +283,7 @@ static bool loopsWillDoWhole(Graph& graph)
+         for (Node* node : block->nodes) {
+             if (node->kind != NodeKind::Bytecode || !node->instruction)
+                 continue;
++            hasInlinedCode |= node->graph != &graph;
+             switch (node->opcode) {
+             case op_get_by_val:
+                 if (!node->use(node->as<OpGetByVal>().m_base)->type || !isSubtype(node->use(node->as<OpGetByVal>().m_base)->type, TArray) || !isSubtype(node->use(node->as<OpGetByVal>().m_property)->type, TNumber))
+@@ -195,12 +311,17 @@ static bool loopsWillDoWhole(Graph& graph)
+             case op_get_from_scope:
+                 if (node->as<OpGetFromScope>().m_getPutInfo.resolveType() != ResolvedClosureVar)
+                     return false;
++                // In the fast copy it is taken for what is written to it (Node::typeOfVariableRead): worth a copy where that has
++                // fast paths, as `i < N` with a module constant N has.
++                readsNarrowably |= variableReadNarrowsUsefully(graph, node);
+                 break;
+             default:
+                 break;
+             }
+         }
+     }
++    if (readsNarrowably && !hasInlinedCode)
++        return false;
+     return hasLoop;
+ }
+ 
+@@ -224,6 +345,17 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+         graph.fail("compiled for the debugger or a profiler"_s);
+         return declined();
+     }
++    if (unlinkedCodeBlock->instructions().size() > Options::maximumAOTCandidateBytecodeSize()) {
++        if (numbersOfIdentifiersOfProgram()) {
++            // (The program goes without its bytecode: a function that is not compiled could not run at all.)
++            WTFLogAlways("AOT: a function of %zu bytes of bytecode (%s) is bigger than maximumAOTCandidateBytecodeSize (%u bytes), and compiling one that big takes minutes and tens of GB. "
++                "Split it up (it is likely one big literal), or build with BUN_JSC_maximumAOTCandidateBytecodeSize=%zu to compile it anyway, or with BUN_JSC_omitBytecodeFromStaticHeap=0 to run it from bytecode.",
++                unlinkedCodeBlock->instructions().size(), unlinkedCodeBlock->codeType() == FunctionCode ? "a function" : "the top-level code of a module", Options::maximumAOTCandidateBytecodeSize(), unlinkedCodeBlock->instructions().size());
++            exit(1);
++        }
++        graph.fail("bigger than maximumAOTCandidateBytecodeSize"_s);
++        return declined();
++    }
+     if (!parseBytecode(graph))
+         return declined();
+     if (program)
+@@ -268,7 +400,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+             continue;
+         uint64_t bits = value->asInt64();
+         // (But for where structures are, which is the same in every process: structureIDBaseOfImages.)
+-        if (bits >= 4 * GB && bits < (1ULL << 47) && bits != structureIDBaseOfImages && !graph.wideIntegerConstants.contains(static_cast<int64_t>(bits))) {
++        if (bits >= 4 * GB && bits < (1ULL << 47) && bits != structureIDBaseOfImages && !graph.wideIntegerConstants.contains(static_cast<int64_t>(bits)) && isMappedInThisProcess(bits)) {
+             graph.fail("an address in the code"_s);
+             return declined();
+         }
+@@ -287,7 +419,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
              stubCalls.call(jit, Stub::Prologue, code.frameSize(), CallSite { });
          else if (code.frameSize())
              jit.subPtr(GPRInfo::callFrameRegister, CCallHelpers::TrustedImm32(code.frameSize()), CCallHelpers::stackPointerRegister);
@@ -162,7 +301,7 @@ index 944a17bfb4..daf501e292 100644
      }));
      proc.code().setEpilogueGenerator(createSharedTask<B3::Air::PrologueGeneratorFunction>([&graph](CCallHelpers& jit, B3::Air::Code& code) {
          emitEpilogueBeforeLeaving(jit, graph, code);
-@@ -319,7 +355,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+@@ -319,12 +451,13 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
      // The code is linked in ordinary memory. It is only copied into the image and never runs from here, so compiling needs no JIT memory.
      jit.breakpoint();
      jit.padBeforePatch();
@@ -171,7 +310,22 @@ index 944a17bfb4..daf501e292 100644
      LinkBuffer linkBuffer(jit, CodePtr<LinkBufferPtrTag>::fromUntaggedPtr(storage.mutableSpan().data()), storage.sizeInBytes(), LinkBuffer::Profile::FTL);
  
      CompiledFunctionInfo info;
-@@ -383,6 +419,13 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+     info.stubCalls = stubCalls.link(linkBuffer);
+     info.indexReferences = graph.indexReferences.link(linkBuffer);
++    info.knownCalleeNumberReferences = graph.knownCalleeNumberReferences.link(linkBuffer);
+     info.codeSize = linkBuffer.size();
+     void* start = linkBuffer.entrypoint<JSEntryPtrTag>().untaggedPtr();
+     // (It turned out to be what comes first anyway.)
+@@ -335,6 +468,8 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+             call.offset -= sizeof(uint32_t);
+         for (auto& reference : info.indexReferences)
+             reference.offset -= sizeof(uint32_t);
++        for (auto& reference : info.knownCalleeNumberReferences)
++            reference.offset -= sizeof(uint32_t);
+     }
+     auto offsetOf = [&](CCallHelpers::Label label) {
+         return static_cast<unsigned>(static_cast<uint8_t*>(linkBuffer.locationOf<JSEntryPtrTag>(label).untaggedPtr()) - static_cast<uint8_t*>(start));
+@@ -383,6 +518,13 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
      info.startsCold = graph.startsCold;
      RELEASE_ASSERT(!info.startsCold || info.numSlots <= std::min<uint32_t>(SharedData::maxSlots, FunctionInfo::maxEncodedSlots));
      info.calleeSaveRegisters = proc.calleeSaveRegisterAtOffsetList();
@@ -185,6 +339,47 @@ index 944a17bfb4..daf501e292 100644
      for (unsigned i = 0; i < graph.catchEntrypoints.size(); ++i)
          info.catchEntrypoints.append({ graph.catchEntrypoints[i]->bytecodeBegin, offsetOf(proc.code().entrypointLabel(i + 1)) });
  
+@@ -421,6 +563,7 @@ bool recordUsesOfKnownFunctionsForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeB
+     graph.noteFieldsComparedWithStrings();
+     recordReturnedLiterals(graph);
+     graph.noteClassesDefined();
++    graph.noteMethodsDefined();
+     if (variableSummaries)
+         graph.recordUntrackableVariableAccesses(*variableSummaries);
+     return true;
+@@ -444,13 +587,17 @@ Type inferReturnTypeForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const
+     return result;
+ }
+ 
+-bool compileForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, CompiledCode& result, const CalleeHints* hints, const ModuleLinkage* linkage, const FunctionSummary* summary, VariableSummaries* variableSummaries, const CodeOfProgram* program)
++bool compileForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, CompiledCode& result, const CalleeHints* hints, const ModuleLinkage* linkage, const FunctionSummary* summary, VariableSummaries* variableSummaries, const CodeOfProgram* program, ASCIILiteral* whyNot, OpcodeID* whyNotOpcode)
+ {
+     ASCIILiteral reason;
+     OpcodeID reasonOpcode = op_nop;
+     bool ok = compile(vm, unlinkedCodeBlock, hints, linkage, result, reason, reasonOpcode, summary, variableSummaries, program);
+     if (!ok && Options::verboseAOTCompilation()) [[unlikely]]
+         dataLogLn("AOT: declined: ", reason, " ", reasonOpcode != op_nop ? opcodeNames[reasonOpcode] : ""_s);
++    if (!ok && whyNot)
++        *whyNot = reason;
++    if (!ok && whyNotOpcode)
++        *whyNotOpcode = reasonOpcode;
+     return ok;
+ }
+ 
+diff --git a/Source/JavaScriptCore/aot/AOTCompiler.h b/Source/JavaScriptCore/aot/AOTCompiler.h
+index 43919e8406..bce45c02f8 100644
+--- a/Source/JavaScriptCore/aot/AOTCompiler.h
++++ b/Source/JavaScriptCore/aot/AOTCompiler.h
+@@ -29,7 +29,8 @@ struct CompiledCode;
+ JS_EXPORT_PRIVATE bool recordUsesOfKnownFunctionsForImage(VM&, UnlinkedCodeBlock*, const CalleeHints*, const ModuleLinkage*, const FunctionSummaryMap&, VariableSummaries*);
+ // See KnownFunction::returnType. Any thread, likewise.
+ JS_EXPORT_PRIVATE Type inferReturnTypeForImage(VM&, UnlinkedCodeBlock*, const CalleeHints*, const ModuleLinkage*, const FunctionSummary*, VariableSummaries*, unsigned summaryReader, Vector<const KnownFunction*>& calleesRead, Vector<const KnownFunction*>& calleesWithWidenedInputs, uint32_t& escapingParameters, const String& nameForLog = String());
+-JS_EXPORT_PRIVATE bool compileForImage(VM&, UnlinkedCodeBlock*, CompiledCode&, const CalleeHints* = nullptr, const ModuleLinkage* = nullptr, const FunctionSummary* = nullptr, VariableSummaries* = nullptr, const CodeOfProgram* = nullptr);
++// When it declines: `whyNot` is why, and `whyNotOpcode` the opcode it is about (op_nop if none).
++JS_EXPORT_PRIVATE bool compileForImage(VM&, UnlinkedCodeBlock*, CompiledCode&, const CalleeHints* = nullptr, const ModuleLinkage* = nullptr, const FunctionSummary* = nullptr, VariableSummaries* = nullptr, const CodeOfProgram* = nullptr, ASCIILiteral* whyNot = nullptr, OpcodeID* whyNotOpcode = nullptr);
+ // Whether inlineCalls() could pick it.
+ bool mayBecomePartOfAnother(UnlinkedCodeBlock*, const FunctionSummary*);
+ void noteEverySiteOf(Graph&);
 diff --git a/Source/JavaScriptCore/aot/AOTConvention.h b/Source/JavaScriptCore/aot/AOTConvention.h
 index 2e95072fc9..2442b0290a 100644
 --- a/Source/JavaScriptCore/aot/AOTConvention.h
@@ -302,10 +497,35 @@ index 2e95072fc9..2442b0290a 100644
      // Each parameter in its register. Whoever calls fills in undefined for what it has not got, and keeps what is left over to itself.
      Registers,
 diff --git a/Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp b/Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp
-index fb3b1264be..219793618c 100644
+index fb3b1264be..84d0859c16 100644
 --- a/Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp
 +++ b/Source/JavaScriptCore/aot/AOTEscapeAnalysis.cpp
-@@ -871,7 +871,7 @@ void recordReturnedLiterals(Graph& graph)
+@@ -624,9 +624,22 @@ public:
+         case op_get_scope: // (Of what has become part of this code: another name for it.)
+         case op_get_parent_scope:
+             return true;
+-        case op_resolve_scope:
++        case op_resolve_scope: {
+             // (What is not found until the code runs is in none of the environments that the code says it makes: it starts looking further out.)
+-            return user->as<OpResolveScope>().m_resolveType != Dynamic;
++            auto bytecode = user->as<OpResolveScope>();
++            if (bytecode.m_resolveType == Dynamic)
++                return false;
++            // Not so for a closure that has become part of the code that makes it: the environments made here are around it, and
++            // what it does not declare may well be theirs. Where that is not known as the code is compiled (nothing says what the
++            // code around a function of one of the embedder's own modules declares), the name is looked for when the code runs,
++            // in environments that then have to be there.
++            if (user->graph->scopeOfClosure && !isStaticClosureVarResolveType(bytecode.m_resolveType) && !user->graph->distanceOfEnvironmentResolvedTo(user)) {
++                auto variable = user->graph->resolveStatically(bytecode.m_var, bytecode.m_localScopeDepth, bytecode.m_resolveType);
++                if (!variable.isAtStaticDepth() && variable.kind != Graph::StaticVariable::Import && !variable.isInGlobalScopes && !variable.isGlobal)
++                    return false;
++            }
++            return true;
++        }
+         case op_get_from_scope:
+             return use.reg == user->as<OpGetFromScope>().m_scope && (user->graph->distanceOfEnvironmentAccessed(user) || offsetAccessedBy(user));
+         case op_put_to_scope:
+@@ -871,7 +884,7 @@ void recordReturnedLiterals(Graph& graph)
              if (node->opcode != op_ret)
                  continue;
              Node* object = node->use(node->as<OpRet>().m_value);
@@ -314,8 +534,395 @@ index fb3b1264be..219793618c 100644
                  return;
              if (!users)
                  users.emplace(graph);
+diff --git a/Source/JavaScriptCore/aot/AOTGraph.cpp b/Source/JavaScriptCore/aot/AOTGraph.cpp
+index d95a8ad60f..557abf728d 100644
+--- a/Source/JavaScriptCore/aot/AOTGraph.cpp
++++ b/Source/JavaScriptCore/aot/AOTGraph.cpp
+@@ -652,6 +652,11 @@ const KnownFunction* Graph::knownCallee(const Node* node, bool* isExact) const
+             }
+         }
+     }
++    // (See FunctionsWithoutCode.)
++    if (known && hasNoCodeInImage(node->opcode == op_construct ? known->forConstruct : known->forCall)) {
++        known = nullptr;
++        proven = false;
++    }
+     if (isExact)
+         *isExact = proven;
+     return known;
+@@ -1410,12 +1415,20 @@ void Graph::findListsOfArguments()
+                 auto bytecode = list->as<OpNewArrayWithSpread>();
+                 if (bytecode.m_argc > mostItemsInList)
+                     continue;
++                // Every item that is spread has to be an op_spread here: what was spread elsewhere and got here some other way (a
++                // phi, as where the fast copy of a loop rejoins the generic one) would be passed as it is, the list of what was in it.
++                const BitVector& whichAreSpread = m_codeBlock->bitVector(bytecode.m_bitVector);
++                bool spreadsAreHere = true;
+                 parts.append(list);
+                 for (unsigned i = bytecode.m_argc; i--;) {
+                     Node* element = list->use(VirtualRegister(bytecode.m_argv.offset() - static_cast<int>(i)));
+                     if (element->isBytecode(op_spread))
+                         parts.append(element);
++                    else if (whichAreSpread.get(i))
++                        spreadsAreHere = false;
+                 }
++                if (!spreadsAreHere)
++                    continue;
+             } else
+                 continue;
+             bool areRightBeforeTheCall = parts.size() <= index;
+@@ -1617,6 +1630,99 @@ void Graph::noteClassesDefined()
+     }
+ }
+ 
++// The property name of an op_define_data_property, when it is written in the program.
++static UniquedStringImpl* constantNameOf(const Node* property)
++{
++    if (property->kind != NodeKind::ConstantCell || !property->reg.isConstant())
++        return nullptr;
++    JSValue name = property->graph->codeBlock()->getConstant(property->reg);
++    const StringImpl* impl = name && name.isString() ? asString(name)->tryGetValueImpl() : nullptr;
++    if (!impl || !impl->isAtom())
++        return nullptr;
++    return static_cast<UniquedStringImpl*>(const_cast<StringImpl*>(impl));
++}
++
++void Graph::noteMethodsDefined()
++{
++    MethodsOfProgram* methods = methodsOfProgram();
++    const FunctionsOfProgram* functions = functionsOfProgram();
++    if (!methods || !functions)
++        return;
++    auto note = [&](UniquedStringImpl* name, Node* value) {
++        if (!name)
++            return;
++        UnlinkedFunctionExecutable* made = functionMadeBy(value);
++        uint32_t number = made ? functions->numberOf(made) : 0;
++        if (number)
++            methods->recordMethod(name, number);
++        else
++            methods->recordOtherStore(name);
++    };
++    for (BasicBlock* block : m_rpo) {
++        for (Node* node : block->nodes) {
++            if (node->kind != NodeKind::Bytecode)
++                continue;
++            switch (node->opcode) {
++            case op_put_by_id: {
++                auto bytecode = node->as<OpPutById>();
++                note(m_codeBlock->identifier(bytecode.m_property).impl(), node->use(bytecode.m_value));
++                break;
++            }
++            case op_new_object: {
++                // The stores of a literal are folded into the allocation (parseBytecode()): its uses hold their values, under
++                // NewObjectPlan::registerOf(the store's number).
++                if (!node->numberOfLiteralProperties)
++                    break;
++                auto stores = Graph::storesOfLiteral(m_codeBlock->instructions(), node->bytecodeIndex.offset());
++                for (unsigned i = 0; i < node->numberOfLiteralProperties && i < stores.size(); ++i) {
++                    VirtualRegister reg = NewObjectPlan::registerOf(i);
++                    for (auto& use : node->uses) {
++                        if (use.reg == reg)
++                            note(m_codeBlock->identifier(m_codeBlock->instructions().at(stores[i])->as<OpPutById>().m_property).impl(), use.node);
++                    }
++                }
++                break;
++            }
++            case op_create_this: {
++                // Likewise an instance's fields, stored by its constructor.
++                if (!node->numberOfLiteralProperties)
++                    break;
++                auto plan = NewObjectPlan::forCreateThis(m_codeBlock->instructions(), node->bytecodeIndex.offset());
++                for (unsigned i = 0; i < plan.properties.size(); ++i) {
++                    VirtualRegister reg = NewObjectPlan::registerOf(i);
++                    for (auto& use : node->uses) {
++                        if (use.reg == reg)
++                            note(m_codeBlock->identifier(plan.properties[i].identifier).impl(), use.node);
++                    }
++                }
++                break;
++            }
++            case op_define_data_property: {
++                auto bytecode = node->as<OpDefineDataProperty>();
++                note(constantNameOf(node->use(bytecode.m_property)), node->use(bytecode.m_value));
++                break;
++            }
++            case op_put_getter_by_id:
++                methods->recordOtherStore(m_codeBlock->identifier(node->as<OpPutGetterById>().m_property).impl());
++                break;
++            case op_put_setter_by_id:
++                methods->recordOtherStore(m_codeBlock->identifier(node->as<OpPutSetterById>().m_property).impl());
++                break;
++            case op_put_getter_setter_by_id:
++                methods->recordOtherStore(m_codeBlock->identifier(node->as<OpPutGetterSetterById>().m_property).impl());
++                break;
++            case op_define_accessor_property: {
++                if (UniquedStringImpl* name = constantNameOf(node->use(node->as<OpDefineAccessorProperty>().m_property)))
++                    methods->recordOtherStore(name);
++                break;
++            }
++            default:
++                break;
++            }
++        }
++    }
++}
++
+ uint32_t Graph::closedMethodReadBy(const Node* node)
+ {
+     if (!node->isBytecode(op_get_by_id) || !Options::useAOTTypedFields() || !TypeTable::typedFieldsAreEnforced() || !classesOfProgram())
+@@ -1874,6 +1980,85 @@ void Graph::adoptInlinee(std::unique_ptr<Graph>&& other, InlineFrame frame)
+     m_inlinees.append(WTF::move(other));
+ }
+ 
++// Over m_rpo: BasicBlock::immediateDominator, and the numbering that BasicBlock::dominates() goes by.
++void Graph::computeDominators()
++{
++    auto& rpo = m_rpo;
++    for (unsigned i = 0; i < rpo.size(); ++i) {
++        rpo[i]->rpoIndex = i;
++        rpo[i]->immediateDominator = nullptr;
++    }
++    // The handlers are ways in too. What is above them and the root is nothing, which null stands for.
++    auto isEntry = [&](BasicBlock* block) { return block == root || block->isCatchEntrypoint; };
++    BitVector processed(rpo.size());
++    auto intersect = [&](BasicBlock* a, BasicBlock* b) -> BasicBlock* {
++        while (a != b) {
++            if (!a || !b)
++                return nullptr;
++            while (a && b && a->rpoIndex > b->rpoIndex)
++                a = a->immediateDominator;
++            while (a && b && b->rpoIndex > a->rpoIndex)
++                b = b->immediateDominator;
++        }
++        return a;
++    };
++    bool changed = true;
++    while (changed) {
++        changed = false;
++        for (BasicBlock* block : rpo) {
++            if (isEntry(block)) {
++                processed.set(block->rpoIndex);
++                continue;
++            }
++            BasicBlock* dominator = nullptr;
++            bool first = true;
++            for (BasicBlock* predecessor : block->predecessors) {
++                if (!processed.get(predecessor->rpoIndex))
++                    continue;
++                dominator = first ? predecessor : intersect(dominator, predecessor);
++                first = false;
++            }
++            if (!processed.get(block->rpoIndex) || block->immediateDominator != dominator) {
++                processed.set(block->rpoIndex);
++                block->immediateDominator = dominator;
++                changed = true;
++            }
++        }
++    }
++
++    // Numbered so that a block's descendants in the tree are the blocks whose numbers are within its own.
++    Vector<Vector<BasicBlock*, 2>> children(blocks.size());
++    Vector<BasicBlock*, 4> roots;
++    for (BasicBlock* block : rpo) {
++        if (block->immediateDominator)
++            children[block->immediateDominator->index].append(block);
++        else
++            roots.append(block);
++    }
++    unsigned number = 0;
++    struct Frame {
++        BasicBlock* block;
++        unsigned next;
++    };
++    Vector<Frame> stack;
++    for (BasicBlock* root : roots) {
++        root->dominatorPreNumber = number++;
++        stack.append({ root, 0 });
++        while (!stack.isEmpty()) {
++            Frame& frame = stack.last();
++            auto& list = children[frame.block->index];
++            if (frame.next < list.size()) {
++                BasicBlock* child = list[frame.next++];
++                child->dominatorPreNumber = number++;
++                stack.append({ child, 0 });
++                continue;
++            }
++            frame.block->dominatorPostNumber = number++;
++            stack.removeLast();
++        }
++    }
++}
++
+ void Graph::computeOrderOfBlocks()
+ {
+     // As Parser::computeReversePostOrder(), which has said which blocks are in loops of their own function's.
+@@ -2020,6 +2205,12 @@ void Node::dump(PrintStream& out) const
+         case GuardKind::IsIntrinsic:
+             out.print("IsIntrinsic ", intrinsic, " ");
+             break;
++        case GuardKind::Initialized:
++            out.print("GuardInitialized(bc#", bytecodeIndex.offset(), ")");
++            break;
++        case GuardKind::IsKnownFunction:
++            out.print("IsKnownFunction #", knownCallee, " ");
++            break;
+         }
+         break;
+     }
+@@ -2197,13 +2388,27 @@ private:
+         case op_resolve_scope:
+             return !isStaticClosureVarResolveType(instruction->as<OpResolveScope>().m_resolveType);
+         case op_get_from_scope:
+-            return instruction->as<OpGetFromScope>().m_getPutInfo.resolveType() != ResolvedClosureVar;
++            // (A closure variable: to take it for what it is written with, not the undefined or the hole it starts as. See
++            // Node::typeOfVariableRead.)
++            return instruction->as<OpGetFromScope>().m_getPutInfo.resolveType() != ResolvedClosureVar || Options::useAOTVariableNarrowing();
+         case op_call:
+         case op_call_ignore_result: {
+             auto operands = Graph::operandsOfCall(instruction);
+-            for (auto [reg, identifier] : m_recentProperties) {
+-                if (reg == operands.callee)
+-                    return callIntrinsicFor(m_codeBlock->identifier(identifier).impl(), operands.argc) != CallIntrinsic::None;
++            for (auto [reg, identifier, base] : m_recentProperties) {
++                if (reg != operands.callee)
++                    continue;
++                if (callIntrinsicFor(m_codeBlock->identifier(identifier).impl(), operands.argc) != CallIntrinsic::None)
++                    return true;
++                // A method call that inlineCalls() will take for the one function the program stores under the name, if there is one:
++                // the fast copy of the loop is left for the generic copy if the callee is another (GuardKind::IsKnownFunction).
++                if (instruction->opcodeID() == op_call && base == operands.argument(0) && Options::useAOTMethodInliningByName() && methodsOfProgram() && functionsOfProgram()) {
++                    UniquedStringImpl* name = m_codeBlock->identifier(identifier).impl();
++                    if (const KnownFunction* known = functionsOfProgram()->function(methodsOfProgram()->onlyMethodNamed(name)))
++                        return mayBecomePartOfCallerInLoop(*known);
++                    // Or any of a few (Inliner::splitMethodCalls()).
++                    return !methodCandidatesInLoop(name).isEmpty();
++                }
++                return false;
+             }
+             if (instruction->opcodeID() != op_call)
+                 return false;
+@@ -2642,14 +2847,14 @@ private:
+                 }
+                 if (instruction->opcodeID() == op_get_by_id) {
+                     auto bytecode = instruction->as<OpGetById>();
+-                    m_recentProperties.removeAllMatching([&](auto& entry) { return entry.first == bytecode.m_dst; });
+-                    m_recentProperties.append({ bytecode.m_dst, bytecode.m_property });
++                    m_recentProperties.removeAllMatching([&](auto& entry) { return entry.reg == bytecode.m_dst; });
++                    m_recentProperties.append({ bytecode.m_dst, bytecode.m_property, bytecode.m_base });
+                     m_recentFunctions.removeAllMatching([&](auto& entry) { return entry.first == bytecode.m_dst; });
+                 }
+                 if (instruction->opcodeID() == op_get_from_scope && m_graph.calleeHints()) {
+                     auto bytecode = instruction->as<OpGetFromScope>();
+                     m_recentFunctions.removeAllMatching([&](auto& entry) { return entry.first == bytecode.m_dst; });
+-                    m_recentProperties.removeAllMatching([&](auto& entry) { return entry.first == bytecode.m_dst; });
++                    m_recentProperties.removeAllMatching([&](auto& entry) { return entry.reg == bytecode.m_dst; });
+                     ResolveType type = bytecode.m_getPutInfo.resolveType();
+                     if (type == ResolvedClosureVar || type == ResolvedLazyClosureVar) {
+                         if (auto* known = m_graph.probablyFunctionInVariableOfModule(bytecode.m_var, bytecode.m_offset))
+@@ -3721,7 +3926,12 @@ private:
+     NewObjectPlan m_planOfObject;
+     unsigned m_nextStoreOfPlan { 0 };
+     Vector<std::pair<BasicBlock*, BasicBlock*>> m_backEdges;
+-    Vector<std::pair<VirtualRegister, unsigned>, 8> m_recentProperties; // In the block being looked at: what op_get_by_id put where.
++    struct RecentProperty {
++        VirtualRegister reg;
++        unsigned identifier;
++        VirtualRegister base;
++    };
++    Vector<RecentProperty, 8> m_recentProperties; // In the block being looked at: what op_get_by_id put where, and from what.
+     Vector<std::pair<VirtualRegister, const KnownFunction*>, 8> m_recentFunctions; // And what op_get_from_scope probably did.
+     UncheckedKeyHashMap<UnlinkedFunctionCodeBlock*, bool> m_canBeInlined;
+     UncheckedKeyHashMap<unsigned, Node*, WTF::IntHash<unsigned>, WTF::UnsignedWithZeroKeyHashTraits<unsigned>> m_resultsOfInlinedCalls; // By the offset of the call.
+diff --git a/Source/JavaScriptCore/aot/AOTGraph.h b/Source/JavaScriptCore/aot/AOTGraph.h
+index 10cfe2379d..43a9411057 100644
+--- a/Source/JavaScriptCore/aot/AOTGraph.h
++++ b/Source/JavaScriptCore/aot/AOTGraph.h
+@@ -90,6 +90,13 @@ enum class GuardKind : uint8_t {
+     TypedArrayStorage, // The typed array (uses[0]) has a fixed length. Also loads its length and storage pointer.
+     IsIntrinsicOfArray, // IsIntrinsic, and uses[1] is an array. Created by inlineCalls().
+     IsIntrinsic, // uses[0] is the ImmutableIntrinsic numbered Node::intrinsic. Created by inlineCalls().
++    // The callee (uses[0]), read from a variable that only ever holds the function inlined in its place, is not undefined or the hole:
++    // the variable has been initialized. Created by inlineCalls(). Not the end of its block: if it fails, the call throws there and then,
++    // as it would have, so the code in place of the call has no other way to it.
++    Initialized,
++    // The callee (uses[0]) is a closure of the function numbered Node::knownCallee among the caller's known callees: the one the
++    // program stores under the method's name (MethodsOfProgram). Created by inlineCalls(); if it fails, the call is made after all.
++    IsKnownFunction,
+     // With Options::useAOTFunctionSplitting(). For an op_get_by_id or op_put_by_id whose base has a static type (TypeTable): the base was
+     // allocated with the property in Node::slotOfField (its layout is in [firstLayout, lastLayout]) and the property is still
+     // there. The guard also performs the access. Afterwards the base's layout is known (a Narrow with narrowedTo), so later guards
+@@ -195,6 +202,9 @@ struct Node {
+     Node* target { nullptr }; // NodeKind::Narrow: the loop header phi that the value flows into.
+     bool checksNarrowedType { false }; // NodeKind::Narrow with narrowedTo: nothing has checked the type yet, so this node checks it and throws a TypeError on failure.
+     Type narrowedTo { TNone }; // NodeKind::Narrow with no target: the type that a GuardKind::Field established.
++    // GuardKind::Whole for an op_get_from_scope of a closure or module variable: what the variable is written with, which the guard
++    // checks the value is (in the fast copy, nothing but the initial value can be anything else). TNone: the guard checks nothing.
++    Type typeOfVariableRead { TNone };
+     uint16_t slotOfField { 0 }; // GuardKind::Field
+     uint16_t firstLayout { 0 }; // GuardKind::Field, and the Narrow that follows it.
+     uint16_t lastLayout { 0 };
+@@ -237,6 +247,9 @@ struct Node {
+     unsigned expectedMask { 0 }; // op_get_by_val: the mask of the op_check_type that immediately consumes the result, if any.
+     GuardKind guardKind { GuardKind::Whole };
+     uint16_t intrinsic { 0 }; // NodeKind::Intrinsic: its index.
++    uint32_t knownCallee { 0 }; // GuardKind::IsKnownFunction: the index among Graph::knownCallees of the function it checks for.
++    // A call that a check before it has seen to be to a closure of this function (Inliner::splitMethodCalls()). Inlined with no check of its own.
++    const KnownFunction* provenCallee { nullptr };
+     // For a call: the built-in function being called, by its ImmutableIntrinsics index, provided the receiver is the given kind of
+     // Receiver (none means any receiver). The same fields are set on the read of the callee. See Graph::findBuiltinsCalled().
+     uint16_t builtinCalled { 0 };
+@@ -434,7 +447,8 @@ public:
+     Vector<InlineFrame> inlineFrames; // Indexed from 1. Only used on the outermost graph.
+     // Takes over the other graph's blocks and nodes, and keeps it alive for queries about its code.
+     void adoptInlinee(std::unique_ptr<Graph>&&, InlineFrame);
+-    void computeOrderOfBlocks(); // Recomputes m_rpo after blocks have been added.
++    void computeOrderOfBlocks();
++    void computeDominators(); // Of the blocks in m_rpo, which has to be up to date. // Recomputes m_rpo after blocks have been added.
+     const ModuleLinkage* linkage() const { return m_linkage; }
+     // For an inlined closure whose scope is available at the call site: that scope. It is the value of the closure's op_get_scope
+     // (and is among that node's uses).
+@@ -530,6 +544,8 @@ public:
+     // type.
+     static uint32_t classNotedBy(const Node*);
+     void noteClassesDefined();
++    // What this function stores under property names: MethodsOfProgram.
++    void noteMethodsDefined();
+     // For an op_get_by_id that always reads one particular non-escaping method: that function's number. Otherwise zero.
+     static uint32_t closedMethodReadBy(const Node*);
+     // The typed layout of `this` in this code, which must be a constructor, method or initializer of a class. Zero if unknown.
+@@ -715,6 +731,7 @@ public:
+     std::optional<KnownShape> shapeOfLiteral(const Node*) const;
+     StubCalls stubCalls;
+     IndexReferences indexReferences;
++    KnownCalleeNumberReferences knownCalleeNumberReferences;
+ 
+ private:
+     VM& m_vm;
+@@ -778,6 +795,21 @@ void inferRanges(Graph&);
+ void optimizeLoops(Graph&);
+ void simplify(Graph&);
+ void inlineCalls(Graph&, const CodeOfProgram&);
++// What a read of a closure or module variable is taken for in the fast copy of a loop (Node::typeOfVariableRead): what code writes to
++// the variable, when that has fast paths (numbers, strings, booleans, arrays, typed arrays) and the read may otherwise also see the
++// undefined or the hole the variable starts as. TNone if the read is better taken as it is.
++inline Type typeOfVariableReadInFastCopy(Type read, Type written)
++{
++    constexpr Type initial = TUndefined | TEmpty;
++    if (!Options::useAOTVariableNarrowing() || !written || (written & initial) || !(read & initial) || !isSubtype(written, read))
++        return TNone;
++    return isSubtype(written, TNumber | TString | TBoolean | TArray | TTypedArray) ? written : TNone;
++}
++// Whether inlineCalls() would make this function part of a caller in a loop, going by the function alone.
++bool mayBecomePartOfCallerInLoop(const KnownFunction&);
++// The functions a method call in a loop is checked for, one after the other, when the program gives the name to more than one (and
++// not too many, and not too big together, each one fit to be made part of the loop). Empty if the call is to be made as it is.
++Vector<const KnownFunction*, 4> methodCandidatesInLoop(UniquedStringImpl* name);
+ void analyzeEscapes(Graph&); // Sets Node::escape.
+ void promoteEnvironments(Graph&); // Sets Node::isPromoted.
+ void scalarReplaceReadOnlyObjects(Graph&); // Runs before type inference.
 diff --git a/Source/JavaScriptCore/aot/AOTImage.cpp b/Source/JavaScriptCore/aot/AOTImage.cpp
-index bea4646b3a..9bd060d9af 100644
+index bea4646b3a..09758eef35 100644
 --- a/Source/JavaScriptCore/aot/AOTImage.cpp
 +++ b/Source/JavaScriptCore/aot/AOTImage.cpp
 @@ -411,12 +411,28 @@ void noteThatLinkTimeConstantIsUsed(unsigned which)
@@ -376,7 +983,7 @@ index bea4646b3a..9bd060d9af 100644
          result.code[charSize == Yarr::CharSize::Char16] = WTF::move(*code);
      }
      m_regExps.append(WTF::move(result));
-@@ -786,7 +813,11 @@ Vector<uint8_t> ImageBuilder::finish()
+@@ -786,11 +813,16 @@ Vector<uint8_t> ImageBuilder::finish()
              auto& code = m_functions[index].code;
              ++functions;
              bytes += code.bytes.size();
@@ -388,7 +995,12 @@ index bea4646b3a..9bd060d9af 100644
              code.bytes.resize(sizeof(breakpoint));
              memcpy(code.bytes.mutableSpan().data(), &breakpoint, sizeof(breakpoint));
              code.info.stubCalls.clear();
-@@ -889,7 +920,7 @@ Vector<uint8_t> ImageBuilder::finish()
+             code.info.indexReferences.clear();
++            code.info.knownCalleeNumberReferences.clear();
+             code.info.sitesOfSpreads.clear();
+             code.info.inlineFrames.clear();
+             code.info.catchEntrypoints.clear();
+@@ -889,7 +921,7 @@ Vector<uint8_t> ImageBuilder::finish()
          Vector<std::pair<uint32_t, uint32_t>> all;
          for (auto& call : function.code.info.stubCalls) {
              if (call.callSite != StubCall::noCallSite && !call.isTailCall)
@@ -397,7 +1009,7 @@ index bea4646b3a..9bd060d9af 100644
          }
          if (all.isEmpty()) {
              callSitesOfFunction.append(0);
-@@ -914,7 +945,7 @@ Vector<uint8_t> ImageBuilder::finish()
+@@ -914,7 +946,7 @@ Vector<uint8_t> ImageBuilder::finish()
          uint32_t previousOffset = 0;
          int64_t previousSite = 0;
          for (auto& [offset, site] : all) {
@@ -406,7 +1018,7 @@ index bea4646b3a..9bd060d9af 100644
              int64_t step = static_cast<int64_t>(site) - previousSite;
              appendVarint(callSites, static_cast<uint64_t>(step << 1) ^ static_cast<uint64_t>(step >> 63));
              previousOffset = offset;
-@@ -966,7 +997,7 @@ Vector<uint8_t> ImageBuilder::finish()
+@@ -966,7 +998,7 @@ Vector<uint8_t> ImageBuilder::finish()
              record.text = safeCast<uint32_t>(textOfRegExps.size());
              record.length = regExp.pattern.length();
              record.is8Bit = regExp.pattern.is8Bit();
@@ -415,7 +1027,7 @@ index bea4646b3a..9bd060d9af 100644
              record.codeFor8Bit = safeCast<uint32_t>(at[0]);
              record.codeFor16Bit = safeCast<uint32_t>(at[1]);
              imageRegExps.append(record);
-@@ -1269,6 +1300,10 @@ Vector<uint8_t> ImageBuilder::finish()
+@@ -1269,6 +1301,10 @@ Vector<uint8_t> ImageBuilder::finish()
              for (auto& reference : regExpCode.tables) {
                  size_t instructionAt = codeAt + reference.offset;
                  size_t tableAt = tablesOfRegExps.get(reference.table.data());
@@ -426,7 +1038,72 @@ index bea4646b3a..9bd060d9af 100644
                  int64_t pages = static_cast<int64_t>(tableAt >> 12) - static_cast<int64_t>(instructionAt >> 12);
                  RELEASE_ASSERT(pages >= -(1 << 20) && pages < (1 << 20));
                  uint32_t adrp = 0x90000000u | (static_cast<uint32_t>(pages) & 3u) << 29 | (static_cast<uint32_t>(pages >> 2) & 0x7ffffu) << 5 | reference.reg;
-@@ -1630,7 +1665,7 @@ std::optional<uint32_t> tryCallSiteAt(const ImageFunction& function, uint32_t of
+@@ -1284,10 +1320,47 @@ Vector<uint8_t> ImageBuilder::finish()
+     Vector<uint32_t> functionInBucket;
+     functionInBucket.fill(0, capacity);
+     size_t recordAt = 0;
++    // BUN_AOT_MAP_OUT=path: where the code is, for profilers, as offsets from the start of the image (which is mapped at
++    // StaticRegion::startOf(Arena::Image)). A function: "offset size module start kind", by its key. A stub or a regular
++    // expression: "S offset size name".
++    FILE* map = nullptr;
++    if (const char* mapPath = getenv("BUN_AOT_MAP_OUT"))
++        map = fopen(mapPath, "w");
++    if (map) {
++        static constexpr const char* namesOfStubs[] = {
++#define AOT_NAME_OF_STUB(name) #name,
++            FOR_EACH_AOT_STUB(AOT_NAME_OF_STUB)
++#undef AOT_NAME_OF_STUB
++        };
++        Vector<std::pair<unsigned, String>> starts;
++        for (unsigned i = 0; i < numberOfStubs; ++i)
++            starts.append({ stubs.offsets[i], String::fromLatin1(namesOfStubs[i]) });
++        for (unsigned i = 0; i < stubs.thunkOffsets.size(); ++i)
++            starts.append({ stubs.thunkOffsets[i], makeString("thunk"_s, i) });
++        std::ranges::sort(starts, { }, &std::pair<unsigned, String>::first);
++        for (size_t at : stubsAt) {
++            for (size_t i = 0; i < starts.size(); ++i) {
++                size_t end = i + 1 < starts.size() ? starts[i + 1].first : stubs.bytes.size();
++                fprintf(map, "S %zx %zx stub:%s\n", static_cast<size_t>(header.codeOffset) + at + starts[i].first, end - starts[i].first, starts[i].second.utf8().data());
++            }
++        }
++        for (size_t index = 0; index < m_regExps.size(); ++index) {
++            for (unsigned i = 0; i < 2; ++i) {
++                auto pattern = m_regExps[index].pattern.left(60).utf8();
++                for (char& c : pattern.mutableSpan()) {
++                    if (c == '\n' || c == '\r' || c == '\t')
++                        c = ' ';
++                }
++                fprintf(map, "S %zx %zx regexp%s:/%s/\n", static_cast<size_t>(header.codeOffset) + placementOfRegExps[index][i], m_regExps[index].code[i].bytes.size(), i ? "16" : "8", pattern.data());
++            }
++        }
++    }
+     for (size_t index = 0; index < m_functions.size(); ++index) {
+         auto& function = m_functions[index];
+         auto& info = function.code.info;
+         auto [codeAt, stubsForThis] = placement[index];
++        if (map)
++            fprintf(map, "%zx %zx %u %u %u\n", static_cast<size_t>(header.codeOffset) + codeAt, function.code.bytes.size(), function.key.module, function.key.start, function.key.kind);
+ 
+         ImageFunction record { };
+         RELEASE_ASSERT(startsOfFunctions[index] == codeAt);
+@@ -1359,9 +1432,16 @@ Vector<uint8_t> ImageBuilder::finish()
+         memcpy(code + codeAt, function.code.bytes.span().data(), function.code.bytes.size());
+         for (auto& reference : info.indexReferences)
+             IndexReferences::fill(code + codeAt, reference, safeCast<uint32_t>(index));
++        for (auto& reference : info.knownCalleeNumberReferences) {
++            StubCall asCall;
++            asCall.function = reference.knownCallee;
++            KnownCalleeNumberReferences::fill(code + codeAt, reference, safeCast<uint32_t>(*directTargetOf(info, asCall)));
++        }
+         for (auto& call : info.stubCalls)
+             retargetStubCall(code, codeAt + call.offset, stubsForThis + (call.thunk ? stubs.thunkOffsets[call.thunk - 1] : stubs.offsets[static_cast<unsigned>(call.stub)]), call.isTailCall);
+     }
++    if (map)
++        fclose(map);
+ 
+     // With every function in its place: the calls from one to another.
+     for (size_t index = 0; index < m_functions.size(); ++index) {
+@@ -1630,7 +1710,7 @@ std::optional<uint32_t> tryCallSiteAt(const ImageFunction& function, uint32_t of
      uint64_t first = readVarint(at);
      skipInlineFrames(at, first);
      for (uint64_t count = first >> 2; count--;) {
@@ -435,7 +1112,7 @@ index bea4646b3a..9bd060d9af 100644
          uint64_t step = readVarint(at);
          site += static_cast<int64_t>(step >> 1) ^ -static_cast<int64_t>(step & 1);
          if (offset >= offsetOfReturnAddress) {
-@@ -1764,11 +1799,11 @@ auto Image::codeForRegExp(const String& pattern, OptionSet<Yarr::Flags> flags) -
+@@ -1764,11 +1844,11 @@ auto Image::codeForRegExp(const String& pattern, OptionSet<Yarr::Flags> flags) -
          std::span regExps { image->at<ImageRegExp>(header.regExpsOffset), header.numberOfRegExps };
          auto* text = image->at<uint8_t>(header.textOfRegExpsOffset);
          for (auto it = std::ranges::lower_bound(regExps, hash, { }, &ImageRegExp::hash); it != regExps.end() && it->hash == hash; ++it) {
@@ -449,7 +1126,7 @@ index bea4646b3a..9bd060d9af 100644
              }
          }
      }
-@@ -1944,6 +1979,10 @@ ImageCode findInImage(ScriptExecutable* executable, CodeSpecializationKind kind,
+@@ -1944,6 +2024,10 @@ ImageCode findInImage(ScriptExecutable* executable, CodeSpecializationKind kind,
      });
      if (!Image::hasAny())
          return { };
@@ -460,7 +1137,7 @@ index bea4646b3a..9bd060d9af 100644
  
      Image* image = nullptr;
      const ImageFunction* function = nullptr;
-@@ -2092,7 +2131,8 @@ public:
+@@ -2092,7 +2176,8 @@ public:
      void add(AOT::ImageKey key, UnlinkedCodeBlock* codeBlock)
      {
          // An inner function of a function with both call and construct code blocks is reached twice.
@@ -471,7 +1148,7 @@ index bea4646b3a..9bd060d9af 100644
          AOT::CompiledCode code;
          if (AOT::compileForImage(m_vm, codeBlock, code))
 diff --git a/Source/JavaScriptCore/aot/AOTImage.h b/Source/JavaScriptCore/aot/AOTImage.h
-index cce882109e..b23e2bc498 100644
+index cce882109e..4e942585eb 100644
 --- a/Source/JavaScriptCore/aot/AOTImage.h
 +++ b/Source/JavaScriptCore/aot/AOTImage.h
 @@ -116,6 +116,10 @@ struct ImageRegExp {
@@ -485,7 +1162,23 @@ index cce882109e..b23e2bc498 100644
      uint32_t hash;
      uint32_t text; // Byte offset of the pattern in the RegExp text.
      uint32_t length : 31; // In characters.
-@@ -206,6 +210,7 @@ private:
+@@ -176,6 +180,15 @@ public:
+     void add(ImageKey, uint64_t rank, CompiledCode&&);
+     size_t numberOfFunctions() const { return m_functions.size(); }
+     void clear() { m_functions.clear(); } // Removes all functions.
++    // Every function that the code of a function added refers to by its key: one it calls directly, has made part of itself,
++    // or checks a value for being. finish() needs each of them to have been added too.
++    template<typename Functor> void forEachKnownCallee(const Functor& functor) const
++    {
++        for (auto& function : m_functions) {
++            for (auto& key : function.code.info.knownCallees)
++                functor(key);
++        }
++    }
+     void setEnvironments(Vector<ImageEnvironment>&& environments, uint32_t size) { m_environments = WTF::move(environments); m_environmentsSize = size; }
+     // `numbers` must stay valid until finish() returns. `number` is the highest identifier number plus one.
+     void setNumbersOfIdentifiersOfProgram(const NumbersOfIdentifiers* numbers, uint32_t number)
+@@ -206,6 +219,7 @@ private:
          String pattern;
          OptionSet<Yarr::Flags> flags;
          Yarr::YarrCodeForImage code[2]; // 8-bit, 16-bit.
@@ -493,7 +1186,7 @@ index cce882109e..b23e2bc498 100644
      };
      uint32_t m_numberOfIdentifiersOfProgram { 0 };
      const NumbersOfIdentifiers* m_numbersOfIdentifiersOfProgram { nullptr };
-@@ -242,6 +247,7 @@ public:
+@@ -242,6 +256,7 @@ public:
      struct CodeForRegExp {
          const void* for8Bit;
          const void* for16Bit;
@@ -502,22 +1195,80 @@ index cce882109e..b23e2bc498 100644
      JS_EXPORT_PRIVATE static std::optional<CodeForRegExp> codeForRegExp(const String& pattern, OptionSet<Yarr::Flags>); // From any image.
  
 diff --git a/Source/JavaScriptCore/aot/AOTInlining.cpp b/Source/JavaScriptCore/aot/AOTInlining.cpp
-index 5293958d8f..9174355b90 100644
+index 5293958d8f..89d174ec32 100644
 --- a/Source/JavaScriptCore/aot/AOTInlining.cpp
 +++ b/Source/JavaScriptCore/aot/AOTInlining.cpp
-@@ -221,6 +221,11 @@ private:
+@@ -35,6 +35,7 @@ public:
+ 
+     void run()
+     {
++        splitMethodCalls();
+         // (What is taken over comes after what there is, so what it calls gets its turn.)
+         for (unsigned i = 0; i < m_graph.blocks.size(); ++i) {
+             BasicBlock* block = m_graph.blocks[i].get();
+@@ -153,8 +154,16 @@ private:
+     bool tryInline(BasicBlock* block, unsigned index)
+     {
+         Node* call = block->nodes[index];
+-        if (call->kind != NodeKind::Bytecode || call->guard || call->guarded)
++        if (call->kind != NodeKind::Bytecode || call->guarded)
+             return false;
++        // A method call in the fast copy of a loop that chooseGuards() left a way out of (canBeGuarded()): if the callee turns out
++        // to be another function, the generic copy makes the call, and the fast copy keeps no call at all.
++        Node* wayOut = nullptr;
++        if (call->guard) {
++            if (call->guard->guardKind != GuardKind::Whole || !Options::useAOTMethodInliningByName() || m_graph.intrinsicOfCall(call) != CallIntrinsic::None)
++                return false;
++            wayOut = call->guard;
++        }
+         VirtualRegister calleeRegister;
+         unsigned argc;
+         unsigned argv;
+@@ -194,6 +203,12 @@ private:
+         bool isCertainlyTheIntrinsic = false;
+         // It is a form of the method that will only do for an array.
+         bool isLeanForm = false;
++        // The variable it is read from holds that one function once it is initialized, which is checked for (`const f = () => ...`):
++        // until then, the call is made as it is, and fails as it would.
++        bool checksInitialized = false;
++        // It is a method call, and the callee is taken for the one function the program stores under the method's name, which is
++        // checked for (GuardKind::IsKnownFunction): if it is another, the call is made after all.
++        bool checksMethod = false;
+         // Options::verboseAOTCompilation(): why one of the engine's own functions does not become part of its caller.
+         auto notTaken = [&](ASCIILiteral why) {
+             dataLogLnIf(Options::verboseAOTCompilation(), "AOT: a builtin is not made part of its caller at bc#", call->bytecodeIndex.offset(), ": ", why);
+@@ -218,17 +233,40 @@ private:
+                 }
+             }
+             isCertainlyTheIntrinsic = Options::useAOTTypedFields() && TypeTable::typedFieldsAreEnforced() && TypeTable::shared()->isArray(Graph::typeTagOf(calleeNode));
++        } else if (call->provenCallee) {
++            // A check before it has seen to which function it is (splitMethodCalls()).
++            callee = call->provenCallee->forCall;
++            if (!callee)
++                return false;
          } else {
              bool isExact = false;
              const KnownFunction* known = caller.knownCallee(call, &isExact);
+-            if (!known || !isExact || !known->forCall || !(known->isDeclaration || Graph::closedMethodReadBy(calleeNode)) || !caller.passesNoFunctionObject(call))
+-                return false;
 +            if (Options::verboseAOTCompilation()) [[unlikely]] {
-+                const char* why = !known ? "unknown callee" : !isExact ? "callee not exact" : !known->forCall ? "no code for call" : !(known->isDeclaration || Graph::closedMethodReadBy(calleeNode)) ? "not a declaration" : !caller.passesNoFunctionObject(call) ? "passes function object" : nullptr;
++                const char* why = !known ? "unknown callee" : !isExact ? "callee not exact" : !known->forCall ? "no code for call" : !caller.passesNoFunctionObject(call) ? "passes function object" : nullptr;
 +                if (why)
 +                    dataLogLn("AOT-INLINE: no: ", why);
 +            }
-             if (!known || !isExact || !known->forCall || !(known->isDeclaration || Graph::closedMethodReadBy(calleeNode)) || !caller.passesNoFunctionObject(call))
-                 return false;
++            if (!known || !isExact || !known->forCall || !caller.passesNoFunctionObject(call)) {
++                // (Only where it is called over and over: elsewhere the check and the copy of the body cost more code than a call.)
++                known = block->isInLoop ? methodNamedAt(call, calleeNode, argv) : nullptr;
++                if (!known)
++                    return false;
++                checksMethod = true;
++            } else
++                checksInitialized = !known->isDeclaration && !Graph::closedMethodReadBy(calleeNode);
              callee = known->forCall;
-@@ -229,6 +234,11 @@ private:
+         }
++        if (wayOut && !checksMethod)
++            return false;
+         auto about = m_program.about(callee);
          // (A closure that is called where it is made is as good as called from one place.)
          if (intrinsicToCheckFor && (!about || !canBePartOfAnother(callee)))
              return notTaken(about ? "of what is in its bytecode"_s : "nothing is known about its code"_s);
@@ -529,7 +1280,7 @@ index 5293958d8f..9174355b90 100644
          if (!about || !canBePartOfAnother(callee) || !(scopeOfClosure || intrinsicToCheckFor ? callee->instructionsSize() <= Options::maximumAOTInlineCandidateBytecodeCostForSingleCallSite() : isProfitable(callee, about->summary, block->isInLoop)))
              return intrinsicToCheckFor ? notTaken("it is too big"_s) : false;
          if (m_inlinedBytecodeSize + callee->instructionsSize() > Options::maximumAOTInliningCallerBytecodeCost() || m_graph.inlineFrames.size() > PackedSite::mostInlineFrames)
-@@ -249,8 +259,10 @@ private:
+@@ -249,8 +287,10 @@ private:
          inlinee->setLinkage(about->linkage, declaredNamesFor(callee));
          inlinee->loopsAreNotSplit = !!intrinsicToCheckFor || m_graph.loopsAreNotSplit;
          inlinee->isInlinedBuiltin = !!intrinsicToCheckFor;
@@ -541,7 +1292,7 @@ index 5293958d8f..9174355b90 100644
          if (!parseBytecode(*inlinee) || !inlinee->catchEntrypoints.isEmpty() || inlinee->hasFrameRegisters())
              return intrinsicToCheckFor ? notTaken("its bytecode is not parsed, or it catches, or it has registers with homes"_s) : false;
  
-@@ -280,6 +292,7 @@ private:
+@@ -280,6 +320,7 @@ private:
  
          // ---- Nothing is in the way.
          dataLogLnIf(Options::verboseAOTCompilation() && intrinsicToCheckFor, "AOT: a builtin is made part of its caller at bc#", call->bytecodeIndex.offset());
@@ -549,8 +1300,375 @@ index 5293958d8f..9174355b90 100644
          m_didInline = true;
          m_inlinedBytecodeSize += callee->instructionsSize();
          m_parents.add(inlinee.get(), &caller);
+@@ -413,18 +454,45 @@ private:
+         }
+         block->successors.append(entry);
+         entry->predecessors.append(block);
+-        // If it is not the function it was taken for, the call is made after all.
++        // Until the variable is initialized, the call throws: nothing else is to be made of it.
++        if (checksInitialized) {
++            Node* guard = m_graph.addNode(NodeKind::Guard);
++            guard->graph = block->graph;
++            guard->guardKind = GuardKind::Initialized;
++            guard->opcode = call->opcode;
++            guard->instruction = call->instruction;
++            guard->bytecodeIndex = call->bytecodeIndex;
++            guard->block = block;
++            // (Under the call's own register for the callee: Graph::knownCallee() finds it there, as it does for the call.)
++            guard->uses.append({ calleeRegister, calleeNode });
++            block->nodes.append(guard);
++        }
++        // If it is not the function it was taken for, the call is made after all: by the generic copy of the loop, where there is one
++        // to leave for, or else right here.
+         Node* callAfterAll = nullptr;
+-        if (intrinsicToCheckFor && !isCertainlyTheIntrinsic) {
++        if (wayOut) {
++            wayOut->guardKind = GuardKind::IsKnownFunction;
++            wayOut->knownCallee = m_graph.indexOfKnownCallee(m_program.about(callee)->key);
++            wayOut->uses.clear();
++            wayOut->uses.append({ calleeRegister, calleeNode });
++            wayOut->guarded = nullptr;
++            call->guard = nullptr;
++        } else if ((intrinsicToCheckFor && !isCertainlyTheIntrinsic) || checksMethod) {
+             Node* guard = m_graph.addNode(NodeKind::Guard);
+             guard->graph = block->graph;
+-            guard->guardKind = isLeanForm ? GuardKind::IsIntrinsicOfArray : GuardKind::IsIntrinsic;
+-            guard->intrinsic = intrinsicToCheckFor;
++            if (checksMethod) {
++                guard->guardKind = GuardKind::IsKnownFunction;
++                guard->knownCallee = m_graph.indexOfKnownCallee(m_program.about(callee)->key);
++            } else {
++                guard->guardKind = isLeanForm ? GuardKind::IsIntrinsicOfArray : GuardKind::IsIntrinsic;
++                guard->intrinsic = intrinsicToCheckFor;
++            }
+             guard->opcode = call->opcode;
+             guard->instruction = call->instruction;
+             guard->bytecodeIndex = call->bytecodeIndex;
+             guard->block = block;
+-            guard->uses.append({ VirtualRegister(), calleeNode });
++            // (Under the call's own register for the callee: Graph::knownCallee() finds it there, as it does for the call.)
++            guard->uses.append({ checksMethod ? calleeRegister : VirtualRegister(), calleeNode });
+             if (isLeanForm)
+                 guard->uses.append({ VirtualRegister(), call->use(VirtualRegister(firstArgument)) });
+             block->nodes.append(guard);
+@@ -518,6 +586,182 @@ private:
+         return std::nullopt;
+     }
+ 
++    // In the fast copy of a loop: `base.name(...)`, where the program gives the name to a few functions (methodCandidatesInLoop()).
++    // The guard before the call, which would leave for the generic copy, becomes a check for each function in turn, each leading to
++    // a call of its own that is known to be to that function, and so is made part of the loop like any (tryInline()); the last check
++    // leaves for the generic copy. What the calls return meets after them.
++    //     P: guard            P: is it f1? -> B1: call (f1) -> C: result = phi(...); the rest
++    //     B: call; the rest      else P2: is it f2? -> B2: call (f2) -> C
++    //                               ...  else Pk: is it fk? -> Bk -> C, else the generic copy
++    void splitMethodCalls()
++    {
++        if (m_graph.loopsAreNotSplit)
++            return;
++        unsigned count = m_graph.blocks.size();
++        for (unsigned i = 0; i < count; ++i) {
++            BasicBlock* guarding = m_graph.blocks[i].get();
++            Node* wayOut = guarding->endsWithGuard ? guarding->terminal() : nullptr;
++            if (!wayOut || wayOut->kind != NodeKind::Guard || wayOut->guardKind != GuardKind::Whole || wayOut->opcode != op_call || guarding->successors.size() != 2)
++                continue;
++            BasicBlock* block = guarding->successors[0];
++            Node* call = block->nodes.isEmpty() ? nullptr : block->nodes[0];
++            if (!call || call->guard != wayOut || call->opcode != op_call || block->isGeneric || m_graph.intrinsicOfCall(call) != CallIntrinsic::None)
++                continue;
++            auto bytecode = call->as<OpCall>();
++            Node* calleeNode = resolve(call->use(bytecode.m_callee));
++            if (!calleeNode->isBytecode(op_get_by_id))
++                continue;
++            int firstArgument = -static_cast<int>(bytecode.m_argv) + CallFrame::thisArgumentOffset();
++            if (resolve(call->use(VirtualRegister(firstArgument))) != resolve(calleeNode->use(calleeNode->as<OpGetById>().m_base)))
++                continue;
++            UniquedStringImpl* name = calleeNode->graph->codeBlock()->identifier(calleeNode->as<OpGetById>().m_property).impl();
++            auto candidates = methodCandidatesInLoop(name);
++            if (candidates.size() < 2)
++                continue;
++            dataLogLnIf(Options::verboseAOTCompilation(), "AOT-INLINE: method `", String(name), "` is checked for ", candidates.size(), " functions");
++            m_didInline = true;
++            // The read of the method sees objects of as many kinds as there are functions: in the fast copy it would leave for the
++            // generic copy whenever the kind is not the one its inline cache holds. Done the long way (whose cache holds several), it
++            // stays.
++            if (Node* readsMethod = calleeNode->guard; readsMethod && readsMethod->guardKind == GuardKind::Whole) {
++                readsMethod->guardKind = GuardKind::Nothing;
++                readsMethod->uses.clear();
++                readsMethod->guarded = nullptr;
++                calleeNode->guard = nullptr;
++            }
++            BasicBlock* generic = guarding->successors[1];
++            unsigned end = call->bytecodeIndex.offset() + call->instruction->size();
++
++            // What comes after the call.
++            BasicBlock* continuation = m_graph.addBlock();
++            continuation->graph = block->graph;
++            continuation->bytecodeBegin = end;
++            continuation->bytecodeEnd = block->bytecodeEnd;
++            continuation->isReachable = true;
++            continuation->isInLoop = block->isInLoop;
++            continuation->isOnlyInLoopOfBuiltin = block->isOnlyInLoopOfBuiltin;
++            continuation->endsWithGuard = std::exchange(block->endsWithGuard, false);
++            continuation->valuesAtTail = block->valuesAtTail;
++            for (unsigned j = 1; j < block->nodes.size(); ++j) {
++                block->nodes[j]->block = continuation;
++                continuation->nodes.append(block->nodes[j]);
++            }
++            continuation->successors = std::exchange(block->successors, { });
++            for (BasicBlock* successor : continuation->successors) {
++                for (auto& predecessor : successor->predecessors) {
++                    if (predecessor == block)
++                        predecessor = continuation;
++                }
++            }
++            block->nodes.shrink(0);
++            block->bytecodeEnd = end;
++
++            Node* result = nullptr;
++            if (call->opcode == op_call) {
++                result = m_graph.addNode(NodeKind::Phi);
++                result->graph = continuation->graph;
++                result->block = continuation;
++                result->range = IntegerRange::unknown();
++                continuation->phis.append(result);
++            }
++            BasicBlock* check = guarding;
++            for (unsigned k = 0; k < candidates.size(); ++k) {
++                BasicBlock* calling = block;
++                if (k) {
++                    calling = m_graph.addBlock();
++                    calling->graph = block->graph;
++                    calling->bytecodeBegin = block->bytecodeBegin;
++                    calling->bytecodeEnd = end;
++                    calling->isReachable = true;
++                    calling->isInLoop = block->isInLoop;
++                    calling->isOnlyInLoopOfBuiltin = block->isOnlyInLoopOfBuiltin;
++                    calling->valuesAtTail = block->valuesAtTail;
++                }
++                unsigned index = m_graph.addNode(NodeKind::Bytecode)->index;
++                Node* copy = m_graph.lastNode();
++                *copy = *call;
++                copy->index = index;
++                copy->block = calling;
++                copy->guard = nullptr;
++                copy->guarded = nullptr;
++                copy->provenCallee = candidates[k];
++                calling->nodes.append(copy);
++                calling->successors.append(continuation);
++                continuation->predecessors.append(calling);
++                if (result)
++                    result->uses.append({ VirtualRegister(), copy });
++
++                // Each check's successors are [its call, what comes if it fails]; the second is filled in by the next check, or below.
++                Node* guard = wayOut;
++                if (k) {
++                    BasicBlock* next = m_graph.addBlock();
++                    next->graph = guarding->graph;
++                    next->bytecodeBegin = block->bytecodeBegin;
++                    next->bytecodeEnd = block->bytecodeBegin;
++                    next->isReachable = true;
++                    next->isInLoop = guarding->isInLoop;
++                    next->isOnlyInLoopOfBuiltin = guarding->isOnlyInLoopOfBuiltin;
++                    next->endsWithGuard = true;
++                    next->valuesAtTail = guarding->valuesAtTail;
++                    guard = m_graph.addNode(NodeKind::Guard);
++                    guard->graph = wayOut->graph;
++                    guard->opcode = wayOut->opcode;
++                    guard->instruction = wayOut->instruction;
++                    guard->bytecodeIndex = wayOut->bytecodeIndex;
++                    guard->block = next;
++                    next->nodes.append(guard);
++                    next->successors.append(calling);
++                    calling->predecessors.append(next);
++                    if (check == guarding)
++                        guarding->successors[1] = next;
++                    else
++                        check->successors.append(next);
++                    next->predecessors.append(check);
++                    check = next;
++                }
++                guard->guardKind = GuardKind::IsKnownFunction;
++                guard->knownCallee = m_graph.indexOfKnownCallee(m_program.about(candidates[k]->forCall)->key);
++                guard->uses.clear();
++                guard->uses.append({ bytecode.m_callee, calleeNode });
++                guard->guarded = nullptr;
++            }
++            // The last check leaves for the generic copy, from where the guard did (the same phi inputs: nothing is defined in between).
++            RELEASE_ASSERT(check != guarding && check->successors.size() == 1);
++            check->successors.append(generic);
++            for (auto& predecessor : generic->predecessors) {
++                if (predecessor == guarding)
++                    predecessor = check;
++            }
++            RELEASE_ASSERT(guarding->successors.size() == 2 && guarding->successors[0] == block);
++            call->replacement = result;
++        }
++    }
++
++    // For `base.name(...)`: the one function the program stores under `name`, if there is exactly one (MethodsOfProgram).
++    const KnownFunction* methodNamedAt(Node* call, Node* calleeNode, unsigned argv)
++    {
++        if (!Options::useAOTMethodInliningByName() || !calleeNode->isBytecode(op_get_by_id))
++            return nullptr;
++        const MethodsOfProgram* methods = methodsOfProgram();
++        const FunctionsOfProgram* functions = functionsOfProgram();
++        if (!methods || !functions)
++            return nullptr;
++        auto bytecode = calleeNode->as<OpGetById>();
++        int firstArgument = -static_cast<int>(argv) + CallFrame::thisArgumentOffset();
++        if (resolve(call->use(VirtualRegister(firstArgument))) != resolve(calleeNode->use(bytecode.m_base)))
++            return nullptr;
++        UniquedStringImpl* name = calleeNode->graph->codeBlock()->identifier(bytecode.m_property).impl();
++        bool others = false;
++        uint32_t number = methods->onlyMethodNamed(name, &others);
++        const KnownFunction* known = functions->function(number);
++        if (!known || !known->forCall) {
++            dataLogLnIf(Options::verboseAOTCompilation(), "AOT-INLINE: no: the program stores ", number ? "no code" : methods->onlyMethodNamed(name) ? "" : "no one function", " under `", String(name), "`");
++            return nullptr;
++        }
++        dataLogLnIf(Options::verboseAOTCompilation(), "AOT-INLINE: method `", String(name), "` is taken for the one function the program stores under the name", others ? " (something else is stored under it too)" : "");
++        return known;
++    }
++
+     unsigned likelyArrayMethod(Node* call, Node* calleeNode, unsigned argc, unsigned argv)
+     {
+         if (!Options::useImmutableIntrinsics() || !calleeNode->isBytecode(op_get_by_id) || argc < 2)
+@@ -567,6 +811,35 @@ private:
+ 
+ } // anonymous namespace
+ 
++bool mayBecomePartOfCallerInLoop(const KnownFunction& known)
++{
++    return known.forCall && !hasNoCodeInImage(known.forCall) && Inliner::canBePartOfAnother(known.forCall) && Inliner::isProfitable(known.forCall, known.summary, true);
++}
++
++Vector<const KnownFunction*, 4> methodCandidatesInLoop(UniquedStringImpl* name)
++{
++    const MethodsOfProgram* methods = methodsOfProgram();
++    const FunctionsOfProgram* functions = functionsOfProgram();
++    unsigned most = Options::maximumAOTMethodCandidates();
++    if (!Options::useAOTMethodInliningByName() || !methods || !functions || most < 2)
++        return { };
++    auto numbers = methods->methodsNamed(name, most);
++    if (numbers.size() < 2)
++        return { };
++    Vector<const KnownFunction*, 4> result;
++    unsigned cost = 0;
++    for (uint32_t number : numbers) {
++        const KnownFunction* known = functions->function(number);
++        if (!known || !mayBecomePartOfCallerInLoop(*known))
++            return { };
++        cost += known->forCall->instructionsSize();
++        result.append(known);
++    }
++    if (cost > Options::maximumAOTMethodCandidatesBytecodeCost())
++        return { };
++    return result;
++}
++
+ void inlineCalls(Graph& graph, const CodeOfProgram& program)
+ {
+     // (A site has to have room to say which call it is in.)
+diff --git a/Source/JavaScriptCore/aot/AOTLoopOptimization.cpp b/Source/JavaScriptCore/aot/AOTLoopOptimization.cpp
+index 04a47f035c..6868252002 100644
+--- a/Source/JavaScriptCore/aot/AOTLoopOptimization.cpp
++++ b/Source/JavaScriptCore/aot/AOTLoopOptimization.cpp
+@@ -123,83 +123,7 @@ private:
+         Vector<unsigned, 8> propertiesWritten;
+     };
+ 
+-    void computeDominators()
+-    {
+-        auto& rpo = m_graph.m_rpo;
+-        for (unsigned i = 0; i < rpo.size(); ++i) {
+-            rpo[i]->rpoIndex = i;
+-            rpo[i]->immediateDominator = nullptr;
+-        }
+-        // The handlers are ways in too. What is above them and the root is nothing, which null stands for.
+-        auto isEntry = [&](BasicBlock* block) { return block == m_graph.root || block->isCatchEntrypoint; };
+-        BitVector processed(rpo.size());
+-        auto intersect = [&](BasicBlock* a, BasicBlock* b) -> BasicBlock* {
+-            while (a != b) {
+-                if (!a || !b)
+-                    return nullptr;
+-                while (a && b && a->rpoIndex > b->rpoIndex)
+-                    a = a->immediateDominator;
+-                while (a && b && b->rpoIndex > a->rpoIndex)
+-                    b = b->immediateDominator;
+-            }
+-            return a;
+-        };
+-        bool changed = true;
+-        while (changed) {
+-            changed = false;
+-            for (BasicBlock* block : rpo) {
+-                if (isEntry(block)) {
+-                    processed.set(block->rpoIndex);
+-                    continue;
+-                }
+-                BasicBlock* dominator = nullptr;
+-                bool first = true;
+-                for (BasicBlock* predecessor : block->predecessors) {
+-                    if (!processed.get(predecessor->rpoIndex))
+-                        continue;
+-                    dominator = first ? predecessor : intersect(dominator, predecessor);
+-                    first = false;
+-                }
+-                if (!processed.get(block->rpoIndex) || block->immediateDominator != dominator) {
+-                    processed.set(block->rpoIndex);
+-                    block->immediateDominator = dominator;
+-                    changed = true;
+-                }
+-            }
+-        }
+-
+-        // Numbered so that a block's descendants in the tree are the blocks whose numbers are within its own.
+-        Vector<Vector<BasicBlock*, 2>> children(m_graph.blocks.size());
+-        Vector<BasicBlock*, 4> roots;
+-        for (BasicBlock* block : rpo) {
+-            if (block->immediateDominator)
+-                children[block->immediateDominator->index].append(block);
+-            else
+-                roots.append(block);
+-        }
+-        unsigned number = 0;
+-        struct Frame {
+-            BasicBlock* block;
+-            unsigned next;
+-        };
+-        Vector<Frame> stack;
+-        for (BasicBlock* root : roots) {
+-            root->dominatorPreNumber = number++;
+-            stack.append({ root, 0 });
+-            while (!stack.isEmpty()) {
+-                Frame& frame = stack.last();
+-                auto& list = children[frame.block->index];
+-                if (frame.next < list.size()) {
+-                    BasicBlock* child = list[frame.next++];
+-                    child->dominatorPreNumber = number++;
+-                    stack.append({ child, 0 });
+-                    continue;
+-                }
+-                frame.block->dominatorPostNumber = number++;
+-                stack.removeLast();
+-            }
+-        }
+-    }
++    void computeDominators() { m_graph.computeDominators(); }
+ 
+     bool findLoop(BasicBlock* preHeader, Loop& loop)
+     {
+@@ -711,6 +635,7 @@ private:
+                 Node* hoisted = addGuardToPreHeader(loop, GuardKind::Whole, guard);
+                 hoisted->uses = guard->uses;
+                 hoisted->guarded = instruction;
++                hoisted->typeOfVariableRead = guard->typeOfVariableRead;
+                 guard->guardKind = GuardKind::Nothing;
+                 guard->uses.clear();
+                 instruction->guard = hoisted;
 diff --git a/Source/JavaScriptCore/aot/AOTLowerAccess.cpp b/Source/JavaScriptCore/aot/AOTLowerAccess.cpp
-index 6fd1998c0f..3699e4c071 100644
+index 6fd1998c0f..20044f3e46 100644
 --- a/Source/JavaScriptCore/aot/AOTLowerAccess.cpp
 +++ b/Source/JavaScriptCore/aot/AOTLowerAccess.cpp
 @@ -372,7 +372,7 @@ void Lowering::lowerGetById(Node* node)
@@ -724,7 +1842,18 @@ index 6fd1998c0f..3699e4c071 100644
  
      LBasicBlock cellCase = m_out.newBlock();
      LBasicBlock hit = m_out.newBlock();
-@@ -751,7 +839,10 @@ void Lowering::lowerPutById(Node* node)
+@@ -743,7 +831,9 @@ void Lowering::lowerPutById(Node* node)
+ 
+     m_out.appendTo(transition, stored);
+     m_out.store32(newStructureID, base, m_heaps.JSCell_structureID);
+-    m_out.jump(stored);
++    // The object refers to a new Structure now, which nothing else may be keeping alive: a barrier whatever the value is.
++    storeBarrier(base);
++    m_out.jump(continuation);
+ 
+     m_out.appendTo(stored, slowCase);
+     if (mayBe(valueNode->type, TCell))
+@@ -751,7 +841,10 @@ void Lowering::lowerPutById(Node* node)
      m_out.jump(continuation);
  
      m_out.appendTo(slowCase, continuation);
@@ -737,10 +1866,49 @@ index 6fd1998c0f..3699e4c071 100644
  
      m_out.appendTo(continuation);
 diff --git a/Source/JavaScriptCore/aot/AOTLowerArith.cpp b/Source/JavaScriptCore/aot/AOTLowerArith.cpp
-index 1f0ebd9817..7a1d8faace 100644
+index 1f0ebd9817..d8e7c62777 100644
 --- a/Source/JavaScriptCore/aot/AOTLowerArith.cpp
 +++ b/Source/JavaScriptCore/aot/AOTLowerArith.cpp
-@@ -236,6 +236,23 @@ LValue Lowering::toInt32ForBitOp(Node* operand)
+@@ -139,6 +139,29 @@ void Lowering::lowerBinaryArith(Node* node, VirtualRegister lhs, VirtualRegister
+         setDouble(node, m_out.phi(Double, quick, slow));
+         return;
+     }
++    if (opcode == op_mod && isSubtype(left->type | right->type, TNumber) && Options::useAOTIntegerRemainderOfNumbers()) {
++        // `i % n` with numbers that are not proven integers: an integer's work if they are int32s, the one not negative (and not -0)
++        // and the other positive, which is when the remainder of doubles is the remainder of integers. Otherwise fmod.
++        LValue a = lowDouble(left);
++        LValue b = lowDouble(right);
++        LBasicBlock integers = m_out.newBlock();
++        LBasicBlock otherwise = newColdBlock();
++        LBasicBlock continuation = m_out.newBlock();
++        LValue intA = m_out.doubleToInt32(a);
++        LValue intB = m_out.doubleToInt32(b);
++        LValue exact = m_out.bitAnd(m_out.doubleEqual(m_out.intToDouble(intA), a), m_out.doubleEqual(m_out.intToDouble(intB), b));
++        LValue signs = m_out.bitAnd(m_out.greaterThanOrEqual(m_out.bitCast(a, Int64), m_out.int64Zero), m_out.greaterThan(intB, m_out.int32Zero));
++        m_out.branch(m_out.bitAnd(exact, signs), usually(integers), rarely(otherwise));
++        m_out.appendTo(integers, otherwise);
++        ValueFromBlock quick = m_out.anchor(m_out.intToDouble(m_out.sub(intA, m_out.mul(m_out.div(intA, intB), intB))));
++        m_out.jump(continuation);
++        m_out.appendTo(otherwise, continuation);
++        ValueFromBlock slow = m_out.anchor(doubleOp(a, b));
++        m_out.jump(continuation);
++        m_out.appendTo(continuation);
++        setDouble(node, m_out.phi(Double, quick, slow));
++        return;
++    }
+     if (isSubtype(left->type | right->type, TNumber)) {
+         setDouble(node, doubleOp(lowDouble(left), lowDouble(right)));
+         return;
+@@ -201,7 +224,7 @@ void Lowering::lowerBinaryArith(Node* node, VirtualRegister lhs, VirtualRegister
+     m_out.branch(m_out.bitAnd(isNumber(a), isNumber(b)), unsure(doubleCase), unsure(slowCase));
+ 
+     m_out.appendTo(doubleCase, slowCase);
+-    results.append(m_out.anchor(boxDouble(doubleOp(numberToDouble(a), numberToDouble(b)))));
++    results.append(m_out.anchor(boxNumber(doubleOp(numberToDouble(a), numberToDouble(b)))));
+     m_out.jump(continuation);
+ 
+     m_out.appendTo(slowCase, continuation);
+@@ -236,6 +259,23 @@ LValue Lowering::toInt32ForBitOp(Node* operand)
      RELEASE_ASSERT(isSubtype(operand->type, TNumber | TBoolean));
      LValue value = lowRaw(operand);
      LValue result = unboxBoolean(value);
@@ -764,7 +1932,7 @@ index 1f0ebd9817..7a1d8faace 100644
      if (mayBe(operand->type, TDouble))
          result = m_out.select(isNumber(value), doubleToInt32(unboxDouble(value)), result);
      if (mayBe(operand->type, TInt32))
-@@ -288,11 +305,31 @@ void Lowering::lowerBitOp(Node* node, VirtualRegister lhs, VirtualRegister rhs)
+@@ -288,11 +328,31 @@ void Lowering::lowerBitOp(Node* node, VirtualRegister lhs, VirtualRegister rhs)
      m_out.jump(continuation);
  
      m_out.appendTo(slowCase, continuation);
@@ -797,8 +1965,26 @@ index 1f0ebd9817..7a1d8faace 100644
  }
  
  void Lowering::lowerUnaryArith(Node* node, VirtualRegister operandRegister)
+diff --git a/Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp b/Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp
+index 8a4d3a1c0d..ed0c23c528 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerBuiltins.cpp
+@@ -574,6 +574,13 @@ bool Lowering::lowerCallOfBuiltin(Node* node, Node* calleeNode, unsigned argc, u
+             Vector<ValueFromBlock, 2> lengthsOtherwise;
+             Vector<ValueFromBlock, 3> answers;
+             auto [characters, length] = narrowCharactersOf(thisValue, notForTheLooking, lengthsOtherwise);
++            if (!atStart && isCompact()) {
++                // In compact code the length is saturated at 0xffff (Stub::NarrowCharacters): where a longer string ends is not known.
++                LBasicBlock lengthIsKnown = m_out.newBlock();
++                lengthsOtherwise.append(m_out.anchor(length));
++                m_out.branch(m_out.aboveOrEqual(length, m_out.constInt32(0xffff)), rarely(notForTheLooking), usually(lengthIsKnown));
++                m_out.appendTo(lengthIsKnown);
++            }
+             LValue needed = m_out.constInt32(written->length());
+             answers.append(m_out.anchor(m_out.booleanFalse));
+             m_out.branch(m_out.aboveOrEqual(length, needed), unsure(isLongEnough), unsure(settled));
 diff --git a/Source/JavaScriptCore/aot/AOTLowerCalls.cpp b/Source/JavaScriptCore/aot/AOTLowerCalls.cpp
-index 26a637003c..922b5e93d2 100644
+index 26a637003c..4c9b5bd479 100644
 --- a/Source/JavaScriptCore/aot/AOTLowerCalls.cpp
 +++ b/Source/JavaScriptCore/aot/AOTLowerCalls.cpp
 @@ -51,8 +51,9 @@ void Lowering::finishCall(PatchpointValue* patchpoint, CallMode mode, Rep result
@@ -813,8 +1999,24 @@ index 26a637003c..922b5e93d2 100644
      patchpoint->resultConstraints = { result == Rep::Double ? ValueRep::reg(FPRInfo::returnValueFPR) : ValueRep::reg(GPRInfo::returnValueGPR) };
  }
  
+@@ -135,13 +136,13 @@ bool Lowering::lowerCallToKnownFunction(Node* node, VirtualRegister calleeRegist
+     bool isSurelyThere = known->isDeclaration || node->use(calleeRegister)->isReadOnlyToBeCalled;
+     LValue callee = passesCallee || !isSurelyThere ? lowJSValue(node->use(calleeRegister)) : nullptr;
+     if (!isSurelyThere) {
+-        // What is in the variable until it is initialized is not a function. (If it is the hole, that has been seen to.)
++        // What is in the variable until it is initialized is not a function: undefined, or the hole if nothing has seen to it.
+         LBasicBlock isNotInitialized = newColdBlock();
+         LBasicBlock isInitialized = m_out.newBlock();
+         // (Or, if it is known by what it is and not by where it was read from: whatever else it may be.)
+         Type typeOfCallee = node->use(calleeRegister)->type;
+         if (isSubtype(typeOfCallee, TFunction | TUndefined | TEmpty))
+-            m_out.branch(m_out.equal(callee, m_out.constInt64(JSValue::ValueUndefined)), rarely(isNotInitialized), usually(isInitialized));
++            m_out.branch(m_out.belowOrEqual(callee, m_out.constInt64(JSValue::ValueUndefined)), rarely(isNotInitialized), usually(isInitialized)); // (Both are below every cell.)
+         else {
+             if (!isSubtype(typeOfCallee, TCell)) {
+                 LBasicBlock isCellCase = m_out.newBlock();
 diff --git a/Source/JavaScriptCore/aot/AOTLowerCore.cpp b/Source/JavaScriptCore/aot/AOTLowerCore.cpp
-index 9c341c2ac9..ebce60dc78 100644
+index 9c341c2ac9..2dffb741d1 100644
 --- a/Source/JavaScriptCore/aot/AOTLowerCore.cpp
 +++ b/Source/JavaScriptCore/aot/AOTLowerCore.cpp
 @@ -499,6 +499,70 @@ static bool mayLookAtStack(Stub stub)
@@ -1031,7 +2233,7 @@ index 9c341c2ac9..ebce60dc78 100644
      PatchpointValue* result = callStub(stub, type, placed, immediates, StubClobbers::CallerSavedRegisters, node);
      return type == Void ? nullptr : result;
  }
-@@ -800,6 +885,24 @@ LValue Lowering::doubleToInt32(LValue value)
+@@ -800,10 +885,49 @@ LValue Lowering::doubleToInt32(LValue value)
          patchpoint->effects = Effects::none();
          return patchpoint;
      }
@@ -1056,6 +2258,176 @@ index 9c341c2ac9..ebce60dc78 100644
  #endif
      return plainCall(Int32, Entry::operationAOTDoubleToInt32, value);
  }
+ 
++// Whatever an int32 can hold is encoded as one, as jsNumber() and the interpreter do. The engine's own functions take it for
++// granted, and every fast path that consumes a number (inline caches and stubs for indexing, charCodeAt, arithmetic, compares) is
++// for int32s: a counter that is held as a double and boxed as one would miss all of them, and go to C for every use. (Nothing that
++// a program can say tells the two encodings apart.)
++LValue Lowering::boxNumber(LValue value)
++{
++#if CPU(X86_64)
++    // Truncated, it compares equal only if it is an integer in range: anything else (NaN, -0, out of range: 0x80000000, which
++    // converts back to -2^31, itself an int32) stays a double. No call: unlike ToInt32, the value of the truncation does not matter.
++    PatchpointValue* narrow = m_out.patchpoint(Int32);
++    narrow->append(ConstrainedValue(value, ValueRep::SomeRegister));
++    narrow->setGenerator([](CCallHelpers& jit, const StackmapGenerationParams& params) {
++        jit.truncateDoubleToInt32(params[1].fpr(), params[0].gpr());
++    });
++    narrow->effects = Effects::none();
++#else
++    LValue narrow = doubleToInt32(value);
++#endif
++    return m_out.select(m_out.equal(m_out.bitCast(m_out.intToDouble(narrow), Int64), m_out.bitCast(value, Int64)), boxInt32(narrow), boxDouble(value));
++}
++
+ LValue Lowering::convert(LValue value, Rep from, Type fromType, Rep to)
+ {
+     if (from == to)
+@@ -818,13 +942,7 @@ LValue Lowering::convert(LValue value, Rep from, Type fromType, Rep to)
+             return m_out.select(m_out.equal(m_out.signExt32To64(narrow), value), boxInt32(narrow), boxDouble(m_out.intToDouble(value)));
+         }
+         case Rep::Double:
+-            // The engine's own functions pass numbers to functions that take it for granted how they are encoded: whatever an int32 can
+-            // hold is one, as it is when the interpreter has made it. (Nothing that a program can say tells the two apart.)
+-            if (code().codeBlock()->isBuiltinFunction()) {
+-                LValue narrow = m_out.doubleToInt32(value);
+-                return m_out.select(m_out.equal(m_out.bitCast(m_out.intToDouble(narrow), Int64), m_out.bitCast(value, Int64)), boxInt32(narrow), boxDouble(value));
+-            }
+-            return boxDouble(value);
++            return boxNumber(value);
+         case Rep::Boolean:
+             return boxBoolean(value);
+         case Rep::JSValue:
+@@ -1213,7 +1331,8 @@ void Lowering::lowerBlock(BasicBlock* block)
+         lowerEntry();
+ 
+     Node* terminal = block->terminal();
+-    if (terminal && terminal->kind != NodeKind::Guard && !(terminal->kind == NodeKind::Bytecode && (isBranch(terminal->opcode) || isTerminal(terminal->opcode) || isThrow(terminal->opcode))))
++    bool isTerminalGuard = terminal && terminal->kind == NodeKind::Guard && terminal->guardKind != GuardKind::Initialized;
++    if (terminal && !isTerminalGuard && !(terminal->kind == NodeKind::Bytecode && (isBranch(terminal->opcode) || isTerminal(terminal->opcode) || isThrow(terminal->opcode))))
+         terminal = nullptr;
+ 
+     auto setCurrentNode = [&](Node* node) {
+diff --git a/Source/JavaScriptCore/aot/AOTLowerGuards.cpp b/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
+index 6e8573ca98..eadecef405 100644
+--- a/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
++++ b/Source/JavaScriptCore/aot/AOTLowerGuards.cpp
+@@ -9,6 +9,8 @@
+ #if ENABLE(FTL_JIT)
+ 
+ #include "AOTProgram.h"
++#include "B3PatchpointValue.h"
++#include "B3StackmapGenerationParams.h"
+ #include "B3ValueInlines.h"
+ #include "BytecodeStructs.h"
+ #include "FTLSwitchCase.h"
+@@ -77,6 +79,9 @@ void Lowering::exitUnlessOfType(LValue value, Type from, Type wanted)
+         wanted &= ~TFunction;
+     if ((from & wanted & TFinalObjectTag) && !isSubtype(from & TAnyLayoutNumber, wanted))
+         wanted &= ~TFinalObject;
++    // Nor which kind of string it is (an atom, a short or a long string).
++    if ((from & wanted & TString) && !isSubtype(from & TString, wanted))
++        wanted &= ~TString;
+     from &= TAllTags;
+     wanted &= TAllTags;
+     LBasicBlock pass = m_out.newBlock();
+@@ -236,14 +241,57 @@ void Lowering::emitGuard(Node* guard)
+     case GuardKind::KnownCallee: {
+         const KnownFunction* known = m_graph.knownCallee(guard);
+         if (m_graph.calleeIsExact(guard)) {
+-            // What is in the variable until it is initialized is not a function. (If it is the hole, that has been seen to.)
++            // What is in the variable until it is initialized is not a function: undefined, or the hole if nothing has seen to it. Both are below every cell.
+             if (!known->isDeclaration)
+-                exitUnless(isCell(lowJSValue(guard->uses[0].node)));
++                exitUnless(m_out.above(lowJSValue(guard->uses[0].node), m_out.constInt64(JSValue::ValueUndefined)));
+             return;
+         }
+         RELEASE_ASSERT_NOT_REACHED(); // There is no such guard of what is not proven (inlineCall()).
+         return;
+     }
++    case GuardKind::IsKnownFunction: {
++        // A closure of the function: a JSFunction whose FunctionExecutable (or the short form of one) has that function's number.
++        Node* calleeNode = guard->uses[0].node;
++        LValue callee = lowJSValue(calleeNode);
++        if (!isSubtype(calleeNode->type, TCell))
++            exitUnless(isCell(callee));
++        exitUnless(isCellOfType(callee, JSFunctionType));
++        LBasicBlock hasRareData = m_out.newBlock();
++        LBasicBlock haveExecutable = m_out.newBlock();
++        LValue executableOrRareData = m_out.loadPtr(callee, m_heaps.JSFunction_executableOrRareData);
++        ValueFromBlock direct = m_out.anchor(executableOrRareData);
++        m_out.branch(m_out.testNonZeroPtr(executableOrRareData, m_out.constIntPtr(JSFunction::rareDataTag)), rarely(hasRareData), usually(haveExecutable));
++        m_out.appendTo(hasRareData, haveExecutable);
++        ValueFromBlock indirect = m_out.anchor(m_out.loadPtr(m_out.address(m_heaps.FunctionRareData_executable, executableOrRareData, FunctionRareData::offsetOfExecutable() - JSFunction::rareDataTag)));
++        m_out.jump(haveExecutable);
++        m_out.appendTo(haveExecutable);
++        LValue executable = m_out.phi(pointerType(), direct, indirect);
++        static_assert(ShortFunctionExecutableType == FunctionExecutableType + 1);
++        exitUnless(m_out.belowOrEqual(m_out.sub(cellType(executable), m_out.constInt32(FunctionExecutableType)), m_out.int32One));
++        // (A function with no code in the image, made at run time or with none for a call, has index 0, which is also the first
++        // function's: it has no entry either.)
++        exitUnless(m_out.notZero64(m_out.load64(executable, m_heaps.FunctionExecutable_aotEntryForCall)));
++        LValue number = m_out.load32(executable, m_heaps.FunctionExecutable_aotIndexForCall);
++        PatchpointValue* expected = m_out.patchpoint(Int32);
++        expected->effects = Effects::none();
++        expected->setGenerator([graph = &m_graph, knownCallee = guard->knownCallee](CCallHelpers& jit, const StackmapGenerationParams& params) {
++            graph->knownCalleeNumberReferences.load(jit, params[0].gpr(), knownCallee);
++        });
++        exitUnless(m_out.equal(number, expected));
++        return;
++    }
++    case GuardKind::Initialized: {
++        // Undefined and the hole are below every cell.
++        LValue callee = lowJSValue(guard->uses[0].node);
++        LBasicBlock isNotInitialized = newColdBlock();
++        LBasicBlock isInitialized = m_out.newBlock();
++        m_out.branch(m_out.above(callee, m_out.constInt64(JSValue::ValueUndefined)), usually(isInitialized), rarely(isNotInitialized));
++        m_out.appendTo(isNotInitialized);
++        vmCall(guard, Void, Entry::operationAOTThrowNotAFunction, m_globalObject, callee);
++        m_out.unreachable();
++        m_out.appendTo(isInitialized);
++        return;
++    }
+     case GuardKind::TypedArrayStorage: {
+         LValue base = lowJSValue(guard->uses[0].node);
+         exitUnless(m_out.testIsZero32(m_out.load8ZeroExt32(base, m_heaps.JSArrayBufferView_mode), m_out.constInt32(isResizableOrGrowableSharedMode)));
+@@ -1095,6 +1143,27 @@ bool Lowering::guardGetFromScope(Node* guard)
+ {
+     auto bytecode = guard->as<OpGetFromScope>();
+     ResolveType type = bytecode.m_getPutInfo.resolveType();
++    if (type == ResolvedClosureVar) {
++        // The variable has what the program writes to it, not the undefined or the hole it starts with (Node::typeOfVariableRead).
++        Node* read = guard->guarded;
++        if (!guard->typeOfVariableRead || !read)
++            return false;
++        LValue value;
++        if (read->promotedEnvironment)
++            value = m_out.m_block->appendNew<B3::VariableValue>(m_proc, B3::Get, m_out.origin(), variableOfEnvironment(read->promotedEnvironment, read->offsetInEnvironment));
++        else {
++            auto distance = m_graph.distanceOfEnvironmentAccessed(read);
++            value = m_out.load64(distance ? environmentAt(*distance) : lowCell(guard->use(bytecode.m_scope)), m_heaps.JSLexicalEnvironment_variables[bytecode.m_offset]);
++        }
++        // A check tells a string from what is not one, not one kind of string from another (an atom from a long string): that
++        // the variable holds no other kind is known from what the program writes to it, so the check is of strings as a whole.
++        Type checked = guard->typeOfVariableRead;
++        if (checked & TString)
++            checked |= TString;
++        exitUnlessOfType(value, checked | TUndefined | TEmpty, checked);
++        guard->lowered = value;
++        return true;
++    }
+     LValue scope = lowCell(guard->use(bytecode.m_scope));
+ 
+     // A function declaration that nobody has asked for yet is not there yet.
+@@ -1103,8 +1172,6 @@ bool Lowering::guardGetFromScope(Node* guard)
+         exitUnless(m_out.notZero64(guard->lowered));
+         return true;
+     };
+-    if (type == ResolvedClosureVar)
+-        return false;
+     if (type == ResolvedLazyClosureVar)
+         return loadLazily(bytecode.m_offset);
+     StaticVariable variable = resolveStatically(bytecode.m_var, bytecode.m_localScopeDepth, type);
 diff --git a/Source/JavaScriptCore/aot/AOTLowerMisc.cpp b/Source/JavaScriptCore/aot/AOTLowerMisc.cpp
 index 84cbb0c8a0..c6c97aa762 100644
 --- a/Source/JavaScriptCore/aot/AOTLowerMisc.cpp
@@ -1069,8 +2441,235 @@ index 84cbb0c8a0..c6c97aa762 100644
                  for (auto& kind : kindsOfObject) {
                      if (mayBe(others, kind.type))
                          passIf(isType(kind.jsType));
+diff --git a/Source/JavaScriptCore/aot/AOTLowering.h b/Source/JavaScriptCore/aot/AOTLowering.h
+index 237691d56c..17ad851551 100644
+--- a/Source/JavaScriptCore/aot/AOTLowering.h
++++ b/Source/JavaScriptCore/aot/AOTLowering.h
+@@ -141,6 +141,7 @@ private:
+     void setProj(Node*, VirtualRegister, LValue, Rep = Rep::JSValue);
+ 
+     LValue doubleToInt32(LValue); // ToInt32.
++    LValue boxNumber(LValue); // A double as a JSValue, encoded as an int32 if it is one (jsNumber()).
+     LValue toBoolean(Node*);
+ 
+     TypedPointer addressFor(VirtualRegister); // The address of a register that lives in the frame (Graph::livesInFrame()).
+diff --git a/Source/JavaScriptCore/aot/AOTProgram.cpp b/Source/JavaScriptCore/aot/AOTProgram.cpp
+index 7d50baee24..f39918a262 100644
+--- a/Source/JavaScriptCore/aot/AOTProgram.cpp
++++ b/Source/JavaScriptCore/aot/AOTProgram.cpp
+@@ -83,6 +83,18 @@ const NumbersOfIdentifiers* numbersOfIdentifiersOfProgram()
+     return s_numbersOfIdentifiersOfProgram;
+ }
+ 
++static const FunctionsWithoutCode* s_functionsWithoutCode;
++
++void setFunctionsWithoutCode(const FunctionsWithoutCode* functions)
++{
++    s_functionsWithoutCode = functions;
++}
++
++bool hasNoCodeInImage(const UnlinkedCodeBlock* codeBlock)
++{
++    return s_functionsWithoutCode && codeBlock && s_functionsWithoutCode->contains(codeBlock);
++}
++
+ static const NumbersOfConstants* s_numbersOfConstantsOfProgram;
+ 
+ void setNumbersOfConstantsOfProgram(const NumbersOfConstants* numbers)
+@@ -145,6 +157,18 @@ Type VariableSummaries::read(Variable variable, UniquedStringImpl* name, unsigne
+     return type;
+ }
+ 
++Type VariableSummaries::readWritten(Variable variable, UniquedStringImpl* name, unsigned reader)
++{
++    if (isUntracked(variable, name))
++        return TAll;
++    Shard& shard = shardFor(variable);
++    Locker locker { shard.lock };
++    auto& cell = shard.cells.ensure({ variable.scope, variable.offset }, [] { return makeUnique<Cell>(); }).iterator->value;
++    if (reader != nobody)
++        cell->readers.add(reader);
++    return cell->type.load();
++}
++
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(FunctionsOfProgram);
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(ClassesOfProgram);
+ 
+@@ -171,6 +195,55 @@ static ClassesOfProgram* s_classesOfProgram;
+ void setClassesOfProgram(ClassesOfProgram* classes) { s_classesOfProgram = classes; }
+ ClassesOfProgram* classesOfProgram() { return s_classesOfProgram; }
+ 
++WTF_MAKE_TZONE_ALLOCATED_IMPL(MethodsOfProgram);
++
++static MethodsOfProgram* s_methodsOfProgram;
++void setMethodsOfProgram(MethodsOfProgram* methods) { s_methodsOfProgram = methods; }
++MethodsOfProgram* methodsOfProgram() { return s_methodsOfProgram; }
++
++void MethodsOfProgram::recordMethod(UniquedStringImpl* name, uint32_t function)
++{
++    Locker locker { m_lock };
++    Entry& entry = m_byName.add(name, Entry { }).iterator->value;
++    if (!entry.candidates.contains(function) && entry.candidates.size() <= mostCandidatesKept)
++        entry.candidates.append(function);
++    if (!entry.function)
++        entry.function = function;
++    else if (entry.function != function) {
++        if (Options::verboseAOTCompilation() && entry.function != ambiguous) [[unlikely]] {
++            auto describe = [](uint32_t number) {
++                const KnownFunction* known = functionsOfProgram() ? functionsOfProgram()->function(number) : nullptr;
++                return known ? makeString("#"_s, number, " @"_s, known->key.module, ":"_s, known->key.start) : makeString("#"_s, number);
++            };
++            dataLogLn("AOT: `", String(name), "` is stored as a method by more than one function (", describe(entry.function), " and ", describe(function), ")");
++        }
++        entry.function = ambiguous;
++    }
++}
++
++// The names of the properties of the standard objects and their prototypes (ImmutableIntrinsics), and of the iterator and
++// promise protocols, which the intrinsics do not all reach.
++bool MethodsOfProgram::isNameOfStandardMethod(UniquedStringImpl* name) const
++{
++    Locker locker { m_standardLock };
++    if (!m_standardNames) {
++        m_standardNames.emplace();
++        if (const ImmutableIntrinsics* intrinsics = ImmutableIntrinsics::shared()) {
++            for (unsigned i = 1; i < intrinsics->count(); ++i)
++                m_standardNames->add(intrinsics->at(i).name);
++        }
++        for (ASCIILiteral extra : { "next"_s, "return"_s, "throw"_s, "then"_s, "catch"_s, "finally"_s, "toString"_s, "valueOf"_s, "toJSON"_s, "constructor"_s, "call"_s, "apply"_s, "bind"_s, "hasOwnProperty"_s, "toLocaleString"_s })
++            m_standardNames->add(String(extra));
++    }
++    return m_standardNames->contains(String(name));
++}
++
++void MethodsOfProgram::recordOtherStore(UniquedStringImpl* name)
++{
++    Locker locker { m_lock };
++    m_byName.add(name, Entry { }).iterator->value.others = true;
++}
++
+ void ClassesOfProgram::recordNonEscapingMethod(uint32_t classType, UniquedStringImpl* name, uint32_t function)
+ {
+     Locker locker { m_lock };
+diff --git a/Source/JavaScriptCore/aot/AOTProgram.h b/Source/JavaScriptCore/aot/AOTProgram.h
+index 6585df2494..38835bcc29 100644
+--- a/Source/JavaScriptCore/aot/AOTProgram.h
++++ b/Source/JavaScriptCore/aot/AOTProgram.h
+@@ -10,6 +10,8 @@
+ #include "AOTStubs.h"
+ #include "AOTType.h"
+ #include "DeclaredNamesLink.h"
++#include <algorithm>
++#include <atomic>
+ #include <wtf/HashMap.h>
+ #include <wtf/TZoneMalloc.h>
+ #include <wtf/text/UniquedStringImpl.h>
+@@ -133,6 +135,9 @@ public:
+     // untracked variable.
+     static constexpr unsigned nobody = std::numeric_limits<unsigned>::max();
+     Type read(Variable, UniquedStringImpl* name, unsigned reader);
++    // What code puts in the variable, without what it has before anything does (the scope's initial value: undefined for a `var`,
++    // the hole for a `let`). TAll for an untracked variable.
++    Type readWritten(Variable, UniquedStringImpl* name, unsigned reader);
+     Type join(Variable, Type); // Returns the previous type.
+ 
+     // Not concurrently with read() or join().
+@@ -292,6 +297,78 @@ private:
+ JS_EXPORT_PRIVATE void setClassesOfProgram(ClassesOfProgram*); // Not during compilation.
+ ClassesOfProgram* classesOfProgram();
+ 
++// What the program stores under each property name as a method: the functions written in place in object literals, class bodies
++// and `x.name = function` (Graph::noteMethodsDefined()). Functions are identified by their FunctionsOfProgram number. A call
++// `base.name(...)` whose callee is not otherwise known is taken for the one function that the program stores under that name, if
++// there is exactly one, behind a check that it is that function (GuardKind::IsKnownFunction): with no type table, that is all
++// that there is to go by. Needs no type table.
++class MethodsOfProgram {
++    WTF_MAKE_TZONE_ALLOCATED(MethodsOfProgram);
++    WTF_MAKE_NONCOPYABLE(MethodsOfProgram);
++public:
++    MethodsOfProgram() = default;
++
++    // Collection phase. Any thread.
++    JS_EXPORT_PRIVATE void recordMethod(UniquedStringImpl* name, uint32_t function);
++    JS_EXPORT_PRIVATE void recordOtherStore(UniquedStringImpl* name); // Something else is stored under the name somewhere.
++    // The end of the collection phase. Until then nothing is known by name: the functions that are parsed while it lasts (on
++    // other threads, as they record) would otherwise read the table as it is being written, and see what happened to be
++    // recorded first.
++    // The candidates were noted in whatever order the threads got to them: in the order of their numbers, the code that is made
++    // from them (the checks of Inliner::splitMethodCalls()) is the same from one build to the next.
++    void seal()
++    {
++        for (auto& entry : m_byName.values())
++            std::sort(entry.candidates.begin(), entry.candidates.end());
++        m_sealed.store(true, std::memory_order_release);
++    }
++
++    // After collection. Any thread. The one function stored under the name, or zero if there is none or more than one, or if the
++    // name is one of the standard objects' methods (`indexOf`, `call`, `then`: a program's `indexOf` is seldom what is called by that
++    // name). `others` says whether anything else is stored under the name (the check then fails now and then).
++    uint32_t onlyMethodNamed(UniquedStringImpl* name, bool* others = nullptr) const
++    {
++        if (!m_sealed.load(std::memory_order_acquire))
++            return 0;
++        auto it = m_byName.find(name);
++        if (it == m_byName.end())
++            return 0;
++        if (others)
++            *others = it->value.others;
++        if (it->value.function == ambiguous || isNameOfStandardMethod(name))
++            return 0;
++        return it->value.function;
++    }
++    JS_EXPORT_PRIVATE bool isNameOfStandardMethod(UniquedStringImpl*) const;
++    // Every function the program stores under the name, in the order they were noted, if there are no more than `most` and the name
++    // is not a standard method's. Empty otherwise. (For calls that may reach any of a few: Inliner::splitMethodCalls().)
++    Vector<uint32_t, 4> methodsNamed(UniquedStringImpl* name, unsigned most) const
++    {
++        if (!m_sealed.load(std::memory_order_acquire))
++            return { };
++        auto it = m_byName.find(name);
++        if (it == m_byName.end() || it->value.candidates.size() > most || isNameOfStandardMethod(name))
++            return { };
++        return it->value.candidates;
++    }
++
++private:
++    static constexpr uint32_t ambiguous = std::numeric_limits<uint32_t>::max();
++    struct Entry {
++        uint32_t function { 0 };
++        bool others { false };
++        Vector<uint32_t, 4> candidates; // Up to one more than any limit asked for, so that "too many" can be told.
++    };
++    static constexpr unsigned mostCandidatesKept = 16;
++    Lock m_lock;
++    UncheckedKeyHashMap<UniquedStringImpl*, Entry> m_byName;
++    std::atomic<bool> m_sealed { false };
++    mutable Lock m_standardLock;
++    mutable std::optional<UncheckedKeyHashSet<String>> m_standardNames;
++};
++JS_EXPORT_PRIVATE void setMethodsOfProgram(MethodsOfProgram*); // Not during compilation.
++MethodsOfProgram* methodsOfProgram();
++
+ // Functions whose every return statement returns a fresh, otherwise unobserved object literal with the same property names in the
+ // same order. Determined from bytecode alone.
+ class MultiValueReturnTable {
+@@ -459,6 +536,14 @@ Vector<FunctionAssignment> functionAssignmentsIn(UnlinkedCodeBlock*); // Any thr
+ const DeclaredNamesLink* declaredNamesFor(UnlinkedCodeBlock*); // Any thread. Valid until forgetDeclaredNames().
+ void forgetDeclaredNames();
+ 
++// The functions that the compiler declined when the program was compiled before, and that code was nevertheless compiled to
++// call directly or to have as part of itself: that code is told where the function's code is, or which function a frame of it is,
++// by what the image says of the function, and it says nothing of one without code. Compiled again, nothing takes such a function
++// for one it knows: it is called like any value, and runs however it would have run uncalled.
++using FunctionsWithoutCode = UncheckedKeyHashSet<const UnlinkedCodeBlock*>;
++JS_EXPORT_PRIVATE void setFunctionsWithoutCode(const FunctionsWithoutCode*); // Not during compilation.
++bool hasNoCodeInImage(const UnlinkedCodeBlock*);
++
+ // Bytecode refers to an identifier by index. Normally that is an index into the function's own identifier table. If the whole
+ // program's identifiers have been numbered, all functions share one table. The shared table is built by StaticHeap, so such code
+ // can only run with a static heap.
 diff --git a/Source/JavaScriptCore/aot/AOTRuntime.cpp b/Source/JavaScriptCore/aot/AOTRuntime.cpp
-index 6b48e7b145..353378de90 100644
+index 6b48e7b145..47154d9080 100644
 --- a/Source/JavaScriptCore/aot/AOTRuntime.cpp
 +++ b/Source/JavaScriptCore/aot/AOTRuntime.cpp
 @@ -159,7 +159,7 @@ RuntimeTable::RuntimeTable(VM& vm)
@@ -1082,7 +2681,15 @@ index 6b48e7b145..353378de90 100644
          vm.getBoundFunction(true, SourceTaintedOrigin::Untainted)->setCodeToBeCalledWith(CodePtr<JSEntryPtrTag>::fromTaggedPtr(tagCodePtr<JSEntryPtrTag>(addressOfStub(Stub::CallBoundFunction))));
  }
  
-@@ -253,9 +253,19 @@ Instance& Instance::ensure(JSGlobalObject* globalObject)
+@@ -182,6 +182,7 @@ struct Instance::Collections {
+     struct FunctionWithoutData {
+         ScriptExecutable* executable;
+         UnlinkedCodeBlock* unlinkedCodeBlock;
++        RefPtr<JITCode> code; // What the executable runs: Instance::destroy() tells it that this realm is gone.
+     };
+     Vector<FunctionWithoutData> functionsWithoutData;
+     // The slots that have, or have had, a transition. The collector goes over them again and again while it marks, and they are few.
+@@ -253,9 +254,19 @@ Instance& Instance::ensure(JSGlobalObject* globalObject)
          size = sizeFor(numberOfFunctions);
          instance = reinterpret_cast<Instance*>(static_cast<char*>(StaticHeap::allocateBlock(vm, environmentsSize + size)) + environmentsSize);
      } else {
@@ -1104,7 +2711,7 @@ index 6b48e7b145..353378de90 100644
      }
      instance->runtimeTable = AOT::runtimeTable(vm).entries();
      instance->globalObject = globalObject;
-@@ -383,6 +393,15 @@ void* Instance::allocateForData(size_t size)
+@@ -383,6 +394,15 @@ void* Instance::allocateForData(size_t size)
      size_t where = collections->endOfDatasUsed;
      RELEASE_ASSERT(units <= collections->endOfDatas - where);
      collections->endOfDatasUsed += units;
@@ -1120,7 +2727,26 @@ index 6b48e7b145..353378de90 100644
      return at(where);
  }
  
-@@ -422,7 +441,7 @@ void Instance::destroy(Instance* instance)
+@@ -410,6 +430,18 @@ void Instance::destroy(Instance* instance)
+     instance->vm->m_aotInstances.removeFirst(instance);
+     if (instance->vm->m_aotInstanceOfProgram == instance)
+         instance->vm->m_aotInstanceOfProgram = nullptr;
++    // The realm is being swept, but an executable of its code may outlive it: a frame of an error's stack trace names it
++    // (StackFrame's aotExecutable, which the GC holds weakly), and so may a sample. FunctionRef::of() goes by the JITCode's
++    // Instance, which is about to be unmapped: from now on it finds nothing. (The JITCodes are the Datas' and these, not the
++    // executables', which may already have been swept.)
++    for (Data* data : instance->collections->all) {
++        if (data->code->instance() == instance)
++            data->code->clearInstance();
++    }
++    for (auto& function : instance->collections->functionsWithoutData) {
++        if (function.code->instance() == instance)
++            function.code->clearInstance();
++    }
+     while (!instance->collections->all.isEmpty())
+         Data::destroy(instance->collections->all.last());
+     size_t environmentsSize = instance->collections->environmentsSize;
+@@ -422,7 +454,7 @@ void Instance::destroy(Instance* instance)
      if (environmentsSize)
          StaticHeap::freeBlock(reinterpret_cast<char*>(instance) - environmentsSize, environmentsSize + size);
      else
@@ -1129,7 +2755,7 @@ index 6b48e7b145..353378de90 100644
  }
  
  void* Instance::placeForEnvironment(ImageEnvironment environment) const
-@@ -515,10 +534,17 @@ const RegisterAtOffsetList& adapterSavedRegisters()
+@@ -515,10 +547,17 @@ const RegisterAtOffsetList& adapterSavedRegisters()
          registers.add(instanceGPR, IgnoreVectors);
          registers.add(GPRInfo::numberTagRegister, IgnoreVectors);
          registers.add(GPRInfo::notCellMaskRegister, IgnoreVectors);
@@ -1147,7 +2773,7 @@ index 6b48e7b145..353378de90 100644
      });
      return list.get();
  }
-@@ -669,7 +695,13 @@ Data* Data::create(Instance& instance, ScriptExecutable* executable, UnlinkedCod
+@@ -669,7 +708,13 @@ Data* Data::create(Instance& instance, ScriptExecutable* executable, UnlinkedCod
              dataLogLn("AOT: nothing was known of function ", code.index(), " when the program was built");
          fillInfo(info, executable, unlinkedCodeBlock, code, data->constants);
      }
@@ -1162,8 +2788,107 @@ index 6b48e7b145..353378de90 100644
      return data;
  }
  
+@@ -681,7 +726,9 @@ Data* Instance::ensureData(uint32_t index)
+         return data;
+     const FunctionInfo& info = infos[index];
+     auto* executable = uncheckedDowncast<FunctionExecutable>(info.executable());
+-    UnlinkedFunctionCodeBlock* unlinkedCodeBlock = executable->unlinkedExecutable()->codeBlockIfExists(info.kind());
++    // (Not just what the executable has: it may have let go of it since the function was linked. In a realm without the program's
++    // metadata, linkConstants() has nothing else to go by.)
++    UnlinkedCodeBlock* unlinkedCodeBlock = FunctionRef { this, index }.unlinkedCodeBlockIfExists();
+     // (An executable that was made when the program was built has no way of holding on to one.)
+     Ref<JITCode> code = executable->hasJITCodeFor(info.kind()) ? Ref { static_cast<JITCode&>(executable->generatedJITCodeFor(info.kind()).get()) } : codeOfFunctionFromImage({ &Image::of(*info.function()), info.function() }, info.kind());
+     RELEASE_ASSERT(code->index() == index);
+@@ -848,7 +895,18 @@ UnlinkedCodeBlock* FunctionRef::unlinkedCodeBlockIfExists() const
+ {
+     if (Data* data = dataIfExists(); data && data->unlinkedCodeBlock)
+         return data->unlinkedCodeBlock;
+-    return uncheckedDowncast<FunctionExecutable>(executable())->unlinkedExecutable()->codeBlockIfExists(info().kind());
++    auto* executable = dynamicDowncast<FunctionExecutable>(this->executable());
++    if (!executable)
++        return nullptr;
++    if (UnlinkedCodeBlock* result = executable->unlinkedExecutable()->codeBlockIfExists(info().kind()))
++        return result;
++    // The executable lets go of code that has aged, or gives it back to the cache it came from; a function linked without a Data
++    // keeps its own reference (Collections::functionsWithoutData). Rare, so a search will do.
++    for (auto& function : instance->collections->functionsWithoutData) {
++        if (function.executable == executable && function.unlinkedCodeBlock->isConstructor() == (info().kind() == CodeSpecializationKind::CodeForConstruct))
++            return function.unlinkedCodeBlock;
++    }
++    return nullptr;
+ }
+ 
+ // As many zeros as any function has bytes of instructions, in memory that is nobody's until somebody reads it.
+@@ -986,23 +1044,32 @@ auto FunctionRef::reportedPositionFor(BytecodeIndex bytecodeIndex, OfConstructio
+     return result;
+ }
+ 
++// (These are asked by whoever walks the stack or formats a trace, possibly at the end of a collection: they find what they can and
++// make nothing. The code of a program or a module always has a Data with its unlinked code, so what has neither is a function.)
+ CodeType FunctionRef::codeType() const
+ {
+-    return metadata() ? FunctionCode : unlinkedCodeBlockIfExists()->codeType();
++    if (metadata())
++        return FunctionCode;
++    UnlinkedCodeBlock* unlinkedCodeBlock = unlinkedCodeBlockIfExists();
++    return unlinkedCodeBlock ? unlinkedCodeBlock->codeType() : FunctionCode;
+ }
+ 
+ bool FunctionRef::isBuiltinFunction() const
+ {
+     if (auto* metadata = this->metadata())
+         return metadata->flagsAndInstructionsSize & FunctionMetadata::isBuiltinFunction;
+-    return unlinkedCodeBlockIfExists()->isBuiltinFunction();
++    if (UnlinkedCodeBlock* unlinkedCodeBlock = unlinkedCodeBlockIfExists())
++        return unlinkedCodeBlock->isBuiltinFunction();
++    auto* executable = dynamicDowncast<FunctionExecutable>(this->executable());
++    return executable && executable->isBuiltinFunction();
+ }
+ 
+ unsigned FunctionRef::instructionsSize() const
+ {
+     if (auto* metadata = this->metadata())
+         return metadata->instructionsSize();
+-    return unlinkedCodeBlockIfExists()->instructions().size();
++    UnlinkedCodeBlock* unlinkedCodeBlock = unlinkedCodeBlockIfExists();
++    return unlinkedCodeBlock ? unlinkedCodeBlock->instructions().size() : 0;
+ }
+ 
+ void* FunctionRef::addressOfCatchEntrypoint(unsigned bytecodeOffset) const
+@@ -1149,13 +1216,19 @@ LineColumn FunctionRef::lineColumnFor(BytecodeIndex bytecodeIndex) const
+     if (auto position = reportedPositionFor(bytecodeIndex))
+         return position->lineColumn;
+     ScriptExecutable* executable = this->executable();
+-    RELEASE_ASSERT(bytecodeIndex.offset() < instructionsSize());
++    if (!executable)
++        return { };
++    // A frame that was looked at from a call that nobody was expected to ask about has no location (locationForReturnAddress()):
++    // it is then where the function starts. This is called while a trace is formatted, at the end of a collection too, which is
++    // no place to stop the process over a position.
++    if (!bytecodeIndex || bytecodeIndex.offset() >= instructionsSize())
++        bytecodeIndex = BytecodeIndex(0);
+     LineColumn lineColumn;
+     if (auto* metadata = this->metadata()) {
+         if (const uint32_t* word = metadata->find(FunctionMetadata::ExpressionInfo))
+             lineColumn = decodeBorrowedExpressionInfo(StaticHeap::inData<uint8_t>(*word))->lineColumnForInstPC(bytecodeIndex.offset());
+-    } else
+-        lineColumn = unlinkedCodeBlockIfExists()->lineColumnForBytecodeIndex(bytecodeIndex);
++    } else if (UnlinkedCodeBlock* unlinkedCodeBlock = unlinkedCodeBlockIfExists())
++        lineColumn = unlinkedCodeBlock->lineColumnForBytecodeIndex(bytecodeIndex);
+     lineColumn.column += lineColumn.line ? 1 : executable->startColumn();
+     lineColumn.line += executable->firstLine();
+     return lineColumn;
+@@ -1231,7 +1304,7 @@ bool install(VM& vm, FunctionExecutable* executable, CodeSpecializationKind kind
+             dataLogLn("AOT: nothing was known of function ", index, " when the program was built");
+         fillInfo(instance.infos[index], executable, unlinkedCodeBlock, code.get(), unlinkedCodeBlock->constantRegisters().span().data());
+         instance.infos[index].flags |= FunctionInfo::startsCold;
+-        instance.collections->functionsWithoutData.append({ executable, unlinkedCodeBlock });
++        instance.collections->functionsWithoutData.append({ executable, unlinkedCodeBlock, code.ptr() });
+         instance.setLinkedWithoutData(index);
+     } else if (!Data::create(instance, executable, unlinkedCodeBlock, code.get()))
+         return false;
 diff --git a/Source/JavaScriptCore/aot/AOTRuntime.h b/Source/JavaScriptCore/aot/AOTRuntime.h
-index d96ea043c6..8cf0e50194 100644
+index d96ea043c6..50429bbb63 100644
 --- a/Source/JavaScriptCore/aot/AOTRuntime.h
 +++ b/Source/JavaScriptCore/aot/AOTRuntime.h
 @@ -647,6 +647,9 @@ struct Instance {
@@ -1176,11 +2901,43 @@ index d96ea043c6..8cf0e50194 100644
      uint32_t states[0];
  };
  
+@@ -783,6 +786,7 @@ struct CompiledFunctionInfo {
+     unsigned codeSize { 0 }; // The entry point is at offset zero.
+     Convention convention;
+     Vector<IndexReference> indexReferences;
++    Vector<KnownCalleeNumberReference> knownCalleeNumberReferences;
+     Vector<SiteOfSpread> sitesOfSpreads;
+     struct InlineFrame {
+         uint32_t parent;
+@@ -930,6 +934,7 @@ public:
+     static constexpr ptrdiff_t offsetOfInstance() { return OBJECT_OFFSETOF(JITCode, m_instance); }
+     Instance* instance() const { return m_instance; }
+     void setInstance(Instance& instance) { m_instance = &instance; }
++    void clearInstance() { m_instance = nullptr; } // Its realm is gone (Instance::destroy()).
+ 
+ private:
+     void* m_code;
 diff --git a/Source/JavaScriptCore/aot/AOTStubs.cpp b/Source/JavaScriptCore/aot/AOTStubs.cpp
-index 1b472efc1f..9a15d9815f 100644
+index 1b472efc1f..8614e49d88 100644
 --- a/Source/JavaScriptCore/aot/AOTStubs.cpp
 +++ b/Source/JavaScriptCore/aot/AOTStubs.cpp
-@@ -3535,12 +3535,21 @@ static void generateAheadOfObjectKeysObject(CCallHelpers& jit) { generateAheadOf
+@@ -1691,11 +1691,15 @@ static void generatePutById(CCallHelpers& jit)
+     jit.store64(A1, CCallHelpers::BaseIndex(T12, T11, CCallHelpers::TimesEight));
+     Jump sameStructure = jit.branchTest32(CCallHelpers::Zero, T13);
+     jit.store32(T13, Address(A0, JSCell::structureIDOffset()));
++    // A transition: the object refers to a new Structure now, which nothing else may be keeping alive, so the barrier is
++    // taken whatever the value is (as the JITs do: "IC can write new Structure without write-barrier").
++    Jump transitioned = jit.jump();
+     sameStructure.link(&jit);
+ 
+     CCallHelpers::Label stored = jit.label();
+     Jump notCell = jit.branchIfNotCell(A1);
+     CCallHelpers::Label storedAndMayBeOfAnotherStructure = jit.label();
++    transitioned.link(&jit);
+     loadInstance(jit, T9);
+     jit.load8(Address(A0, JSCell::cellStateOffset()), T11);
+     jit.loadPtr(Address(T9, Instance::offsetOfVM()), T12);
+@@ -3535,12 +3539,21 @@ static void generateAheadOfObjectKeysObject(CCallHelpers& jit) { generateAheadOf
  FOR_EACH_AOT_HELPER(AOT_GENERATE_HELPER)
  #undef AOT_GENERATE_HELPER
  
@@ -1202,7 +2959,7 @@ index 1b472efc1f..9a15d9815f 100644
  #endif // CPU(ARM64)
  
  // The stubs that call an operation take its offset in the runtime table in T9. The stubs that call a function take the argument
-@@ -3612,7 +3621,7 @@ static_assert(numberOfThunks < std::numeric_limits<uint16_t>::max());
+@@ -3612,7 +3625,7 @@ static_assert(numberOfThunks < std::numeric_limits<uint16_t>::max());
  
  static bool thereAreNoWaysInByRegister()
  {
@@ -1211,7 +2968,7 @@ index 1b472efc1f..9a15d9815f 100644
  }
  
  static std::optional<unsigned> firstThunkForOperandOf(Stub stub, std::optional<uint32_t> valueOfT9)
-@@ -3737,7 +3746,7 @@ bool returnsResultInAnyRegister(Stub stub, std::optional<uint32_t> valueOfT9)
+@@ -3737,7 +3750,7 @@ bool returnsResultInAnyRegister(Stub stub, std::optional<uint32_t> valueOfT9)
  
  std::optional<unsigned> thunkFor(Stub stub, uint32_t valueOfT9)
  {
@@ -1220,7 +2977,7 @@ index 1b472efc1f..9a15d9815f 100644
          return std::nullopt;
      for (unsigned i = 0; i < std::size(operationCallStubs); ++i) {
          if (operationCallStubs[i] == stub)
-@@ -3781,14 +3790,19 @@ const StubBlob& stubBlob()
+@@ -3781,14 +3794,19 @@ const StubBlob& stubBlob()
      std::call_once(once, [] {
          blob.construct();
          CCallHelpers jit;
@@ -1241,7 +2998,7 @@ index 1b472efc1f..9a15d9815f 100644
  #else
          Vector<CCallHelpers::Label> returnsIntoAdapters;
          CCallHelpers::Label labels[numberOfStubs];
-@@ -3802,6 +3816,8 @@ const StubBlob& stubBlob()
+@@ -3802,6 +3820,8 @@ const StubBlob& stubBlob()
  #undef AOT_GENERATE_STUB
  
          Vector<CCallHelpers::Label> thunkLabels;
@@ -1250,7 +3007,7 @@ index 1b472efc1f..9a15d9815f 100644
          if constexpr (usesStubs) {
              for (Stub stub : operationCallStubs) {
                  for (unsigned entry = 0; entry < numberOfEntries; ++entry) {
-@@ -3913,10 +3929,11 @@ const StubBlob& stubBlob()
+@@ -3913,10 +3933,11 @@ const StubBlob& stubBlob()
  #endif
              RELEASE_ASSERT(thunkLabels.size() == numberOfThunks);
          }
@@ -1263,7 +3020,7 @@ index 1b472efc1f..9a15d9815f 100644
          LinkBuffer linkBuffer(jit, CodePtr<LinkBufferPtrTag>::fromUntaggedPtr(storage.mutableSpan().data()), storage.sizeInBytes(), LinkBuffer::Profile::Thunk);
          for (auto& [call, stub] : callsBetweenStubs)
              linkBuffer.link<JITThunkPtrTag>(call, linkBuffer.locationOf<JITThunkPtrTag>(labels[static_cast<unsigned>(stub)]));
-@@ -3929,6 +3946,8 @@ const StubBlob& stubBlob()
+@@ -3929,6 +3950,8 @@ const StubBlob& stubBlob()
              uint32_t encoded = 0x10000000u | (static_cast<uint32_t>(delta) & 3) << 29 | (static_cast<uint32_t>(delta >> 2) & 0x7ffff) << 5 | static_cast<uint32_t>(address.reg);
              performJITMemcpy<jitMemcpyRepatch>(instruction, &encoded, sizeof(encoded));
          }
@@ -1272,7 +3029,7 @@ index 1b472efc1f..9a15d9815f 100644
  #endif
          auto* start = static_cast<uint8_t*>(linkBuffer.entrypoint<JITThunkPtrTag>().untaggedPtr());
          for (unsigned i = 0; i < numberOfStubs; ++i)
-@@ -3953,6 +3972,10 @@ const StubBlob& stubBlob()
+@@ -3953,6 +3976,10 @@ const StubBlob& stubBlob()
              };
              for (unsigned i = 0; i < numberOfStubs; ++i)
                  dataLogLn("AOT: stub ", names[i], " ", blob->offsets[i]);
@@ -1283,7 +3040,7 @@ index 1b472efc1f..9a15d9815f 100644
              // In the order in which they were generated above.
              unsigned thunk = 0;
              for (Stub stub : operationCallStubs) {
-@@ -4002,7 +4025,7 @@ void StubCalls::call(CCallHelpers& jit, Stub stub, uint32_t valueOfT9, CallSite
+@@ -4002,7 +4029,7 @@ void StubCalls::call(CCallHelpers& jit, Stub stub, uint32_t valueOfT9, CallSite
  {
      auto thunk = thunkFor(stub, valueOfT9);
      if (!thunk)
@@ -1292,7 +3049,7 @@ index 1b472efc1f..9a15d9815f 100644
      m_pending.append({ jit.nearCall(), stub, false, site.bits });
      if (thunk)
          m_pending.last().thunk = safeCast<uint16_t>(*thunk + 1);
-@@ -4061,7 +4084,11 @@ void StubCalls::callForResultIn(CCallHelpers& jit, Stub stub, uint32_t valueOfT9
+@@ -4061,7 +4088,11 @@ void StubCalls::callForResultIn(CCallHelpers& jit, Stub stub, uint32_t valueOfT9
          return;
      }
      unsigned which = *indexOfOperationWithAnyRegisterResult(stub, valueOfT9);
@@ -1304,7 +3061,7 @@ index 1b472efc1f..9a15d9815f 100644
      RELEASE_ASSERT(numberOfResult < numberOfRegistersForResult);
      RELEASE_ASSERT(operationsWithAnyRegisterResult[which].acceptsOperandInAnyRegister ? operandMayBeIn(stub, operand) : operand == defaultOperandRegister(stub));
      m_pending.append({ jit.nearCall(), stub, false, site.bits });
-@@ -4077,7 +4104,7 @@ void StubCalls::tailCall(CCallHelpers& jit, Stub stub, uint32_t valueOfT9)
+@@ -4077,7 +4108,7 @@ void StubCalls::tailCall(CCallHelpers& jit, Stub stub, uint32_t valueOfT9)
  {
      auto thunk = thunkFor(stub, valueOfT9);
      if (!thunk)
@@ -1313,7 +3070,7 @@ index 1b472efc1f..9a15d9815f 100644
      m_pending.append({ jit.nearTailCall(), stub, true, StubCall::noCallSite });
      if (thunk)
          m_pending.last().thunk = safeCast<uint16_t>(*thunk + 1);
-@@ -4099,13 +4126,21 @@ void IndexReferences::load(CCallHelpers& jit, GPRReg base, GPRReg dest, uint32_t
+@@ -4099,13 +4130,21 @@ void IndexReferences::load(CCallHelpers& jit, GPRReg base, GPRReg dest, uint32_t
      bool isHalfWord = scale == sizeof(uint32_t);
      RELEASE_ASSERT(isHalfWord ? !(addend % sizeof(uint32_t)) : !(addend % sizeof(void*)) && !(scale % sizeof(void*)));
      RELEASE_ASSERT(scale <= std::numeric_limits<uint16_t>::max());
@@ -1336,7 +3093,7 @@ index 1b472efc1f..9a15d9815f 100644
  #else
      UNUSED_PARAM(base);
      UNUSED_PARAM(dest);
-@@ -4134,6 +4169,11 @@ void IndexReferences::fill(uint8_t* code, const IndexReference& reference, uint3
+@@ -4134,6 +4173,57 @@ void IndexReferences::fill(uint8_t* code, const IndexReference& reference, uint3
      RELEASE_ASSERT(!(instructions[0] & immediate) && !(instructions[1] & immediate));
      instructions[0] |= static_cast<uint32_t>(distance >> 12) << 10;
      instructions[1] |= static_cast<uint32_t>((distance & 0xfff) / (reference.scale == sizeof(uint32_t) ? sizeof(uint32_t) : sizeof(void*))) << 10;
@@ -1345,10 +3102,56 @@ index 1b472efc1f..9a15d9815f 100644
 +    RELEASE_ASSERT(distance < (1u << 31));
 +    uint32_t displacement = static_cast<uint32_t>(distance);
 +    memcpy(code + reference.offset - sizeof(uint32_t), &displacement, sizeof(displacement));
++#else
++    UNUSED_PARAM(code);
++    UNUSED_PARAM(reference);
++    UNUSED_PARAM(index);
++    RELEASE_ASSERT_NOT_REACHED();
++#endif
++}
++
++void KnownCalleeNumberReferences::load(CCallHelpers& jit, GPRReg dest, uint32_t knownCallee)
++{
++#if CPU(ARM64)
++    // movz dest, #low; movk dest, #high, lsl #16: both 16-bit immediates are patched.
++    jit.m_assembler.movz<32>(dest, 0, 0);
++    jit.m_assembler.movk<32>(dest, 0, 16);
++    m_references.append({ jit.label(), knownCallee });
++#elif CPU(X86_64)
++    // mov dest, imm32, the immediate being the instruction's last four bytes. The label is after it.
++    jit.padBeforePatch();
++    jit.m_assembler.movl_i32r(0, dest);
++    m_references.append({ jit.label(), knownCallee });
++#else
++    UNUSED_PARAM(dest);
++    UNUSED_PARAM(knownCallee);
++    RELEASE_ASSERT_NOT_REACHED();
++#endif
++}
++
++Vector<KnownCalleeNumberReference> KnownCalleeNumberReferences::link(LinkBuffer& linkBuffer)
++{
++    auto* start = static_cast<uint8_t*>(linkBuffer.entrypoint<JSEntryPtrTag>().untaggedPtr());
++    Vector<KnownCalleeNumberReference> result;
++    for (auto& reference : m_references)
++        result.append({ static_cast<uint32_t>(static_cast<uint8_t*>(linkBuffer.locationOf<JSEntryPtrTag>(reference.after).untaggedPtr()) - start), reference.knownCallee });
++    return result;
++}
++
++void KnownCalleeNumberReferences::fill(uint8_t* code, const KnownCalleeNumberReference& reference, uint32_t index)
++{
++#if CPU(ARM64)
++    auto* instructions = reinterpret_cast<uint32_t*>(code + reference.offset) - 2;
++    constexpr uint32_t immediate = 0xffffu << 5;
++    RELEASE_ASSERT(!(instructions[0] & immediate) && !(instructions[1] & immediate));
++    instructions[0] |= (index & 0xffff) << 5;
++    instructions[1] |= (index >> 16) << 5;
++#elif CPU(X86_64)
++    memcpy(code + reference.offset - sizeof(uint32_t), &index, sizeof(index));
  #else
      UNUSED_PARAM(code);
      UNUSED_PARAM(reference);
-@@ -4149,9 +4189,15 @@ Vector<StubCall> StubCalls::link(LinkBuffer& linkBuffer)
+@@ -4149,9 +4239,15 @@ Vector<StubCall> StubCalls::link(LinkBuffer& linkBuffer)
      for (auto& pending : m_pending) {
          // A placeholder within range. ImageBuilder retargets every call when it places the code.
          linkBuffer.link<JITThunkPtrTag>(pending.call, CodeLocationLabel<JITThunkPtrTag>(tagCodePtr<JITThunkPtrTag>(start)));
@@ -1366,7 +3169,7 @@ index 1b472efc1f..9a15d9815f 100644
      }
      return result;
  }
-@@ -4184,6 +4230,13 @@ void retargetStubCall(uint8_t* base, size_t instruction, size_t target, bool isT
+@@ -4184,6 +4280,13 @@ void retargetStubCall(uint8_t* base, size_t instruction, size_t target, bool isT
      RELEASE_ASSERT(delta >= -(1 << 25) && delta < (1 << 25));
      uint32_t encoded = (isTailCall ? 0x14000000u : 0x94000000u) | (static_cast<uint32_t>(delta) & 0x03ffffffu);
      memcpy(base + instruction, &encoded, sizeof(encoded));
@@ -1381,7 +3184,7 @@ index 1b472efc1f..9a15d9815f 100644
      UNUSED_PARAM(base);
      UNUSED_PARAM(instruction);
 diff --git a/Source/JavaScriptCore/aot/AOTStubs.h b/Source/JavaScriptCore/aot/AOTStubs.h
-index fddb0880c7..375e653008 100644
+index fddb0880c7..0d9c5f1037 100644
 --- a/Source/JavaScriptCore/aot/AOTStubs.h
 +++ b/Source/JavaScriptCore/aot/AOTStubs.h
 @@ -75,8 +75,16 @@ StubIntrinsic stubIntrinsicFor(UniquedStringImpl* name, unsigned argumentCountIn
@@ -1433,7 +3236,35 @@ index fddb0880c7..375e653008 100644
  // A stub call in a function's code. These are the only relocations needed when the code is placed.
  struct StubCall {
      static constexpr uint32_t noFunction = std::numeric_limits<uint32_t>::max();
-@@ -536,7 +562,11 @@ private:
+@@ -422,6 +448,27 @@ struct StubBlob {
+ };
+ const StubBlob& stubBlob();
+ 
++// A place in a function's code that holds the index of one of the function's known callees (CompiledFunctionInfo::knownCallees)
++// as an immediate, to compare with FunctionExecutable::aotIndexFor(): a check that a function is that one. The index is not known
++// until the image is assembled, and is then patched into the instruction.
++struct KnownCalleeNumberReference {
++    uint32_t offset; // Offset after the instruction.
++    uint32_t knownCallee;
++};
++class KnownCalleeNumberReferences {
++public:
++    void load(CCallHelpers&, GPRReg dest, uint32_t knownCallee); // dest = the index of that callee, once the image is assembled
++    Vector<KnownCalleeNumberReference> link(LinkBuffer&);
++    static void fill(uint8_t* code, const KnownCalleeNumberReference&, uint32_t index);
++
++private:
++    struct Pending {
++        CCallHelpers::Label after;
++        uint32_t knownCallee;
++    };
++    Vector<Pending> m_references;
++};
++
+ // A place in a function's code that depends on the function's index. The index is not known until the image is assembled, and is
+ // then patched into the instructions.
+ struct IndexReference {
+@@ -536,7 +583,11 @@ private:
  
  // Points the call instruction at `instruction` to `target`, both offsets from the same base.
  void retargetStubCall(uint8_t* base, size_t instruction, size_t target, bool isTailCall);
@@ -1447,10 +3278,10 @@ index fddb0880c7..375e653008 100644
  static constexpr size_t roomToSpareInReachOfStubCall = 24 * MB; // A target considered in range stays in range if it ends up this much further away.
 diff --git a/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp b/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
 new file mode 100644
-index 0000000000..201c878d03
+index 0000000000..8ac3f4d035
 --- /dev/null
 +++ b/Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
-@@ -0,0 +1,3453 @@
+@@ -0,0 +1,3494 @@
 +/*
 + * Copyright (C) 2026 Oven, Inc. All rights reserved.
 + * SPDX-License-Identifier: BSD-2-Clause
@@ -2982,11 +4813,15 @@ index 0000000000..201c878d03
 +    jit.store64(A1, CCallHelpers::BaseIndex(storage, word, CCallHelpers::TimesEight));
 +    Jump sameStructure = jit.branchTest32(CCallHelpers::Zero, next);
 +    jit.store32(next, Address(A0, JSCell::structureIDOffset()));
++    // A transition: the object refers to a new Structure now, which nothing else may be keeping alive, so the barrier is
++    // taken whatever the value is (as the JITs do: "IC can write new Structure without write-barrier").
++    Jump transitioned = jit.jump();
 +    sameStructure.link(&jit);
 +
 +    Jump notCell = jit.branchIfNotCell(A1);
 +    // (A store through the megamorphic cache may have changed the Structure: the barrier is looked at whatever was stored.)
 +    CCallHelpers::Label storedAndMayBeOfAnotherStructure = jit.label();
++    transitioned.link(&jit);
 +    loadInstance(jit, T9);
 +    returnAfterBarrier(jit);
 +    notCell.link(&jit);
@@ -3741,7 +5576,7 @@ index 0000000000..201c878d03
 +    // An element within the capacity of contiguous storage that is not copy-on-write.
 +    CCallHelpers::JumpList slow;
 +    jit.move(CCallHelpers::TrustedImm64(JSValue::NumberTag), T9);
-+    slow.append(jit.branch64(CCallHelpers::Below, A1, T9));
++    Jump notNumber = jit.branch64(CCallHelpers::Below, A1, T9);
 +    slow.append(jit.branchIfNotCell(A0));
 +    jit.load8(Address(A0, JSCell::indexingTypeAndMiscOffset()), storage);
 +    jit.and32(TrustedImm32(IndexingShapeMask | CopyOnWrite), storage);
@@ -3804,6 +5639,43 @@ index 0000000000..201c878d03
 +    returnAfterBarrier(jit);
 +    notCell.link(&jit);
 +    jit.ret();
++
++    // A property name (an atom string or a symbol) of a property the object has: the VM's megamorphic cache says where it is,
++    // once operationAOTPutByVal() has stored to it (fillMegamorphicCacheAfterPut()). An object used as a dictionary is written
++    // this way. (The helper wants five registers besides the base and the value, and the assembler's scratch register for itself:
++    // A3, whether the code is strict, is kept on the stack meanwhile, for the operation.)
++    notNumber.link(&jit);
++    {
++        constexpr GPRReg uid = A4;
++        constexpr GPRReg cache = A5;
++        slow.append(jit.branchIfNotCell(A0));
++        slow.append(jit.branchIfNotObject(A0));
++        slow.append(jit.branchIfNotCell(A1));
++        Jump isSymbol = jit.branchIfSymbol(A1);
++        slow.append(jit.branchIfNotString(A1));
++        jit.loadPtr(Address(A1, JSString::offsetOfValue()), uid);
++        slow.append(jit.branchIfRopeStringImpl(uid));
++        slow.append(jit.branchTest32(CCallHelpers::Zero, Address(uid, StringImpl::flagsOffset()), TrustedImm32(StringImpl::flagIsAtom())));
++        Jump haveName = jit.jump();
++        isSymbol.link(&jit);
++        jit.loadPtr(Address(A1, Symbol::offsetOfSymbolImpl()), uid);
++        haveName.link(&jit);
++        loadInstance(jit, cache);
++        jit.loadPtr(Address(cache, Instance::offsetOfRuntimeTable()), cache);
++        jit.loadPtr(Address(cache, static_cast<unsigned>(Entry::MegamorphicCache) * sizeof(void*)), cache);
++        slow.append(jit.branchTestPtr(CCallHelpers::Zero, cache));
++        jit.push(A3);
++        auto [notCached, reallocating] = jit.storeMegamorphicProperty(CCallHelpers::MegamorphicCacheLocation(cache), A0, uid, nullptr, A2, storage, T9, A3);
++        jit.pop(A3);
++        // A cached transition gives the object a new Structure that nothing else may be keeping alive: the barrier is taken
++        // whatever the value is (as PutById's storedAndMayBeOfAnotherStructure).
++        loadInstance(jit, T9);
++        returnAfterBarrier(jit);
++        notCached.link(&jit);
++        reallocating.link(&jit);
++        jit.pop(A3);
++        slow.append(jit.jump());
++    }
 +
 +    slow.link(&jit);
 +    callElementOperation(jit, Entry::operationAOTPutByVal);
@@ -5272,6 +7144,122 @@ index f32370ede3..f1e750f0f5 100644
  
  } } // namespace JSC::AOT
  
+diff --git a/Source/JavaScriptCore/aot/AOTTypeInference.cpp b/Source/JavaScriptCore/aot/AOTTypeInference.cpp
+index 8db0635296..98879bfe5e 100644
+--- a/Source/JavaScriptCore/aot/AOTTypeInference.cpp
++++ b/Source/JavaScriptCore/aot/AOTTypeInference.cpp
+@@ -32,6 +32,8 @@ public:
+ 
+     void run()
+     {
++        if (Options::useAOTVariableNarrowing())
++            noteStoresToEnvironments();
+         // Every type starts out as None ("not reached yet") and only ever grows, and every rule gives a larger answer for
+         // larger inputs, so this ends, at the least fixpoint.
+         bool changed = true;
+@@ -1081,7 +1083,21 @@ private:
+             if (VariableSummaries* summaries = m_graph.variableSummaries()) {
+                 if (Variable variable = m_graph.variableAccessedBy(node)) {
+                     auto bytecode = node->as<OpGetFromScope>();
+-                    Type type = summaries->read(variable, node->graph->codeBlock()->identifier(bytecode.m_var).impl(), m_graph.summaryReader());
++                    UniquedStringImpl* name = node->graph->codeBlock()->identifier(bytecode.m_var).impl();
++                    Type type = summaries->read(variable, name, m_graph.summaryReader());
++                    // Read from an environment this function made, after a store to the same variable of it: written, so what is written.
++                    if (bytecode.m_getPutInfo.resolveType() == ResolvedClosureVar && (type & (TUndefined | TEmpty)) && isWrittenBefore(node, environmentMadeHere(node->use(bytecode.m_scope)), bytecode.m_offset)) {
++                        Type written = summaries->readWritten(variable, name, m_graph.summaryReader());
++                        if (written && isSubtype(written, type))
++                            type = written;
++                    }
++                    // In the fast copy of a loop, the guard sees to it that the variable has been written (Node::typeOfVariableRead).
++                    if (Node* guard = node->guard; guard && guard->guardKind == GuardKind::Whole && bytecode.m_getPutInfo.resolveType() == ResolvedClosureVar) {
++                        Type narrowed = typeOfVariableReadInFastCopy(type, summaries->readWritten(variable, name, m_graph.summaryReader()));
++                        guard->typeOfVariableRead = narrowed;
++                        if (narrowed)
++                            return narrowed;
++                    }
+                     // (A function that a module declares is made when it is first read, by whatever reads it.)
+                     return bytecode.m_getPutInfo.resolveType() == ResolvedLazyClosureVar ? type | TFunction : type;
+                 }
+@@ -1094,7 +1110,66 @@ private:
+         }
+     }
+ 
++    // The environment that a scope is, if this function (or one made part of it) made it: an op_create_lexical_environment. A closure
++    // made part of its caller has the scope it was made in (inlineCalls(): the use of its op_get_scope).
++    static Node* environmentMadeHere(Node* scope)
++    {
++        for (unsigned steps = 0; scope && steps < 4; ++steps) {
++            if (scope->isBytecode(op_create_lexical_environment))
++                return scope;
++            if (scope->isBytecode(op_get_scope) && scope->uses.size() == 1)
++                scope = scope->uses[0].node;
++            else
++                return nullptr;
++        }
++        return nullptr;
++    }
++
++    // Every store to a variable of an environment this function makes, by environment and offset (Graph::computeDominators() first).
++    void noteStoresToEnvironments()
++    {
++        m_graph.computeDominators();
++        for (BasicBlock* block : m_graph.m_rpo) {
++            for (Node* node : block->nodes) {
++                if (!node->isBytecode(op_put_to_scope))
++                    continue;
++                auto bytecode = node->as<OpPutToScope>();
++                if (bytecode.m_getPutInfo.resolveType() != ResolvedClosureVar)
++                    continue;
++                if (Node* environment = environmentMadeHere(node->use(bytecode.m_scope)))
++                    m_storesToEnvironments.add({ environment, bytecode.m_offset }, Vector<Node*, 2> { }).iterator->value.append(node);
++            }
++        }
++    }
++
++    // Whether, wherever the read is, a store to the same variable of the same environment has come before it.
++    bool isWrittenBefore(Node* read, Node* environment, unsigned offset)
++    {
++        if (!environment || !read->block)
++            return false;
++        auto it = m_storesToEnvironments.find({ environment, offset });
++        if (it == m_storesToEnvironments.end())
++            return false;
++        for (Node* store : it->value) {
++            if (!store->block)
++                continue;
++            if (store->block != read->block) {
++                if (store->block->dominates(read->block))
++                    return true;
++                continue;
++            }
++            for (Node* node : read->block->nodes) {
++                if (node == store)
++                    return true;
++                if (node == read)
++                    break;
++            }
++        }
++        return false;
++    }
++
+     Graph& m_graph;
++    UncheckedKeyHashMap<std::pair<Node*, unsigned>, Vector<Node*, 2>> m_storesToEnvironments;
+     Type m_returnType { TNone };
+     UncheckedKeyHashMap<Node*, Type> m_elementTypes; // Of the arrays that the function makes: everything it puts in them.
+     bool m_elementTypesChanged { false };
+diff --git a/Source/JavaScriptCore/b3/B3AbstractHeapRepository.h b/Source/JavaScriptCore/b3/B3AbstractHeapRepository.h
+index 413895dd46..1eb8b27733 100644
+--- a/Source/JavaScriptCore/b3/B3AbstractHeapRepository.h
++++ b/Source/JavaScriptCore/b3/B3AbstractHeapRepository.h
+@@ -76,6 +76,8 @@ namespace JSC::B3 {
+     macro(DirectArguments_mappedArguments, DirectArguments::offsetOfMappedArguments(), Mutability::Mutable) \
+     macro(DirectArguments_modifiedArgumentsDescriptor, DirectArguments::offsetOfModifiedArgumentsDescriptor(), Mutability::Mutable) \
+     macro(FunctionExecutable_rareData, FunctionExecutable::offsetOfRareData(), Mutability::Mutable) \
++    macro(FunctionExecutable_aotIndexForCall, FunctionExecutable::offsetOfAOTIndexFor(CodeSpecializationKind::CodeForCall), Mutability::Immutable) \
++    macro(FunctionExecutable_aotEntryForCall, FunctionExecutable::offsetOfAOTEntryFor(CodeSpecializationKind::CodeForCall), Mutability::Immutable) \
+     macro(FunctionExecutableRareData_asString, FunctionExecutable::RareData::offsetOfAsString(), Mutability::Mutable) \
+     macro(FunctionRareData_allocator, FunctionRareData::offsetOfObjectAllocationProfile() + ObjectAllocationProfileWithPrototype::offsetOfAllocator(), Mutability::Mutable) \
+     macro(FunctionRareData_structure, FunctionRareData::offsetOfObjectAllocationProfile() + ObjectAllocationProfileWithPrototype::offsetOfStructure(), Mutability::Mutable) \
 diff --git a/Source/JavaScriptCore/bytecode/CallLinkInfo.cpp b/Source/JavaScriptCore/bytecode/CallLinkInfo.cpp
 index f24bdf71f7..81e557684b 100644
 --- a/Source/JavaScriptCore/bytecode/CallLinkInfo.cpp
@@ -5345,8 +7333,25 @@ index a04b3f56f8..150655018e 100644
  #if ENABLE(C_LOOP)
      return true;
  #else
+diff --git a/Source/JavaScriptCore/interpreter/StackVisitor.cpp b/Source/JavaScriptCore/interpreter/StackVisitor.cpp
+index 202516f58d..cfec69f846 100644
+--- a/Source/JavaScriptCore/interpreter/StackVisitor.cpp
++++ b/Source/JavaScriptCore/interpreter/StackVisitor.cpp
+@@ -471,6 +471,12 @@ void StackVisitor::readInlinedFrame(CallFrame* callFrame, CodeOrigin* codeOrigin
+ CodeBlock* StackVisitor::Frame::makeCodeBlock() const
+ {
+ #if ENABLE(FTL_JIT)
++    // As StackFrame::makeCodeBlock(): only the mutator makes one, outside a collection. (Stacks are walked on the VM's own thread,
++    // but what walks one may be reached from a collection's end phase, which is no place to allocate. Nobody asking then gets
++    // what a native frame would give.)
++    VM& vm = *m_aotFunction.instance->vm;
++    if (vm.heap.currentThreadIsDoingGCWork() || vm.heap.worldIsStopped())
++        return nullptr;
+     m_codeBlock = m_aotFunction.ensureData()->ensureCodeBlock();
+ #endif
+     return m_codeBlock;
 diff --git a/Source/JavaScriptCore/runtime/CachedTypes.cpp b/Source/JavaScriptCore/runtime/CachedTypes.cpp
-index 696ac7a731..807c106367 100644
+index 696ac7a731..040ae37ac6 100644
 --- a/Source/JavaScriptCore/runtime/CachedTypes.cpp
 +++ b/Source/JavaScriptCore/runtime/CachedTypes.cpp
 @@ -26,6 +26,7 @@
@@ -5438,7 +7443,127 @@ index 696ac7a731..807c106367 100644
      {
          using Graph = PrelinkedModuleGraph;
          Vector<AOT::ModuleHints::Binding> result;
-@@ -6878,6 +6945,11 @@ struct BytecodeLinkEncoder::Impl {
+@@ -6391,6 +6458,9 @@ struct BytecodeLinkEncoder::Impl {
+         AOT::MultiValueReturnTable multiValueReturnTable;
+         AOT::setMultiValueReturnTable(&multiValueReturnTable);
+         auto forgetThingsReturnedByFunctions = makeScopeExit([] { AOT::setMultiValueReturnTable(nullptr); });
++        AOT::MethodsOfProgram methodsOfProgram;
++        AOT::setMethodsOfProgram(&methodsOfProgram);
++        auto forgetMethodsOfProgram = makeScopeExit([] { AOT::setMethodsOfProgram(nullptr); });
+         {
+             MonotonicTime before = MonotonicTime::now();
+             for (auto& hintsOfModule : hints) {
+@@ -6413,6 +6483,7 @@ struct BytecodeLinkEncoder::Impl {
+                     unreadable++;
+             });
+             AOT::TypeTable::finalizeAtomizedFields();
++            methodsOfProgram.seal();
+             RELEASE_ASSERT(!unreadable.load());
+             classesOfProgram.forEachNonEscapingMethod([&](uint32_t number) {
+                 const AOT::KnownFunction& function = *functionsOfProgram.function(number);
+@@ -6673,10 +6744,18 @@ struct BytecodeLinkEncoder::Impl {
+         std::atomic<size_t> next { 0 };
+         Lock declinedLock;
+         UncheckedKeyHashSet<UnlinkedCodeBlock*> declined;
++        struct WhyNot {
++            ASCIILiteral reason;
++            OpcodeID opcode { op_nop };
++        };
++        UncheckedKeyHashMap<UnlinkedCodeBlock*, WhyNot> whyDeclined;
+         class CodeOfThisProgram final : public AOT::CodeOfProgram {
+         public:
+             std::optional<About> about(UnlinkedCodeBlock* codeBlock) const final
+             {
++                // (Nothing is made part of another function that there is no record of: AOT::FunctionsWithoutCode.)
++                if (AOT::hasNoCodeInImage(codeBlock))
++                    return std::nullopt;
+                 auto it = all.find(codeBlock);
+                 return it == all.end() ? std::nullopt : std::optional { it->value };
+             }
+@@ -6704,7 +6783,11 @@ struct BytecodeLinkEncoder::Impl {
+                     continue;
+                 }
+                 AOT::CompiledCode code;
+-                if (AOT::compileForImage(vm, jobs[index].codeBlock, code, hints[jobs[index].module].get(), linkages[jobs[index].module].get(), summariesByCodeBlock.get(jobs[index].codeBlock), variableSummaries, &codeOfProgram)) {
++                WhyNot whyNot { "it is declined for testing (aotDeclineFunctionsNamed)"_s };
++                bool isDeclinedForTesting = false;
++                if (const char* name = Options::aotDeclineFunctionsNamed()) [[unlikely]]
++                    isDeclinedForTesting = jobs[index].executable && jobs[index].executable->name().string() == String::fromUTF8(name);
++                if (!isDeclinedForTesting && AOT::compileForImage(vm, jobs[index].codeBlock, code, hints[jobs[index].module].get(), linkages[jobs[index].module].get(), summariesByCodeBlock.get(jobs[index].codeBlock), variableSummaries, &codeOfProgram, &whyNot.reason, &whyNot.opcode)) {
+                     // (A function's key says where its source starts, if it is a function that somebody wrote.)
+                     {
+                         auto kindOfFunction = static_cast<OrderFunctionKind>(jobs[index].key.kind >> 1);
+@@ -6733,6 +6816,7 @@ struct BytecodeLinkEncoder::Impl {
+                 else {
+                     Locker locker { declinedLock };
+                     declined.add(jobs[index].codeBlock);
++                    whyDeclined.set(jobs[index].codeBlock, whyNot);
+                 }
+             }
+         };
+@@ -6844,6 +6928,7 @@ struct BytecodeLinkEncoder::Impl {
+ 
+         // A call that passes no function object has nowhere to go but the function's code. If there turns out to be none, it is all
+         // done again with that known.
++        AOT::FunctionsWithoutCode functionsWithoutCode;
+         for (bool again = true; again;) {
+             Vector<Ref<Thread>> threads;
+             for (unsigned i = 1; i < numberOfThreads; ++i)
+@@ -6869,6 +6954,53 @@ struct BytecodeLinkEncoder::Impl {
+                     again = true;
+                 }
+             });
++            // A function that was declined has its bytecode to run from, and the bytecode of an image has the variables of the
++            // module and of the functions around resolved in a way that only compiled code follows: called, such a function
++            // stops the program (CodeBlock::finishCreation()). So the build stops here, with what was declined and why, as it
++            // does for a function that is too big to compile (maximumAOTCandidateBytecodeSize).
++            if (!declined.isEmpty() && !Options::allowAOTDeclinedFunctions()) {
++                unsigned shown = 0;
++                for (auto& job : jobs) {
++                    if (!declined.contains(job.codeBlock))
++                        continue;
++                    if (++shown > 20)
++                        break;
++                    WhyNot why = whyDeclined.get(job.codeBlock);
++                    String name = job.executable ? job.executable->name().string() : String();
++                    WTFLogAlways("AOT: %s%s%s (module %u, at %u of its source) cannot be compiled ahead of time: %s%s%s",
++                        job.executable ? "the function `" : "the top-level code of a module", name.utf8().data(), job.executable ? "`" : "",
++                        static_cast<unsigned>(job.key.module), static_cast<unsigned>(job.key.start), why.reason.characters() ? why.reason.characters() : "no reason given",
++                        why.opcode != op_nop ? ", at " : "", why.opcode != op_nop ? opcodeNames[why.opcode].characters() : "");
++                }
++                WTFLogAlways("AOT: %u function%s could not be compiled ahead of time, and in this executable a function that is not compiled cannot be relied on to run: the build stops. "
++                    "Change the code named above, or build with BUN_JSC_allowAOTDeclinedFunctions=1 to go on (such a function then runs from bytecode if it uses no variables from outside itself, and stops the program if it does).",
++                    declined.size(), declined.size() == 1 ? "" : "s");
++                exit(1);
++            }
++            // With that allowed: nothing can go to, be made of, or check for a function that was declined
++            // (AOT::FunctionsWithoutCode), so it is all done again with the function unknown to its callers.
++            if (!declined.isEmpty()) {
++                unsigned found = 0;
++                Vector<std::pair<AOT::ImageKey, UnlinkedCodeBlock*>> declinedJobs;
++                for (auto& job : jobs) {
++                    if (declined.contains(job.codeBlock))
++                        declinedJobs.append({ job.key, job.codeBlock });
++                }
++                builder.forEachKnownCallee([&](const AOT::ImageKey& key) {
++                    for (auto& [declinedKey, codeBlock] : declinedJobs) {
++                        if (declinedKey.sameFunction(key)) {
++                            if (functionsWithoutCode.add(codeBlock).isNewEntry)
++                                ++found;
++                            return;
++                        }
++                    }
++                });
++                if (found) {
++                    dataLogLn("AOT: ", found, " functions that code calls directly or has made part of itself were declined: compiling again without that");
++                    AOT::setFunctionsWithoutCode(&functionsWithoutCode);
++                    again = true;
++                }
++            }
+             dataLogLn("AOT: ", functionsNeverReached.load(), " closed functions that nothing reaches are left out (", bytecodeNeverReached.load(), " bytes of bytecode)");
+             if (again) {
+                 functionsNeverReached = 0;
+@@ -6878,7 +7010,13 @@ struct BytecodeLinkEncoder::Impl {
                  next = 0;
              }
          }
@@ -5448,9 +7573,11 @@ index 696ac7a731..807c106367 100644
 +            RELEASE_ASSERT_NOT_REACHED();
 +        }
          AOT::forgetDeclaredNames();
++        AOT::setFunctionsWithoutCode(nullptr);
          AOT::setNumbersOfIdentifiersOfProgram(nullptr);
          AOT::setNumbersOfConstantsOfProgram(nullptr);
-@@ -6890,6 +6962,55 @@ struct BytecodeLinkEncoder::Impl {
+         for (auto& job : jobs) {
+@@ -6890,6 +7028,55 @@ struct BytecodeLinkEncoder::Impl {
          // A regular expression that the program makes out of a string finds its code by what it says. So it is worth having code
          // for whatever string may be made one of, and it costs nothing but room to be wrong: a string in which something is
          // escaped that only a regular expression has any call to escape.
@@ -5519,12 +7646,127 @@ index 506caee0e1..e69478516b 100644
      if (unlinkedFunctionCodeBlock)
          generateUnlinkedCodeBlockForFunctions(vm, unlinkedFunctionCodeBlock, source, codeGenerationMode, error, depth - 1, optimize);
      // When all the code there is going to be is generated now: also what `new` runs, of a function that looks as if it is
+diff --git a/Source/JavaScriptCore/runtime/CyclicModuleRecord.cpp b/Source/JavaScriptCore/runtime/CyclicModuleRecord.cpp
+index fb79b0270d..16a64d2446 100644
+--- a/Source/JavaScriptCore/runtime/CyclicModuleRecord.cpp
++++ b/Source/JavaScriptCore/runtime/CyclicModuleRecord.cpp
+@@ -476,7 +476,8 @@ void CyclicModuleRecord::initializeEnvironment(JSGlobalObject* globalObject, Ref
+     // While the symbol table's entries are still in the bytecode cache nothing watches them, and where the variables are is known
+     // without their names.
+     // (Likewise with a table that was made when the program was built. That may not so much as have the names: StaticHeap keeps those that something can ask for.)
+-    bool isTableOfStaticHeap = StaticHeap::contains(symbolTable);
++    // (With compiler threads, the module's environment is laid out by a clone of that table, which has no more names than it: see SymbolTable::isSharedAcrossRealms().)
++    bool isTableOfStaticHeap = StaticHeap::contains(symbolTable) || (symbolTable->clonedFrom() && StaticHeap::contains(symbolTable->clonedFrom()));
+     bool initializeVarsByOffset = symbolTable->hasCachedEntriesPending() || isTableOfStaticHeap;
+     if (initializeVarsByOffset) {
+         for (unsigned i = 0; i < unlinkedCodeBlock->numberOfVarScopeOffsets(); ++i)
+diff --git a/Source/JavaScriptCore/runtime/IntlObject.cpp b/Source/JavaScriptCore/runtime/IntlObject.cpp
+index 40a58704e5..07c71d9963 100644
+--- a/Source/JavaScriptCore/runtime/IntlObject.cpp
++++ b/Source/JavaScriptCore/runtime/IntlObject.cpp
+@@ -63,6 +63,9 @@
+ #include "IntlSegmenterPrototype.h"
+ #include "JSCInlines.h"
+ #include "Options.h"
++#include <algorithm>
++#include <array>
++#include <string_view>
+ #include <unicode/ubrk.h>
+ #include <unicode/ucal.h>
+ #include <unicode/ucol.h>
+@@ -413,6 +416,55 @@ String languageTagForLocaleID(const char* localeID, bool isImmortal)
+     return createResult(canonicalizeUnicodeExtensionsAfterICULocaleCanonicalization(WTF::move(buffer)));
+ }
+ 
++#if OS(DARWIN)
++// A locale ID of ICU's own lists of what it has (uloc_getAvailable() and the like) that is no more than a language, a script and a
++// region, each as ICU writes it (`en`, `zh_Hant_TW`, `es_419`): its language tag is the ID with '-' for '_'. Making each with
++// uloc_toLanguageTag() is most of what the first Intl object of a process costs (a thousand IDs, about a millisecond).
++// Anything else, and the few languages ICU writes another way in a tag, is left to ICU.
++static String languageTagForAvailableLocaleID(const char* localeID, bool isImmortal)
++{
++    auto isLower = [](char c) { return c >= 'a' && c <= 'z'; };
++    auto isUpper = [](char c) { return c >= 'A' && c <= 'Z'; };
++    auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
++    std::span<const char> id { localeID, strlen(localeID) };
++    size_t start = 0;
++    unsigned part = 0; // 0: language, 1: script, 2: region
++    bool simple = !id.empty();
++    for (size_t i = 0; simple && i <= id.size(); ++i) {
++        if (i < id.size() && id[i] != '_')
++            continue;
++        auto subtag = id.subspan(start, i - start);
++        if (!part) {
++            simple = (subtag.size() == 2 || subtag.size() == 3) && std::ranges::all_of(subtag, isLower);
++            static constexpr std::array<std::string_view, 8> legacy { "iw", "in", "ji", "jw", "mo", "tl", "sh", "no" };
++            simple = simple && std::ranges::find(legacy, std::string_view(subtag.data(), subtag.size())) == legacy.end();
++            part = 1;
++        } else if (part == 1 && subtag.size() == 4 && isUpper(subtag[0]) && std::ranges::all_of(subtag.subspan(1), isLower))
++            part = 2;
++        else if (part <= 2 && ((subtag.size() == 2 && std::ranges::all_of(subtag, isUpper)) || (subtag.size() == 3 && std::ranges::all_of(subtag, isDigit))))
++            part = 3;
++        else
++            simple = false;
++        start = i + 1;
++    }
++    if (!simple)
++        return languageTagForLocaleID(localeID, isImmortal);
++    Vector<char, 32> buffer(id);
++    for (auto& c : buffer) {
++        if (c == '_')
++            c = '-';
++    }
++    if (isImmortal)
++        return StringImpl::createStaticStringImpl(buffer.span());
++    return buffer.span();
++}
++#else
++static String languageTagForAvailableLocaleID(const char* localeID, bool isImmortal)
++{
++    return languageTagForLocaleID(localeID, isImmortal);
++}
++#endif
++
+ // Ensure we have xx-ZZ whenever we have xx-Yyyy-ZZ.
+ static void addScriptlessLocaleIfNeeded(LocaleSet& availableLocales, StringView locale)
+ {
+@@ -449,7 +501,7 @@ const LocaleSet& intlAvailableLocales()
+         constexpr bool isImmortal = true;
+         int32_t count = uloc_countAvailable();
+         for (int32_t i = 0; i < count; ++i) {
+-            String locale = languageTagForLocaleID(uloc_getAvailable(i), isImmortal);
++            String locale = languageTagForAvailableLocaleID(uloc_getAvailable(i), isImmortal);
+             if (locale.isEmpty())
+                 continue;
+             availableLocales->add(locale);
+@@ -587,7 +639,7 @@ const LocaleSet& intlCollatorAvailableLocales()
+         constexpr bool isImmortal = true;
+         int32_t count = ucol_countAvailable();
+         for (int32_t i = 0; i < count; ++i) {
+-            String locale = languageTagForLocaleID(ucol_getAvailable(i), isImmortal);
++            String locale = languageTagForAvailableLocaleID(ucol_getAvailable(i), isImmortal);
+             if (locale.isEmpty())
+                 continue;
+             availableLocales->add(locale);
+@@ -608,7 +660,7 @@ const LocaleSet& intlSegmenterAvailableLocales()
+         constexpr bool isImmortal = true;
+         int32_t count = ubrk_countAvailable();
+         for (int32_t i = 0; i < count; ++i) {
+-            String locale = languageTagForLocaleID(ubrk_getAvailable(i), isImmortal);
++            String locale = languageTagForAvailableLocaleID(ubrk_getAvailable(i), isImmortal);
+             if (locale.isEmpty())
+                 continue;
+             availableLocales->add(locale);
 diff --git a/Source/JavaScriptCore/runtime/OptionsList.h b/Source/JavaScriptCore/runtime/OptionsList.h
-index 7ac0274b6e..713304349c 100644
+index 7ac0274b6e..812cfdaf6f 100644
 --- a/Source/JavaScriptCore/runtime/OptionsList.h
 +++ b/Source/JavaScriptCore/runtime/OptionsList.h
-@@ -148,11 +148,16 @@ bool hasCapacityToUseLargeGigacage();
+@@ -146,13 +146,20 @@ bool hasCapacityToUseLargeGigacage();
+     v(Bool, dumpAOTGraph, false, Normal, "Dump the AOT compiler's IR."_s) \
+     v(Bool, dumpAOTB3Graph, false, Normal, "Dump the B3 procedure the AOT compiler generates."_s) \
      v(Bool, dumpAOTDisassembly, false, Normal, "Dump the machine code the AOT compiler generates."_s) \
++    v(OptionString, aotDeclineFunctionsNamed, nullptr, Normal, "For testing: when compiling an image, the functions of this name are declined, as the compiler declines a function it cannot compile."_s) \
++    v(Bool, allowAOTDeclinedFunctions, false, Normal, "When compiling an image: go on when the compiler declines a function, instead of stopping with what it declined and why. The function is then run from its bytecode, which works for one that reads and writes no variables of its module or of the functions around it, and stops the program otherwise: the bytecode of an image has those resolved in a way that only compiled code follows."_s) \
      v(OptionString, aotMapFilePath, nullptr, Normal, "When compiling: write a map of the image (the location and key of each function) to this file, for symbolicating profiles."_s) \
      v(Bool, forceAOTVeneers, false, Normal, "For testing. Route every direct call between functions in an image through a veneer, as if the target were out of range."_s) \
 +    v(OptionString, aotRecordRegExpsPath, nullptr, Normal, "Append to this file each regular expression that is compiled at run time because the image has no code for it (one per line: flags, a slash, the pattern with backslash, newline and carriage return escaped). For aotRegExpsPath."_s) \
@@ -5540,6 +7782,19 @@ index 7ac0274b6e..713304349c 100644
      v(Bool, useAOTInlineFastPathsInLoops, false, Normal, "The AOT compiler emits fast paths inline, instead of calling shared stubs, in loops and in recursive functions. Faster in hot code, at the cost of about 10% more code."_s) \
      v(Bool, useAOTLoopSplitting, false, Normal, "The AOT compiler emits two copies of each loop: a fast copy with no slow paths, and a generic copy that the fast copy exits to."_s) \
      v(Bool, useGuardPagesForShortFunctionExecutables, false, Normal, "For testing. Place each short-form FunctionExecutable at the end of a page followed by an unmapped page, so that reading past it crashes."_s) \
+@@ -170,6 +177,12 @@ bool hasCapacityToUseLargeGigacage();
+     v(Unsigned, maximumAOTInliningCallerBytecodeCost, 4000, Normal, "With useAOTInlining: maximum total bytecode size inlined into one function."_s) \
+     v(Bool, validateAOTInferredTypes, false, Normal, "For testing the AOT compiler. Compiled code checks every value whose type was inferred rather than checked, and crashes if the type is wrong."_s) \
+     v(Bool, logAOTTypeInference, false, Normal, "After whole-program type inference, logs the result for each function and variable and what contributed to it. Lines start with \"AOT inference:\"."_s) \
++    v(Bool, useAOTIntegerRemainderOfNumbers, true, Normal, "`a % b` of numbers that are not proven integers: an integer remainder when both are int32s (the one not negative, the other positive), fmod otherwise."_s) \
++    v(Bool, useAOTVariableNarrowing, true, Normal, "In the fast copy of a loop, a read of a closure or module variable is taken for what the program writes to it, behind a check (which leaves for the generic copy), rather than for that or the undefined or hole it starts as: `i < N` with a module constant N is then a compare of numbers."_s) \
++    v(Unsigned, maximumAOTMethodCandidates, 6, Normal, "In the fast copy of a loop, a method call whose name the program gives to up to this many functions is made part of the loop with a check for each, in turn; one that is none of them leaves for the generic copy, which makes the call. 1: only names given to one function (useAOTMethodInliningByName)."_s) \
++    v(Unsigned, maximumAOTMethodCandidatesBytecodeCost, 160, Normal, "The most bytecode the functions taken for one method call may have between them (maximumAOTMethodCandidates)."_s) \
++    v(Bool, useAOTMethodInliningByName, true, Normal, "A method call whose callee is not known (`base.name(...)`) is taken for the one function the program stores under that name, if there is exactly one, and inlined behind a check that the callee is that function; otherwise the call is made. For programs without a type table."_s) \
++    v(Unsigned, maximumAOTCandidateBytecodeSize, 262144, Normal, "The AOT compiler leaves a function whose bytecode is bigger than this many bytes to the other tiers: the back end's time and memory grow faster than the size (a module that is one big literal: minutes, tens of GB), and such a function is data, not a hot path. A program that goes without its bytecode (omitBytecodeFromStaticHeap) has no other tier, so its build stops with a message instead."_s) \
+     v(Unsigned, aotLoopSplittingPolicy, 3, Normal, "Which loops useAOTLoopSplitting applies to. 1: all. 2: loops that contain something the fast copy improves (arithmetic, indexed element accesses, a call it can elide). 3: loops that make no calls. 4: loops that satisfy both 2 and 3. 5: loops that make no calls, or that contain a call the fast copy elides or an indexed element access."_s) \
+     \
+     v(Unsigned, repatchCountForCoolDown, 8, Normal, nullptr) \
 diff --git a/Source/JavaScriptCore/runtime/RegExp.cpp b/Source/JavaScriptCore/runtime/RegExp.cpp
 index 352a5f60a7..46f3f7c3ab 100644
 --- a/Source/JavaScriptCore/runtime/RegExp.cpp
@@ -5793,8 +8048,62 @@ index 60568923b7..7552cabba0 100644
      if constexpr (matchFrom == Yarr::MatchFrom::VMThread) {
          if (m_specificPattern == Yarr::SpecificPattern::AnchoredWordList) {
              if (startOffset || !isAnchoredWord(s))
+diff --git a/Source/JavaScriptCore/runtime/StackFrame.cpp b/Source/JavaScriptCore/runtime/StackFrame.cpp
+index 57f3f696af..0c21044bc9 100644
+--- a/Source/JavaScriptCore/runtime/StackFrame.cpp
++++ b/Source/JavaScriptCore/runtime/StackFrame.cpp
+@@ -90,7 +90,16 @@ CodeBlock* StackFrame::makeCodeBlock() const
+ #if ENABLE(FTL_JIT)
+     auto& jsFrame = std::get<JSFrameData>(m_frameData);
+     VM& vm = jsFrame.aotExecutable->vm();
+-    if (vm.heap.mutatorState() != MutatorState::Running)
++    // Making one allocates in the heap, may decode the function's unlinked code and links its constants: only the mutator may do
++    // that, outside a collection. The end phase of a collection (ErrorInstance::reconcileWeakReferencesAtGCEnd ->
++    // VM::onComputeErrorInfo) runs on whichever thread conducts it. When that is the collector thread, the mutator is merely
++    // stopped (it may have released heap access to wait in its event loop), so its mutatorState() still says Running: that alone
++    // does not tell. The world is stopped then, and the thread is a GC thread that does not hold the API lock.
++    // Also: the executable of a frame of code from the static heap is a static cell, and on a thread that has no VM of its own (a
++    // Worker VM's collector thread) JSCell::vm() of one is the FIRST VM's (StaticHeap::containerOfSlow()). Without the lock check
++    // a Worker's collection would make a CodeBlock, and a Data, in the main VM's heap and Instance from its own GC thread.
++    if (vm.heap.mutatorState() != MutatorState::Running || vm.heap.currentThreadIsDoingGCWork() || vm.heap.worldIsStopped()
++        || !vm.currentThreadIsHoldingAPILock())
+         return nullptr;
+     if (AOT::FunctionRef function = AOT::FunctionRef::of(vm, jsFrame.aotExecutable.get(), jsFrame.aotKind))
+         return function.ensureCodeBlock();
+diff --git a/Source/JavaScriptCore/runtime/StringPrototype.cpp b/Source/JavaScriptCore/runtime/StringPrototype.cpp
+index f48a8a6a3b..86c7e65d54 100644
+--- a/Source/JavaScriptCore/runtime/StringPrototype.cpp
++++ b/Source/JavaScriptCore/runtime/StringPrototype.cpp
+@@ -763,6 +763,13 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncCharAt, (JSGlobalObject* globalObject, C
+         return throwVMTypeError(globalObject, scope);
+     auto* thisString = thisValue.toString(globalObject);
+     RETURN_IF_EXCEPTION(scope, { });
++    // A substring (from slice(), substring(), split()...) stays a rope when it is only viewed, so the compiled fast paths, which
++    // need a resolved string, would send every character of it here. Resolve it in place, as codePointAt() does: it shares
++    // its base's characters, and from now on the fast paths read it directly.
++    if (thisString->isSubstring()) [[unlikely]] {
++        thisString->value(globalObject);
++        RETURN_IF_EXCEPTION(scope, { });
++    }
+     auto view = thisString->view(globalObject);
+     RETURN_IF_EXCEPTION(scope, { });
+     JSValue a0 = callFrame->argument(0);
+@@ -789,6 +796,13 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncCharCodeAt, (JSGlobalObject* globalObjec
+         return throwVMTypeError(globalObject, scope);
+     auto* thisString = thisValue.toString(globalObject);
+     RETURN_IF_EXCEPTION(scope, { });
++    // A substring (from slice(), substring(), split()...) stays a rope when it is only viewed, so the compiled fast paths, which
++    // need a resolved string, would send every character of it here. Resolve it in place, as codePointAt() does: it shares
++    // its base's characters, and from now on the fast paths read it directly.
++    if (thisString->isSubstring()) [[unlikely]] {
++        thisString->value(globalObject);
++        RETURN_IF_EXCEPTION(scope, { });
++    }
+     auto view = thisString->view(globalObject);
+     RETURN_IF_EXCEPTION(scope, { });
+     JSValue a0 = callFrame->argument(0);
 diff --git a/Source/JavaScriptCore/yarr/YarrJIT.cpp b/Source/JavaScriptCore/yarr/YarrJIT.cpp
-index 87c90d8818..77d4e3da96 100644
+index 87c90d8818..70d5da8036 100644
 --- a/Source/JavaScriptCore/yarr/YarrJIT.cpp
 +++ b/Source/JavaScriptCore/yarr/YarrJIT.cpp
 @@ -691,7 +691,9 @@ static void emitVerifySubjectRead(CCallHelpers& jit, AddressType address, unsign
@@ -5820,7 +8129,7 @@ index 87c90d8818..77d4e3da96 100644
      done.link(&jit);
  
      if (resultReg != regs.regT0)
-@@ -1450,11 +1455,24 @@ class YarrGenerator final : public YarrJITInfo {
+@@ -1450,10 +1455,23 @@ class YarrGenerator final : public YarrJITInfo {
              return;
          }
          m_tableReferences.append({ m_jit.label(), reg, { static_cast<const uint8_t*>(table), size }, tableIs });
@@ -5831,20 +8140,19 @@ index 87c90d8818..77d4e3da96 100644
          if (tableIs == TableIs::Shared)
              m_jit.nop(); // add
 +#endif
-     }
- 
++    }
++
 +#if CPU(X86_64)
 +    // lea reg, [rip + disp32], written as lea reg, [rbp + disp32] (the same length) for the image's linker to turn into the RIP-relative
 +    // form once it knows where the target is: see writeRIPRelativeLea().
 +    void emitRIPRelativeLeaPlaceholder(MacroAssembler::RegisterID reg)
 +    {
 +        m_jit.m_assembler.leaq_mr(0x10000, X86Registers::ebp, reg);
-+    }
+     }
 +#endif
-+
+ 
      MacroAssembler::Jump branchTestTable(MacroAssembler::ResultCondition condition, MacroAssembler::RegisterID character, const void* table, size_t size, TableIs tableIs)
      {
-         if (!m_forImage)
 @@ -1464,6 +1482,11 @@ class YarrGenerator final : public YarrJITInfo {
          m_jit.load8(MacroAssembler::BaseIndex(MacroAssembler::dataTempRegister, character, MacroAssembler::TimesOne), MacroAssembler::dataTempRegister);
          (void)m_jit.label(); // What the assembler thinks is in its registers is not.
@@ -5905,9 +8213,9 @@ index 87c90d8818..77d4e3da96 100644
  
 -        // Those call thunks, which are somewhere else.
 -        if (m_forImage && (m_decodeSurrogatePairs || m_decode16BitForBackreferencesWithCalls))
-+        // Those call thunks, which are somewhere else. (Except, on x86-64, the one that decodes surrogate pairs: image code has its own
-+        // copy, see unicodeSlowPathCallsInCode().)
-+        if (m_forImage && (m_decode16BitForBackreferencesWithCalls || (m_decodeSurrogatePairs && !isX86_64())))
++        // Those call thunks, which are somewhere else. (Except, on x86-64 and ARM64, the one that decodes surrogate pairs: image code
++        // has its own copy, see unicodeSlowPathCallsInCode().)
++        if (m_forImage && (m_decode16BitForBackreferencesWithCalls || (m_decodeSurrogatePairs && !isX86_64() && !isARM64())))
              m_failureReason = JITFailureReason::DecodeSurrogatePair;
 +#if !CPU(ARM64) && !CPU(X86_64)
 +        // Code for an image refers to its tables and backtrack targets PC-relatively, which is written for ARM64 and x86-64 only.
@@ -5917,7 +8225,7 @@ index 87c90d8818..77d4e3da96 100644
  
          if (m_failureReason) {
              codeBlock.setFallBackWithFailureReason(*m_failureReason);
-@@ -9581,6 +9620,17 @@ public:
+@@ -9581,6 +9620,27 @@ public:
  
          generateJITFailReturn();
  
@@ -5930,12 +8238,22 @@ index 87c90d8818..77d4e3da96 100644
 +            for (auto& call : m_unicodeSlowPathCallsInCode)
 +                m_jit.m_assembler.linkJump(call.m_label, slowPath);
 +        }
++#elif ENABLE(YARR_JIT_UNICODE_EXPRESSIONS) && CPU(ARM64)
++        if (!m_unicodeSlowPathCallsInCode.isEmpty()) {
++            // As on x86-64: the slow path in the code itself, entered by bl and left by ret, as the VM's thunk is. The calls are
++            // linked once the code is laid out (branch compaction moves it), below: code for an image is never finalized, so a link
++            // task would not run.
++            m_unicodeSlowPath = m_jit.label();
++            m_jit.tagReturnAddress(); // (As the thunk does: nothing on ARM64, the return address signed on ARM64E.)
++            tryReadUnicodeCharSlowImpl(m_jit);
++            m_jit.ret();
++        }
 +#endif
 +
          if (m_disassembler)
              m_disassembler->setEndOfCode(m_jit.label());
  
-@@ -9598,12 +9648,22 @@ public:
+@@ -9598,13 +9658,27 @@ public:
              });
          }
  
@@ -5957,9 +8275,14 @@ index 87c90d8818..77d4e3da96 100644
  
 +#if CPU(ARM64) || CPU(X86_64)
          if (m_forImage) {
++#if CPU(ARM64)
++            for (auto& call : m_unicodeSlowPathCallsInCode)
++                linkBuffer.link<NoPtrTag>(call, linkBuffer.locationOf<NoPtrTag>(*m_unicodeSlowPath));
++#endif
              auto* start = static_cast<const uint8_t*>(linkBuffer.entrypoint<NoPtrTag>().untaggedPtr());
              auto& bytes = m_forImage->bytes;
-@@ -9612,14 +9672,25 @@ public:
+             bytes.append(std::span { start, linkBuffer.size() });
+@@ -9612,14 +9686,25 @@ public:
                  return static_cast<uint32_t>(static_cast<const uint8_t*>(linkBuffer.locationOf<NoPtrTag>(label).untaggedPtr()) - start);
              };
              bool isInReach = true;
@@ -5985,7 +8308,7 @@ index 87c90d8818..77d4e3da96 100644
              UncheckedKeyHashMap<const uint8_t*, uint32_t> placed;
              for (auto& reference : m_tableReferences) {
                  if (reference.tableIs == TableIs::Shared) {
-@@ -9634,11 +9705,14 @@ public:
+@@ -9634,11 +9719,14 @@ public:
                  }).iterator->value;
                  writeAdr(offsetOf(reference.instruction), reference.reg, at);
              }
@@ -6001,14 +8324,15 @@ index 87c90d8818..77d4e3da96 100644
  
          if (m_executionMode == ExecutionMode::MatchOnly) {
              if (m_charSize == CharSize::Char8) {
-@@ -10014,6 +10088,15 @@ private:
+@@ -10014,6 +10102,16 @@ private:
      VM* m_vm;
  public:
      YarrCodeForImage* m_forImage { nullptr };
 +    Vector<MacroAssembler::Call> m_unicodeSlowPathCallsInCode; // See tryReadUnicodeCharImpl().
++    std::optional<MacroAssembler::Label> m_unicodeSlowPath; // Where they go, on ARM64.
 +    Vector<MacroAssembler::Call>* unicodeSlowPathCallsInCode()
 +    {
-+#if CPU(X86_64)
++#if CPU(X86_64) || CPU(ARM64)
 +        if (m_forImage)
 +            return &m_unicodeSlowPathCallsInCode;
 +#endif
@@ -6017,7 +8341,7 @@ index 87c90d8818..77d4e3da96 100644
  private:
      struct ReferenceToTable {
          MacroAssembler::Label instruction;
-@@ -10247,7 +10330,7 @@ void jitCompile(YarrPattern& pattern, StringView patternString, CharSize charSiz
+@@ -10247,7 +10345,7 @@ void jitCompile(YarrPattern& pattern, StringView patternString, CharSize charSiz
  
  std::optional<YarrCodeForImage> jitCompileForImage(YarrPattern& pattern, StringView patternString, CharSize charSize, VM* vm, ExecutionMode mode)
  {
@@ -6026,7 +8350,7 @@ index 87c90d8818..77d4e3da96 100644
      CCallHelpers masm;
      YarrCodeForImage result;
      YarrCodeBlock codeBlock(nullptr);
-@@ -10255,8 +10338,14 @@ std::optional<YarrCodeForImage> jitCompileForImage(YarrPattern& pattern, StringV
+@@ -10255,8 +10353,14 @@ std::optional<YarrCodeForImage> jitCompileForImage(YarrPattern& pattern, StringV
      YarrGenerator<YarrJITDefaultRegisters> generator(masm, vm, &codeBlock, jitRegisters, pattern, patternString, charSize, mode, std::nullopt);
      generator.m_forImage = &result;
      generator.compile(codeBlock);
@@ -6299,5 +8623,5 @@ index 04629219b7..1bae3cb0f4 100644
      WEBKIT_PREPEND_GLOBAL_COMPILER_FLAGS(-fno-omit-frame-pointer)
  endif ()
 -- 
-2.43.0
+2.54.0 (Apple Git-157)
 

@@ -132,7 +132,7 @@ are the engine stamp, the CPU features, the address space (for example a tight `
 ## The x86-64 port
 
 The upstream compiler targets ARM64: on x86-64 nothing was compiled ahead of time. Pi-Bolt's
-[WebKit patch](../patches/webkit) adds the x86-64 back end and runtime work, and its [Bun patch](../patches/bun) adds the
+[WebKit patch](../patches/webkit.patch) adds the x86-64 back end and runtime work, and its [Bun patch](../patches/bun.patch) adds the
 executable format.
 
 **x86-64 code generation**
@@ -163,7 +163,7 @@ executable format.
 ## The macOS ARM64 port
 
 The compiler's ARM64 back end is upstream's; the macOS port is about the executable around it, and about what the x86-64 work
-had left x86-64 only. Pi-Bolt's patches from [webkit 0013](../patches/webkit) and [bun 0008](../patches/bun) on are this port's.
+had left x86-64 only. The macOS parts of Pi-Bolt's [WebKit patch](../patches/webkit.patch) and [Bun patch](../patches/bun.patch) are this port's.
 
 **Where the image is.** Bun keeps a compiled program in the `__BUN` section of the Mach-O executable, which starts on a 16 KB
 page of the file, as the static heap and code image need. The executable asks the kernel which file and offset back the static

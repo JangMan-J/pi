@@ -25,8 +25,8 @@ fetch() {
 		git -C "$dir" fetch -q origin "$branch"
 	fi
 	git -C "$dir" checkout -q --detach "$commit"
-	log "$name: applying $(ls "$patches"/*.patch | wc -l) patch(es)"
-	git -C "$dir" -c user.name=pi-bolt -c user.email=pi-bolt@localhost am -q "$patches"/*.patch
+	log "$name: applying $(basename "$patches")"
+	git -C "$dir" -c user.name=pi-bolt -c user.email=pi-bolt@localhost am -q "$patches"
 }
 
 fetch webkit

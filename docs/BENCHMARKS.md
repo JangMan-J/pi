@@ -411,7 +411,7 @@ Bun's warmed-up JIT used 5–15% less CPU than v0.1.0 while replies streamed. v0
 
 A profile of the TUI while replies stream showed what was different. Pi-Bolt spent 8% of its CPU calling the native
 `String.prototype.charCodeAt`, once per character, from pi-tui's `visibleWidth()`, which measures every line on every frame.
-Three engine fixes followed ([patch 0002](../patches/webkit)):
+Three engine fixes followed (in the [WebKit patch](../patches/webkit.patch)):
 
 1. **Integer counters boxed as doubles.** `visibleWidth`'s loop counter is updated with `i += ansiCodeLength(...)`, so the
    compiler could not prove it an integer and kept it as a double. Boxed as a double, it missed the int32 fast path of

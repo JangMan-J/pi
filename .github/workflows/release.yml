@@ -49,7 +49,7 @@ jobs:
       # The runtime is identified by what it is built from. The previous release's is reused if nothing changed.
       - name: runtime
         run: |
-          stamp=$(cat sources.json patches/webkit/*.patch patches/bun/*.patch scripts/build-runtime.sh scripts/toolchain/*.sh | sha256sum | cut -c1-16)
+          stamp=$(cat sources.json patches/webkit.patch patches/bun.patch scripts/build-runtime.sh scripts/toolchain/*.sh | sha256sum | cut -c1-16)
           echo "runtime stamp: $stamp"
           previous=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' || true)
           if [ -n "$previous" ] && gh release download "$previous" --pattern RUNTIME_STAMP --output .work/previous-stamp 2>/dev/null \
