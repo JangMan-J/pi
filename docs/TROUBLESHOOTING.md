@@ -37,7 +37,7 @@ bun: the executable's ahead-of-time compiled code is not used (<reason>); runnin
 | `the address space for it is not available` | An address-space limit (`ulimit -v`, `RLIMIT_AS`, or `vm.overcommit_memory=2`) leaves no room for the fixed regions the code expects. | The compiled code needs about 10 GB of *virtual* address space. It is reserved, not used, so it costs no memory. Raise or remove the limit. Below it, Pi still works from bytecode, down to about 1.5 GB. |
 | `this CPU lacks an instruction set the code was compiled for` | A `linux-x64` build on a CPU without AVX2. | Use the `linux-x64-baseline` build (`PIBOLT_VARIANT=x64-baseline` with the installer). |
 | `the image is not one for this engine`, `the image could not be mapped executable`, `the prebuilt heap could not be mapped` | A damaged executable, or a system that forbids executable file mappings. | Re-download the release and check `SHA256SUMS`. Report it if it persists. On macOS, an executable re-signed with the hardened runtime needs `com.apple.security.cs.disable-library-validation` (see [macOS](#macos)). |
-| `the executable could not be loaded where its prebuilt heap expects it` | macOS: the executable could not start again with ASLR off for itself (see [ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)). | Report it, with `sw_vers` and how Pi-Bolt was started. |
+| `the executable could not be loaded where its prebuilt heap expects it` | macOS: the executable could not be started where its prebuilt heap expects it (see [ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)). | Report it, with `sw_vers` and how Pi-Bolt was started. |
 
 One failure is fatal instead: `the executable's ahead-of-time code image was rejected by the engine; run with BUN_AOT=0 to use
 the bytecode instead`. It should not happen with release builds. Run with `BUN_AOT=0` and report it.
@@ -126,14 +126,6 @@ an Apple silicon Mac, the installer installs the ARM64 build, which runs nativel
 **Re-signing the executable.** `codesign` may re-sign it, keeping the whole file covered: Pi-Bolt maps its compiled code from the
 file. With the hardened runtime (`-o runtime`), add the entitlement `com.apple.security.cs.disable-library-validation`: without
 it the executable runs from bytecode, with one notice. The `-jit` build also needs `com.apple.security.cs.allow-jit` for its JIT.
-
-**ASLR.** An executable with a prebuilt heap runs with address space layout randomization off for its main executable, which is
-where the Linux build is too (it is linked without it). macOS would pass that on to every process Pi starts; from 0.6.1 they are
-started by a helper with ASLR instead, through `pi-spawn` beside `pi-bin` ([ARCHITECTURE.md](ARCHITECTURE.md#the-macos-arm64-port)).
-In `ps` a program Pi started has a `pi-spawn` process beside it, which stands in for it until it exits. That costs 1.4 ms per
-program started; `PIBOLT_SPAWN_ASLR=0` turns it off (programs then start without ASLR, as in 0.6.0, at 0.7 ms). Programs started on a
-pseudo-terminal (Bun's `terminal` option) and `pi-bin` started directly, without the `pi` launcher, are still started without
-ASLR. `BUN_AOT=0 pi-bin` runs with ASLR itself, from bytecode.
 
 **`pi`, `pi-bin` and `pi-spawn`.** In a macOS build `pi` is a small launcher, and `pi-bin` beside it the Pi-Bolt executable,
 which runs from either; `pi-spawn` starts Pi's programs (above). Link `pi` (as the installer does) rather than copy it alone: it
