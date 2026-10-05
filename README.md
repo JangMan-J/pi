@@ -32,7 +32,6 @@ interleaved runs; lower is better. Times differ on other machines; the ratios ca
 
 > [!NOTE]
 > Pi-Bolt is an independent fork of [Pi](https://github.com/earendil-works/pi), not affiliated with Pi's authors or with Oven.
-> This repository is Pi 1.0.0 with its full history, plus Pi-Bolt's compiler patches, build scripts and benchmarks.
 
 **Contents:** [Getting started](#getting-started) · [Benchmarks](#benchmarks) · [Plugins](#plugins) ·
 [How it works](#how-it-works) · [The fork](#the-fork) · [Documentation](#documentation) · [Development](#development)
@@ -43,8 +42,7 @@ interleaved runs; lower is better. Times differ on other machines; the ratios ca
 curl -fsSL https://pi-bolt.opensec.in/install.sh | sh
 ```
 
-The installer picks the build for your CPU and verifies its checksum and the release's signature (with OpenSSL 3). It installs
-Pi-Bolt to `~/.pi-bolt`, links the `pi-bolt` command into `~/.local/bin`, and offers OpenSec's two optional
+It installs Pi-Bolt to `~/.pi-bolt`, links the `pi-bolt` command into `~/.local/bin`, and offers OpenSec's two optional
 [extensions](#extensions). Run it again to update, reinstall or uninstall.
 
 Or with a package manager:
