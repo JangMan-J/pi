@@ -42,8 +42,6 @@ probe=
 printf '#include <stdio.h>\nint main(void) { int x; printf("%%p/%%p\\n", (void*)main, (void*)&x); return 0; }\n' >"$home/probe.c"
 cc -O1 -o "$home/probe" "$home/probe.c" 2>/dev/null && probe="$home/probe" || echo "(no C compiler: the ASLR checks are skipped)"
 run child-processes 3 ${probe:+PIBOLT_TEST_PROBE=$probe}
-# (macOS: and started directly, as PIBOLT_SPAWN_ASLR=0 asks.)
-[ "$(uname)" = Darwin ] && run child-processes 2 ${probe:+PIBOLT_TEST_PROBE=$probe} PIBOLT_SPAWN_ASLR=0
 
 # Bedrock, the proxy agents and the OAuth flows are loaded when they are first used, with the builtin modules they import
 # (node:http, https, net, tls). A request to Bedrock that can reach nothing (its endpoint and the proxy are a closed port of this

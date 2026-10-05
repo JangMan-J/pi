@@ -38,11 +38,8 @@ int main(int argc, char** argv)
         return 127;
     }
 
-    // (Not for `pi --version`, which pi-bin answers without starting anything: the fork would be 3% of its time. Not with
-    // PIBOLT_SPAWN_ASLR=0: programs are then started directly, without ASLR, which is faster.)
-    int versionOnly = argc == 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-v"));
-    const char* aslr = getenv("PIBOLT_SPAWN_ASLR");
-    int wanted = !versionOnly && !(aslr && !strcmp(aslr, "0"));
+    // (Not for `pi --version`, which pi-bin answers without starting anything: the fork would be 3% of its time.)
+    int wanted = !(argc == 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-v")));
     char proxy[PATH_MAX];
     int helper = -1;
     if (wanted && snprintf(proxy, sizeof(proxy), "%s/pi-spawn", directory) < (int)sizeof(proxy) && !access(proxy, X_OK))

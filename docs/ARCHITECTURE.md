@@ -200,8 +200,7 @@ and exits the same way, with its exit code or by its signal, so `pi-bin` waits f
 `pi-spawn` is killed (`SIGKILL`), the worker kills the program. The helper exits with `pi-bin`. Without the helper (`pi-bin`
 started directly) or when it cannot help, `pi-spawn` runs the program in its own place, without ASLR, as before. Not covered:
 programs started on a pseudo-terminal (Bun's `terminal` option) or as another user, which Bun starts with `fork`. What it costs: a
-fork of the launcher at each start (0.3 ms; not for `pi --version`), and 1.4 ms per program, mostly `pi-spawn`'s own start.
-`PIBOLT_SPAWN_ASLR=0` in `pi`'s environment turns it off: no helper, and programs started directly, without ASLR, as in 0.6.0. A
+fork of the launcher at each start (0.3 ms; not for `pi --version`), and 1.4 ms per program, mostly `pi-spawn`'s own start. A
 program's CPU time is no longer counted in `pi-bin`'s `RUSAGE_CHILDREN`: it is the helper's.
 
 **Fixed regions.** The static region (36 GB of address space at 0x200000000000) and the structures' 4 GB are free in every

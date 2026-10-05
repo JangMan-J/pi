@@ -23,12 +23,7 @@ function output(child) {
 
 async function run() {
 	const probe = process.env.PIBOLT_TEST_PROBE;
-	// PIBOLT_SPAWN_ASLR=0: on macOS, programs are started directly, as without the helper: without ASLR.
-	if (probe && process.platform === "darwin" && process.env.PIBOLT_SPAWN_ASLR === "0") {
-		const places = new Set();
-		for (let i = 0; i < 3; i++) places.add(execFileSync(probe, { encoding: "utf8" }).trim());
-		check("no aslr with PIBOLT_SPAWN_ASLR=0", places.size === 1, [...places].join(" "));
-	} else if (probe) {
+	if (probe) {
 		// Each start of a program with ASLR puts it somewhere else; without, always at the same place.
 		const places = new Set();
 		for (let i = 0; i < 4; i++) places.add(execFileSync(probe, { encoding: "utf8" }).trim());
