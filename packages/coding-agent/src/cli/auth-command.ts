@@ -1,5 +1,5 @@
 import type { AuthResult } from "@earendil-works/pi-ai";
-import { APP_NAME, COMMAND_NAME } from "../config.ts";
+import { COMMAND_NAME } from "../config.ts";
 import type { Args } from "./args.ts";
 
 export type AuthCommandKind = "check" | "api_key" | "bearer_token";
