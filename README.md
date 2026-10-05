@@ -27,8 +27,8 @@ third of its CPU over a session.
   <img alt="Pi-Bolt vs Bun 1.4.2 vs Node 22: ready to type 45 / 128 / 303 ms; CPU per session 303 / 844 / 1,242 ms; CPU while streaming 320 / 524 / 605 ms; memory after a long session 201 / 241 / 601 MB" src="docs/images/bench-hero-light.svg">
 </picture>
 
-<sub>Pi 1.0.0 on one Linux server (AMD EPYC 7B13): Pi-Bolt against the same release on stock Bun 1.4.2 and on Node 22. Medians of
-interleaved runs; lower is better. Times differ on other machines; the ratios carry over. More under [Benchmarks](#benchmarks).</sub>
+<sub>One Linux server (AMD EPYC 7B13): Pi-Bolt against Pi 1.0.0 on stock Bun 1.4.2 and on Node 22. Medians of interleaved runs;
+lower is better. Times differ on other machines; the ratios carry over. More under [Benchmarks](#benchmarks).</sub>
 
 > [!NOTE]
 > Pi-Bolt is an independent fork of [Pi](https://github.com/earendil-works/pi), not affiliated with Pi's authors or with Oven.
@@ -108,9 +108,10 @@ installs, `PIBOLT_EXTENSIONS=yes` (or `no`) answers the installer's question in 
 
 ## Benchmarks
 
-The same Pi 1.0.0 run three ways: compiled by Pi-Bolt, as released on stock Bun 1.4.2, and from its npm package on Node. Medians
-of fresh processes, interleaved across the runtimes; lower is better. Each table comes from one machine, so the milliseconds will
-differ on yours; the comparison is what carries over.
+Pi run three ways: compiled by Pi-Bolt, as released on stock Bun 1.4.2, and from its npm package on Node. Medians of fresh
+processes, interleaved across the runtimes; lower is better. Each table comes from one machine, so the milliseconds will differ on
+yours; the comparison is what carries over. The stock runs are of Pi 1.0.0. Pi-Bolt was measured at 0.6.1; 0.7.0, on Pi 1.0.3,
+measures the same on both machines.
 
 **Linux x86-64** (AMD EPYC 7B13)
 

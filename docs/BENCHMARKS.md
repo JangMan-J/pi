@@ -4,6 +4,10 @@ Pi-Bolt compared with the same Pi release on stock Bun and on Node.js. Every fig
 [`bench/`](../bench), and the raw results are in [`bench/results/`](../bench/results). The charts are drawn from those files by
 [`bench/report.py`](../bench/report.py).
 
+**Versions.** The tables are of Pi-Bolt 0.6.1 and the Pi 1.0.0 it ran, against that same Pi 1.0.0 on Bun and Node. Pi-Bolt
+0.7.0, which runs Pi 1.0.3, measures the same as 0.6.1 on both machines (within 3%: startup, a prompt, an interactive session,
+memory; each installed from its release archive).
+
 **These are measurements, not guarantees.** Each set of results comes from one machine: an AMD EPYC 7B13 server for Linux and an
 M5 MacBook Air for macOS. On other hardware the milliseconds will differ, and so can the load, the terminal and the disk. What
 carries over is the comparison, because every run interleaves the runtimes on the same machine: Pi-Bolt starts two to three
