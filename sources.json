@@ -13,8 +13,7 @@
   "pi": {
     "note": "Pi-Bolt is a fork of Pi: Pi is this repository's own tree, forked at the tag below",
     "upstream": "https://github.com/earendil-works/pi.git",
-    "tag": "v1.0.0",
-    "commit": "a13d35a742c6ef8462812a28fbe1d8c8b7431c32",
-    "profile": "profiles/pi-1.0.0"
+    "tag": "v1.0.3",
+    "profile": "profiles/pi-1.0.3"
   }
 }
