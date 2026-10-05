@@ -16,6 +16,10 @@ on:
       tag:
         description: "The bolt-vX.Y.Z tag to build (it must exist)"
         required: true
+      dry_run:
+        description: "Build and test only: no draft release (works for a tag already released)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -157,6 +161,7 @@ jobs:
   draft:
     name: Draft release
     needs: [prepare, build]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -182,6 +187,10 @@ jobs:
       - name: Draft
         run: |
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != true ]; then
+              echo "::error::$TAG is already published; a published release is not changed (run with dry_run to test)"
+              exit 1
+            fi
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft --notes-file "docs/releases/$VERSION.md"
             gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release/*
           else
