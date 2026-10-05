@@ -51,6 +51,7 @@ for t in "${tests[@]}"; do
 			BUN_JSC_omitBytecodeFromStaticHeap=1 \
 			"$BUN" build --compile --bytecode --format=esm --target="bun-$PIBOLT_PLATFORM" --bytecode-order="$OUT/$name.order" \
 			"$t" "${extra[@]}" --outfile "$OUT/$name-$mode" >"$OUT/$name-$mode.build" 2>&1
+		built=$?
 		BUN_STATIC_HEAP_VERBOSE=1 "$OUT/$name-$mode" >"$OUT/$name.$mode" 2>"$OUT/$name.$mode.err"
 		used=$(grep -c "image registered: true" "$OUT/$name.$mode.err")
 		expected=$(cat "$OUT/$name.expected")
@@ -66,7 +67,8 @@ for t in "${tests[@]}"; do
 			echo "FAIL $name ($mode): compiled code used: $([ "$used" = 1 ] && echo yes || echo no)"
 			diff <(echo "$expected") <(echo "$actual") | head -5
 			# (What the build said, and the program's errors: the reason is usually there.)
-			grep -v "^AOT: " "$OUT/$name-$mode.build" | tail -5 | cut -c1-300
+			echo "  build exit $built; its last lines:"
+			tail -8 "$OUT/$name-$mode.build" | cut -c1-300
 			tail -3 "$OUT/$name.$mode.err" | cut -c1-300
 			status=1
 		fi
