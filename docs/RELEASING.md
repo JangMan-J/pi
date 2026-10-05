@@ -83,7 +83,9 @@ Review it, merge it, and push the tag.
 ## Signing
 
 `SHA256SUMS` in every release is signed with an Ed25519 key. The installer carries the public key and refuses a download
-whose signature does not verify (when `openssl` is installed; otherwise it checks the checksums alone). To make the key pair:
+whose signature is missing or does not verify. It checks it with OpenSSL 3 (on `PATH` or Homebrew's), or else with the Pi-Bolt
+already installed; with neither (a first install on a Mac without OpenSSL 3), it checks the checksums alone and says so.
+`scripts/fetch-runtime.sh` requires the signature too. To make the key pair:
 
 ```bash
 openssl genpkey -algorithm ed25519 -out pi-bolt-signing-key.pem
