@@ -25,6 +25,7 @@ import {
 	deleteKittyImage,
 	getCapabilities,
 	getKittyImagePlacement,
+	getKittyImagePlacementRows,
 	type ImageProtocol,
 	isImageLine,
 	setCapabilities,
@@ -1779,13 +1780,30 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 		const fullRedraw =
 			this.previousScreen.length === 0 || this.previousScreenWidth !== width || this.previousScreenHeight !== height;
-		const imagesNeedRedraw =
+		const imageAnchorsNeedRedraw =
 			(imageRows.size > 0 || previousImageRows.size > 0) &&
 			screen.some(
 				(line, row) =>
 					line !== this.previousScreen[row] &&
 					(imageRows.has(line) || previousImageRows.has(this.previousScreen[row] ?? "")),
 			);
+		const isWezTerm = Boolean(process.env.WEZTERM_PANE) || process.env.TERM_PROGRAM?.toLowerCase() === "wezterm";
+		// WezTerm also erases a Kitty image's cells when a row it covers is written.
+		const imageCellsNeedRedraw =
+			!imageAnchorsNeedRedraw &&
+			isWezTerm &&
+			this.imageProtocol === "kitty" &&
+			imageRows.size > 0 &&
+			screen.some((line, row) => {
+				if (!imageRows.has(line)) return false;
+				const placementRows = getKittyImagePlacementRows(line);
+				if (placementRows === undefined) return false;
+				for (let coveredRow = row; coveredRow < row + placementRows; coveredRow++) {
+					if (coveredRow < screen.length && screen[coveredRow] !== this.previousScreen[coveredRow]) return true;
+				}
+				return false;
+			});
+		const imagesNeedRedraw = imageAnchorsNeedRedraw || imageCellsNeedRedraw;
 		const redrawImages = fullRedraw || imagesNeedRedraw;
 		const hadUploadedKittyImages = this.uploadedKittyImages.size > 0;
 		const preparedKittyScreen =
@@ -1807,46 +1825,52 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		buffer += preparedKittyScreen.evictedImageDeletion;
 
-		// WezTerm erases intersecting Kitty image cells when a later EL clears a covered row.
-		// Only separate clearing from drawing for WezTerm frames that place images; preserve the
-		// existing interleaved output for text-only frames and every other terminal.
-		const clearRowsBeforeKittyImages =
-			redrawImages &&
-			this.imageProtocol === "kitty" &&
-			imageRows.size > 0 &&
-			(Boolean(process.env.WEZTERM_PANE) || process.env.TERM_PROGRAM?.toLowerCase() === "wezterm");
-		if (clearRowsBeforeKittyImages) {
+		// WezTerm erases intersecting Kitty image cells when a later row write touches a covered row.
+		// Draw image placements after every clear and text write so nothing later intersects them; preserve
+		// the existing interleaved output for text-only frames and every other terminal.
+		const drawKittyImagesLast = redrawImages && this.imageProtocol === "kitty" && imageRows.size > 0 && isWezTerm;
+		if (drawKittyImagesLast) {
 			for (let row = 0; row < height; row++) {
 				if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
 				buffer += `\x1b[${row + 1};1H\x1b[2K`;
 			}
-		}
-
-		// Rows that only moved are scrolled: a scroll region around them, then line feeds at its bottom (they move up) or
-		// reverse line feeds at its top (down), which every terminal has. The rows scrolled in are empty.
-		const moved =
-			fullRedraw || redrawImages || process.env.PI_TUI_SCROLL_ROWS === "0"
-				? undefined
-				: this.findMovedRows(screen, height);
-		if (moved) {
-			buffer += `\x1b[${moved.top + 1};${moved.bottom + 1}r`;
-			buffer +=
-				moved.up > 0
-					? `\x1b[${moved.bottom + 1};1H${"\n".repeat(moved.up)}`
-					: `\x1b[${moved.top + 1};1H${"\x1bM".repeat(-moved.up)}`;
-			buffer += "\x1b[r";
-		}
-
-		for (let row = 0; row < height; row++) {
-			if (!fullRedraw && !imagesNeedRedraw) {
-				let shown: string | undefined = this.previousScreen[row];
-				if (moved && row >= moved.top && row <= moved.bottom) {
-					const from = row + moved.up;
-					shown = from >= moved.top && from <= moved.bottom ? this.previousScreen[from] : undefined;
-				}
-				if (screen[row] === shown) continue;
+			for (let row = 0; row < height; row++) {
+				if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
+				if (isImageLine(preparedKittyScreen.lines[row] ?? "")) continue;
+				buffer += `\x1b[${row + 1};1H${preparedKittyScreen.lines[row] ?? ""}`;
 			}
-			buffer += `\x1b[${row + 1};1H${clearRowsBeforeKittyImages ? "" : "\x1b[2K"}${preparedKittyScreen.lines[row] ?? ""}`;
+			for (let row = 0; row < height; row++) {
+				if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
+				if (!isImageLine(preparedKittyScreen.lines[row] ?? "")) continue;
+				buffer += `\x1b[${row + 1};1H${preparedKittyScreen.lines[row] ?? ""}`;
+			}
+		} else {
+			// Rows that only moved are scrolled: a scroll region around them, then line feeds at its bottom (they move up) or
+			// reverse line feeds at its top (down), which every terminal has. The rows scrolled in are empty.
+			const moved =
+				fullRedraw || redrawImages || process.env.PI_TUI_SCROLL_ROWS === "0"
+					? undefined
+					: this.findMovedRows(screen, height);
+			if (moved) {
+				buffer += `\x1b[${moved.top + 1};${moved.bottom + 1}r`;
+				buffer +=
+					moved.up > 0
+						? `\x1b[${moved.bottom + 1};1H${"\n".repeat(moved.up)}`
+						: `\x1b[${moved.top + 1};1H${"\x1bM".repeat(-moved.up)}`;
+				buffer += "\x1b[r";
+			}
+
+			for (let row = 0; row < height; row++) {
+				if (!fullRedraw && !imagesNeedRedraw) {
+					let shown: string | undefined = this.previousScreen[row];
+					if (moved && row >= moved.top && row <= moved.bottom) {
+						const from = row + moved.up;
+						shown = from >= moved.top && from <= moved.bottom ? this.previousScreen[from] : undefined;
+					}
+					if (screen[row] === shown) continue;
+				}
+				buffer += `\x1b[${row + 1};1H\x1b[2K${preparedKittyScreen.lines[row] ?? ""}`;
+			}
 		}
 
 		if (cursorPos) {

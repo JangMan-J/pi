@@ -826,6 +826,53 @@ export function modelsConfigSchema(): object {
 												"^.*$": {},
 											},
 										},
+										samplingParamsByThinkingLevel: {
+											type: "object",
+											properties: {
+												off: {
+													type: "object",
+													patternProperties: {
+														"^.*$": {},
+													},
+												},
+												minimal: {
+													type: "object",
+													patternProperties: {
+														"^.*$": {},
+													},
+												},
+												low: {
+													type: "object",
+													patternProperties: {
+														"^.*$": {},
+													},
+												},
+												medium: {
+													type: "object",
+													patternProperties: {
+														"^.*$": {},
+													},
+												},
+												high: {
+													type: "object",
+													patternProperties: {
+														"^.*$": {},
+													},
+												},
+												xhigh: {
+													type: "object",
+													patternProperties: {
+														"^.*$": {},
+													},
+												},
+												max: {
+													type: "object",
+													patternProperties: {
+														"^.*$": {},
+													},
+												},
+											},
+										},
 										headers: {
 											type: "object",
 											patternProperties: {
@@ -1609,6 +1656,53 @@ export function modelsConfigSchema(): object {
 												type: "object",
 												patternProperties: {
 													"^.*$": {},
+												},
+											},
+											samplingParamsByThinkingLevel: {
+												type: "object",
+												properties: {
+													off: {
+														type: "object",
+														patternProperties: {
+															"^.*$": {},
+														},
+													},
+													minimal: {
+														type: "object",
+														patternProperties: {
+															"^.*$": {},
+														},
+													},
+													low: {
+														type: "object",
+														patternProperties: {
+															"^.*$": {},
+														},
+													},
+													medium: {
+														type: "object",
+														patternProperties: {
+															"^.*$": {},
+														},
+													},
+													high: {
+														type: "object",
+														patternProperties: {
+															"^.*$": {},
+														},
+													},
+													xhigh: {
+														type: "object",
+														patternProperties: {
+															"^.*$": {},
+														},
+													},
+													max: {
+														type: "object",
+														patternProperties: {
+															"^.*$": {},
+														},
+													},
 												},
 											},
 											headers: {
