@@ -104,6 +104,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux xz-utils
+          # Building the prebuilt heap reserves its 36 GB of address space up front, which Linux's default heuristic refuses on
+          # a runner with 16 GB of memory. (Running Pi-Bolt does not; only building it.)
+          sudo sysctl -w vm.overcommit_memory=1
           # The x64 build's code uses what the building CPU has (AVX2, LZCNT, BMI1: what JSC's x86 back end can use).
           for flag in avx2 bmi1 abm; do grep -qw "$flag" /proc/cpuinfo || { echo "this runner's CPU has no $flag"; exit 1; }; done
       - name: Tools (macOS)
@@ -196,7 +199,7 @@ jobs:
             echo "gh release upload $TAG -R $GITHUB_REPOSITORY dist/$VERSION/SHA256SUMS.sig"
             echo '```'
             echo
-            echo "Then run the **publish** workflow for $TAG."
+            echo "Then run the **publish** workflow from the tag: \`gh workflow run publish.yml -R $GITHUB_REPOSITORY --ref $TAG\`"
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           GH_TOKEN: ${{ github.token }}

@@ -96,10 +96,17 @@ def fake_model(pace_ms: float = 0, script: str = "fake_model.py", log_sizes: str
         args += ["--log-sizes", log_sizes]
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        for _ in range(100):
-            with contextlib.suppress(OSError), socket.create_connection(("127.0.0.1", port), timeout=0.1):
+        # Up to a minute: Python's first start on a fresh machine (a CI runner) can take many seconds, and a run that starts
+        # before the server listens records a connection error that the reference run does not.
+        deadline = time.time() + 60
+        while True:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
                 break
-            time.sleep(0.05)
+            except OSError:
+                if proc.poll() is not None or time.time() > deadline:
+                    raise RuntimeError(f"the fake model server ({script}) did not start on port {port}")
+                time.sleep(0.05)
         yield port
     finally:
         proc.terminate()

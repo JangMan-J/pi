@@ -64,8 +64,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: ripgrep and fd, which the grep and find tools use
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep fd-find && sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+      # ripgrep for the grep tool's tests. Not fd: two of Pi's tests expect it to be missing, so that its download is tried.
+      - name: ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
       - name: Dependencies and build
         run: |
           npm ci --no-audit --no-fund
@@ -106,7 +107,11 @@ jobs:
           bun-version: "1.4.2"
       - name: Tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+          # Building the prebuilt heap reserves its 36 GB of address space up front, which Linux's default heuristic refuses on
+          # a runner with 16 GB of memory. (Running Pi-Bolt does not; only building it.)
+          sudo sysctl -w vm.overcommit_memory=1
       - name: Tools (macOS)
         if: runner.os == 'macOS'
         run: brew install bash tmux xz
