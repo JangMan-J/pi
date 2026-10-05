@@ -104,7 +104,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
+      # npm 11.5 or later publishes with the workflow's OpenID Connect token (trusted publishing); no token is configured.
+      - name: npm with trusted publishing
+        run: npm install -g npm@11 && npm --version
       - name: Download the release
         run: |
           mkdir -p "dist/$VERSION"
