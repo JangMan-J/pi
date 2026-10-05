@@ -8,6 +8,8 @@ type JsonContainer = Record<string, JsonValue> | JsonValue[];
  * complete message on every flush.
  */
 export function assignJson(target: JsonContainer, key: string | number, value: JsonValue): void {
+	// (A key of parsed JSON is data: never the prototype of what it is copied into.)
+	if (key === "__proto__" || key === "constructor" || key === "prototype") return;
 	const slots = target as Record<string | number, JsonValue>;
 	const current = slots[key];
 	if (isRecord(current) && isRecord(value)) {
