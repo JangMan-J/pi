@@ -743,6 +743,13 @@ function isEnabledByOverrides(filePath: string, patterns: string[], baseDir: str
 	return enabled;
 }
 
+/** A repository or ref that git would read as an option (they are also passed after --end-of-options). */
+function assertGitSourceIsNotAnOption(source: GitSource): void {
+	if (source.repo.startsWith("-") || source.ref?.startsWith("-")) {
+		throw new Error(`Invalid git source: ${source.repo}${source.ref ? `@${source.ref}` : ""}`);
+	}
+}
+
 /**
  * Apply patterns to paths and return a Set of enabled paths.
  * Pattern types:
@@ -1796,7 +1803,7 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private parseNpmSpec(spec: string): { name: string; version?: string } {
-		const match = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/);
+		const match = spec.match(/^(@?[^@]+)(?:@(.+))?$/);
 		if (!match) {
 			return { name: spec };
 		}
@@ -1941,10 +1948,11 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async installGit(source: GitSource, scope: SourceScope): Promise<void> {
+		assertGitSourceIsNotAnOption(source);
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
 			if (source.ref) {
-				await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+				await this.ensureGitRef(targetDir, ["fetch", "--end-of-options", "origin", source.ref], "FETCH_HEAD");
 				return;
 			}
 			const target = await this.getLocalGitUpdateTarget(targetDir);
@@ -1959,9 +1967,9 @@ export class DefaultPackageManager implements PackageManager {
 		rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
 
 		try {
-			await this.runCommand("git", ["clone", source.repo, targetDir]);
+			await this.runCommand("git", ["clone", "--end-of-options", source.repo, targetDir]);
 			if (source.ref) {
-				await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
+				await this.runCommand("git", ["checkout", "--end-of-options", source.ref], { cwd: targetDir });
 			}
 			const packageJsonPath = join(targetDir, "package.json");
 			if (existsSync(packageJsonPath)) {
@@ -1975,6 +1983,7 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async updateGit(source: GitSource, scope: SourceScope): Promise<void> {
+		assertGitSourceIsNotAnOption(source);
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (!existsSync(targetDir)) {
 			await this.installGit(source, scope);
@@ -1982,7 +1991,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		if (source.ref) {
-			await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+			await this.ensureGitRef(targetDir, ["fetch", "--end-of-options", "origin", source.ref], "FETCH_HEAD");
 			return;
 		}
 

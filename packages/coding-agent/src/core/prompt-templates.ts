@@ -72,7 +72,7 @@ export function substituteArgs(content: string, args: string[]): string {
 	const allArgs = args.join(" ");
 
 	return content.replace(
-		/\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g,
+		/\$\{(\d+|ARGUMENTS|@):-([^{}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g,
 		(_match, defaultTarget, defaultValue, sliceStart, sliceLength, simple) => {
 			if (defaultTarget) {
 				const value =

@@ -169,14 +169,24 @@ export interface ParsedSkillBlock {
  * Returns null if the text doesn't contain a skill block.
  */
 export function parseSkillBlock(text: string): ParsedSkillBlock | null {
-	const match = text.match(/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
-	if (!match) return null;
-	return {
-		name: match[1],
-		location: match[2],
-		content: match[3],
-		userMessage: match[4]?.trim() || undefined,
-	};
+	const header = /^<skill name="([^"]+)" location="([^"]+)">\n/.exec(text);
+	if (!header) return null;
+	// The first "\n</skill>" that ends the text or is followed by a blank line and the user's message (scanned, not
+	// backtracked: a regular expression for it slows down quadratically on long text with no closing tag).
+	const close = "\n</skill>";
+	const start = header[0].length;
+	for (let at = text.indexOf(close, start); at !== -1; at = text.indexOf(close, at + 1)) {
+		const rest = text.slice(at + close.length);
+		if (rest === "" || (rest.startsWith("\n\n") && rest.length > 2)) {
+			return {
+				name: header[1],
+				location: header[2],
+				content: text.slice(start, at),
+				userMessage: rest.slice(2).trim() || undefined,
+			};
+		}
+	}
+	return null;
 }
 
 /** Tool execution events of calls a tool made through `ctx.executeTool()` carry `parentToolCallId`. */
