@@ -30,8 +30,9 @@ The release key never leaves the maintainer's machine: a release is signed there
    scripts/sign-release.sh --key ~/pi-bolt-signing-key.pem dist/X.Y.Z
    gh release upload bolt-vX.Y.Z -R opensec-git/Pi-Bolt dist/X.Y.Z/SHA256SUMS.sig
    ```
-5. Run `publish` from the Actions tab with the tag. It refuses a draft whose signature does not verify against
-   `keys/release.pub`.
+5. Run `publish` from the tag: in the Actions tab, publish → "Use workflow from" → the tag, or
+   `gh workflow run publish.yml -R opensec-git/Pi-Bolt --ref bolt-vX.Y.Z`. It refuses a draft whose signature does not
+   verify against `keys/release.pub`.
 6. Try both installs: `curl -fsSL https://pi-bolt.opensec.in/install.sh | sh` and `npm install -g pi-bolt`, looking for
    "signature verified".
 
@@ -64,11 +65,18 @@ package), a CDN that is fast where GitHub's downloads are slow, and from GitHub 
 always come from the GitHub release.
 
 `publish` publishes the six packages with npm's trusted publishing: npm trusts this repository's `publish.yml` through OpenID
-Connect, so no token is stored in GitHub, and each version carries a provenance statement. To set it up once, for each of
-`pi-bolt`, `pi-bolt-linux-x64`, `pi-bolt-linux-x64-baseline`, `pi-bolt-linux-x64-jit`, `pi-bolt-darwin-arm64` and
-`pi-bolt-darwin-arm64-jit`: on npmjs.com, the package's Settings → Trusted publishing → GitHub Actions, organization
-`opensec-git`, repository `Pi-Bolt`, workflow `publish.yml`. Then set the repository variable `NPM_TRUSTED_PUBLISHING` to
-`true` (Settings → Secrets and variables → Actions → Variables).
+Connect, so no token is stored in GitHub, and each version carries a provenance statement. The job runs in the `npm`
+environment, which accepts only `bolt-v*` tags. To set it up once, logged in to npm with two-factor authentication:
+
+```bash
+for p in pi-bolt pi-bolt-linux-x64 pi-bolt-linux-x64-baseline pi-bolt-linux-x64-jit pi-bolt-darwin-arm64 pi-bolt-darwin-arm64-jit; do
+  npm trust github "$p" --file publish.yml --repo opensec-git/Pi-Bolt --env npm --allow-publish --yes
+done
+```
+
+(or on npmjs.com: each package's Settings → Trusted publishing → GitHub Actions, `opensec-git` / `Pi-Bolt` / `publish.yml`,
+environment `npm`). Then set the repository variable `NPM_TRUSTED_PUBLISHING` to `true` (Settings → Secrets and variables →
+Actions → Variables).
 
 Until then the npm job is skipped, and the packages are published from the maintainer's machine after `publish`:
 

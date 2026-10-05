@@ -4,6 +4,7 @@
   </a>
 </p>
 <p align="center">
+  <a href="https://github.com/opensec-git/Pi-Bolt/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/opensec-git/Pi-Bolt/ci.yml?branch=pi-bolt&style=flat-square&label=ci" /></a>
   <a href="https://github.com/opensec-git/Pi-Bolt/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/opensec-git/Pi-Bolt?style=flat-square&color=2a78d6" /></a>
   <a href="https://www.npmjs.com/package/pi-bolt"><img alt="npm" src="https://img.shields.io/npm/v/pi-bolt?style=flat-square&logo=npm&logoColor=white&color=2a78d6" /></a>
   <a href="https://github.com/earendil-works/pi/releases/tag/v1.0.3"><img alt="Pi 1.0.3" src="https://img.shields.io/badge/pi-1.0.3-f0b03a?style=flat-square" /></a>

@@ -4,16 +4,15 @@ name: publish
 # every archive against SHA256SUMS, publishes the GitHub release as the latest, puts install.sh and the site on gh-pages
 # (https://pi-bolt.opensec.in), and publishes the npm packages.
 #
-# npm: with trusted publishing (npm's OpenID Connect link to this workflow, no token stored here). Set it up once for each of
+# npm: with trusted publishing (npm's OpenID Connect link to this workflow and its "npm" environment; no token stored here). Set it up once for each of
 # pi-bolt, pi-bolt-linux-x64, pi-bolt-linux-x64-baseline, pi-bolt-linux-x64-jit, pi-bolt-darwin-arm64 and
 # pi-bolt-darwin-arm64-jit (docs/RELEASING.md), then set the repository variable NPM_TRUSTED_PUBLISHING to true. Until then the
 # npm job is skipped and the packages are published from the maintainer's machine.
+#
+# Run it from the tag: Actions → publish → "Use workflow from" the bolt-vX.Y.Z tag, or
+#   gh workflow run publish.yml -R opensec-git/Pi-Bolt --ref bolt-vX.Y.Z
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "The signed draft to publish (bolt-vX.Y.Z)"
-        required: true
 
 permissions:
   contents: read
@@ -23,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TAG: ${{ github.event.inputs.tag }}
+  TAG: ${{ github.ref_name }}
 
 jobs:
   verify:
@@ -35,6 +34,7 @@ jobs:
     steps:
       - name: The tag
         run: |
+          [ "$GITHUB_REF_TYPE" = tag ] || { echo "run this workflow from the release's tag, not from a branch"; exit 1; }
           printf '%s' "$TAG" | grep -Eq '^bolt-v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "not a release tag: $TAG"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,6 +88,9 @@ jobs:
     needs: [verify, release]
     if: vars.NPM_TRUSTED_PUBLISHING == 'true'
     runs-on: ubuntu-24.04
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/pi-bolt
     timeout-minutes: 30
     permissions:
       contents: read
