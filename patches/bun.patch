@@ -19,6 +19,7 @@ Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
   was linked to be; SharedArrayBuffer with the JIT off; a terminal reopened by its own device, which
   kqueue can watch; the programs an executable starts are started by Pi-Bolt's launcher helper.
 ---
+ Cargo.lock                                    |   1 +
  scripts/build/deps/webkit.ts                  |  18 +
  src/ast/import_record.rs                      |   4 +
  src/bun_alloc/lib.rs                          |  14 +-
@@ -30,7 +31,8 @@ Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
  .../linker_context/scanImportsAndExports.rs   |  21 +
  src/bundler/prelinked_module_graph.rs         |  14 +-
  src/crash_handler/lib.rs                      |  41 +-
- src/http/HTTPContext.rs                       |  39 +-
+ src/http/Cargo.toml                           |   1 +
+ src/http/HTTPContext.rs                       |  51 +-
  src/http/HTTPThread.rs                        |  11 +
  src/http/HeaderValueIterator.rs               |  20 +
  src/http/InternalState.rs                     |   4 +
@@ -55,8 +57,20 @@ Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
  src/spawn_sys/posix_spawn.rs                  | 173 ++++++-
  src/spawn_sys/spawn_process.rs                |  14 +-
  src/standalone_graph/StandaloneModuleGraph.rs | 215 ++++++++-
- 36 files changed, 1618 insertions(+), 144 deletions(-)
+ 38 files changed, 1632 insertions(+), 144 deletions(-)
 
+diff --git a/Cargo.lock b/Cargo.lock
+index cd424128..4ad04f29 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -624,6 +624,7 @@ dependencies = [
+  "bun_wyhash",
+  "bun_zlib",
+  "bun_zstd",
++ "libc",
+  "scopeguard",
+  "strum",
+  "thiserror",
 diff --git a/scripts/build/deps/webkit.ts b/scripts/build/deps/webkit.ts
 index bba31a2c..17a71224 100644
 --- a/scripts/build/deps/webkit.ts
@@ -600,11 +614,21 @@ index 91e2ee80..c2db8ce8 100644
          // Debug builds shouldn't report to the default url by default
          if cfg!(debug_assertions) {
              return false;
+diff --git a/src/http/Cargo.toml b/src/http/Cargo.toml
+index da1bf199..dd9b7319 100644
+--- a/src/http/Cargo.toml
++++ b/src/http/Cargo.toml
+@@ -38,4 +38,5 @@ bun_url.workspace = true
+ bun_uws.workspace = true
+ bun_wyhash.workspace = true
+ bun_zlib.workspace = true
++libc.workspace = true
+ bun_zstd.workspace = true
 diff --git a/src/http/HTTPContext.rs b/src/http/HTTPContext.rs
-index 4f00a0c2..7a19b78d 100644
+index 4f00a0c2..c60127a7 100644
 --- a/src/http/HTTPContext.rs
 +++ b/src/http/HTTPContext.rs
-@@ -242,8 +242,20 @@ pub struct PooledSocket<const SSL: bool> {
+@@ -242,8 +242,32 @@ pub struct PooledSocket<const SSL: bool> {
      pub(crate) h2_session: Option<RefPtr<h2::ClientSession>>,
      /// `PoolOptions::id` of the fetch session that opened it.
      pub(crate) pool_id: u64,
@@ -616,17 +640,29 @@ index 4f00a0c2..7a19b78d 100644
 +    pub(crate) parked_at_ms: u64,
 +}
 +
-+/// Milliseconds on a clock that keeps going while the machine is suspended: the wall clock. (It can be set
-+/// back, which only makes a parked socket look younger until the idle timer gets to it, or forward, which
-+/// costs a new connection.)
++/// Milliseconds on a clock that keeps going while the machine is suspended (a server closes an idle connection
++/// meanwhile) and that nobody sets: CLOCK_BOOTTIME on Linux, CLOCK_MONOTONIC on macOS, which counts sleep there
++/// (CLOCK_UPTIME_RAW does not). Not the wall clock: set back, it made a socket the server had closed look fresh.
 +pub(crate) fn parked_clock_ms() -> u64 {
++    #[cfg(unix)]
++    {
++        #[cfg(target_os = "linux")]
++        let clock = libc::CLOCK_BOOTTIME;
++        #[cfg(not(target_os = "linux"))]
++        let clock = libc::CLOCK_MONOTONIC;
++        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++        // SAFETY: `ts` is a valid, writable timespec for the duration of the call.
++        if unsafe { libc::clock_gettime(clock, &mut ts) } == 0 {
++            return (ts.tv_sec as u64) * 1000 + (ts.tv_nsec as u64) / 1_000_000;
++        }
++    }
 +    std::time::SystemTime::now()
 +        .duration_since(std::time::UNIX_EPOCH)
 +        .map_or(0, |d| d.as_millis() as u64)
  }
  
  /// `&mut` access to a pooled / found-slot HTTP/2 session, for the field
-@@ -687,6 +699,7 @@ impl<const SSL: bool> HTTPContext<SSL> {
+@@ -687,6 +711,7 @@ impl<const SSL: bool> HTTPContext<SSL> {
                  h2_session,
                  pool_id: pool.id,
                  idle_timeout_seconds: pool.idle_timeout_seconds,
@@ -634,7 +670,7 @@ index 4f00a0c2..7a19b78d 100644
              };
              let parked = match transport {
                  Transport::Tcp => Self::park(self.pending_sockets.get_or_init(), pooled, pool),
-@@ -774,12 +787,17 @@ impl<const SSL: bool> HTTPContext<SSL> {
+@@ -774,12 +799,17 @@ impl<const SSL: bool> HTTPContext<SSL> {
          None
      }
  
@@ -656,7 +692,7 @@ index 4f00a0c2..7a19b78d 100644
      }
  
      #[allow(clippy::too_many_arguments)]
-@@ -915,6 +933,17 @@ impl<const SSL: bool> HTTPContext<SSL> {
+@@ -915,6 +945,17 @@ impl<const SSL: bool> HTTPContext<SSL> {
                      continue;
                  }
  

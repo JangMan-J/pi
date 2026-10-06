@@ -18,7 +18,7 @@ JavaScriptCore's changes for Pi-Bolt's executables, on Linux x86-64 and macOS AR
   expressions.
 - Intl on Darwin: the plain language tags of ICU's lists of locales made without ICU.
 ---
- Source/JavaScriptCore/aot/AOTCompiler.cpp     |  161 +-
+ Source/JavaScriptCore/aot/AOTCompiler.cpp     |  172 +-
  Source/JavaScriptCore/aot/AOTCompiler.h       |    3 +-
  Source/JavaScriptCore/aot/AOTConvention.h     |   89 +-
  .../JavaScriptCore/aot/AOTEscapeAnalysis.cpp  |   19 +-
@@ -67,22 +67,24 @@ JavaScriptCore's changes for Pi-Bolt's executables, on Linux x86-64 and macOS AR
  Source/JavaScriptCore/yarr/YarrPattern.cpp    |  114 +
  Source/JavaScriptCore/yarr/YarrPattern.h      |    3 +
  Source/WTF/wtf/BumpPointerAllocator.h         |    8 +-
- Source/bmalloc/bmalloc/StaticRegion.cpp       |   28 +-
+ Source/bmalloc/bmalloc/StaticRegion.cpp       |   34 +-
  Source/bmalloc/bmalloc/StaticRegion.h         |    1 +
  Source/cmake/WebKitCompilerFlags.cmake        |    4 +-
- 52 files changed, 6356 insertions(+), 229 deletions(-)
+ 52 files changed, 6371 insertions(+), 231 deletions(-)
  create mode 100644 Source/JavaScriptCore/aot/AOTStubsX86_64.cpp
 
 diff --git a/Source/JavaScriptCore/aot/AOTCompiler.cpp b/Source/JavaScriptCore/aot/AOTCompiler.cpp
-index 944a17bfb4..c813752040 100644
+index 944a17bfb4..923871482a 100644
 --- a/Source/JavaScriptCore/aot/AOTCompiler.cpp
 +++ b/Source/JavaScriptCore/aot/AOTCompiler.cpp
-@@ -32,8 +32,68 @@
+@@ -32,8 +32,79 @@
  #include <wtf/StringPrintStream.h>
  #include <wtf/text/StringHash.h>
  
 +#if OS(DARWIN)
++#include <bmalloc/StaticRegion.h>
 +#include <dlfcn.h>
++#include <libproc.h>
 +#include <mach/mach.h>
 +#include <mach/mach_vm.h>
 +#endif
@@ -136,7 +138,16 @@ index 944a17bfb4..c813752040 100644
 +        mach_port_deallocate(mach_task_self(), object);
 +    // A reservation that nothing can be read from (the system keeps hundreds of gigabytes of them) holds nothing to point at: what
 +    // is used of it is a region of its own.
-+    return address >= start && address - start < size && info.protection != VM_PROT_NONE;
++    if (!(address >= start && address - start < size && info.protection != VM_PROT_NONE))
++        return false;
++    // The image is built without ASLR, so this process's own memory (malloc's zones, the heap of the VM that builds) lies just
++    // above the executable, at 4 to 8 GB, where numbers made of others land (4294967295 + 2147483648): there only what is mapped
++    // from a file (the executable, a library) or is the static region is taken for an address. (On Linux that memory is far
++    // from such numbers, and every mapping counts.)
++    if (bmalloc::StaticRegion::contains(reinterpret_cast<const void*>(address)))
++        return true;
++    char path[PATH_MAX];
++    return proc_regionfilename(getpid(), address, path, sizeof(path)) > 0;
 +#else
 +    UNUSED_PARAM(address);
 +    return true;
@@ -146,7 +157,7 @@ index 944a17bfb4..c813752040 100644
  static ScopeChain unknownScopeChain()
  {
      ScopeChain chain;
-@@ -131,7 +191,7 @@ bool hasNoFrame(const Graph& graph, B3::Air::Code& code)
+@@ -131,7 +202,7 @@ bool hasNoFrame(const Graph& graph, B3::Air::Code& code)
          for (B3::Air::BasicBlock* block : code) {
              for (B3::Air::Inst& inst : *block) {
                  if (inst.kind.opcode == B3::Air::Patch)
@@ -155,7 +166,7 @@ index 944a17bfb4..c813752040 100644
                  else
                      found |= inst.kind.opcode == B3::Air::ColdCCall;
              }
-@@ -141,12 +201,48 @@ bool hasNoFrame(const Graph& graph, B3::Air::Code& code)
+@@ -141,12 +212,48 @@ bool hasNoFrame(const Graph& graph, B3::Air::Code& code)
      return !*graph.callsAreLeft;
  }
  
@@ -205,7 +216,7 @@ index 944a17bfb4..c813752040 100644
      jit.emitFunctionEpilogue();
  }
  
-@@ -154,13 +250,32 @@ void emitRestoreBeforeLeaving(CCallHelpers& jit, const Graph& graph, B3::Air::Co
+@@ -154,13 +261,32 @@ void emitRestoreBeforeLeaving(CCallHelpers& jit, const Graph& graph, B3::Air::Co
  {
      RELEASE_ASSERT(!hasNoFrame(graph, code));
      AllowMacroScratchRegisterUsage allowScratch(jit);
@@ -239,7 +250,7 @@ index 944a17bfb4..c813752040 100644
      for (BasicBlock* block : graph.m_rpo) {
          if (!block->isInLoop)
              continue;
-@@ -168,6 +283,7 @@ static bool loopsWillDoWhole(Graph& graph)
+@@ -168,6 +294,7 @@ static bool loopsWillDoWhole(Graph& graph)
          for (Node* node : block->nodes) {
              if (node->kind != NodeKind::Bytecode || !node->instruction)
                  continue;
@@ -247,7 +258,7 @@ index 944a17bfb4..c813752040 100644
              switch (node->opcode) {
              case op_get_by_val:
                  if (!node->use(node->as<OpGetByVal>().m_base)->type || !isSubtype(node->use(node->as<OpGetByVal>().m_base)->type, TArray) || !isSubtype(node->use(node->as<OpGetByVal>().m_property)->type, TNumber))
-@@ -195,12 +311,17 @@ static bool loopsWillDoWhole(Graph& graph)
+@@ -195,12 +322,17 @@ static bool loopsWillDoWhole(Graph& graph)
              case op_get_from_scope:
                  if (node->as<OpGetFromScope>().m_getPutInfo.resolveType() != ResolvedClosureVar)
                      return false;
@@ -265,7 +276,7 @@ index 944a17bfb4..c813752040 100644
      return hasLoop;
  }
  
-@@ -224,6 +345,17 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+@@ -224,6 +356,17 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
          graph.fail("compiled for the debugger or a profiler"_s);
          return declined();
      }
@@ -283,7 +294,7 @@ index 944a17bfb4..c813752040 100644
      if (!parseBytecode(graph))
          return declined();
      if (program)
-@@ -268,7 +400,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+@@ -268,7 +411,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
              continue;
          uint64_t bits = value->asInt64();
          // (But for where structures are, which is the same in every process: structureIDBaseOfImages.)
@@ -292,7 +303,7 @@ index 944a17bfb4..c813752040 100644
              graph.fail("an address in the code"_s);
              return declined();
          }
-@@ -287,7 +419,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+@@ -287,7 +430,7 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
              stubCalls.call(jit, Stub::Prologue, code.frameSize(), CallSite { });
          else if (code.frameSize())
              jit.subPtr(GPRInfo::callFrameRegister, CCallHelpers::TrustedImm32(code.frameSize()), CCallHelpers::stackPointerRegister);
@@ -301,7 +312,7 @@ index 944a17bfb4..c813752040 100644
      }));
      proc.code().setEpilogueGenerator(createSharedTask<B3::Air::PrologueGeneratorFunction>([&graph](CCallHelpers& jit, B3::Air::Code& code) {
          emitEpilogueBeforeLeaving(jit, graph, code);
-@@ -319,12 +451,13 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+@@ -319,12 +462,13 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
      // The code is linked in ordinary memory. It is only copied into the image and never runs from here, so compiling needs no JIT memory.
      jit.breakpoint();
      jit.padBeforePatch();
@@ -316,7 +327,7 @@ index 944a17bfb4..c813752040 100644
      info.codeSize = linkBuffer.size();
      void* start = linkBuffer.entrypoint<JSEntryPtrTag>().untaggedPtr();
      // (It turned out to be what comes first anyway.)
-@@ -335,6 +468,8 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+@@ -335,6 +479,8 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
              call.offset -= sizeof(uint32_t);
          for (auto& reference : info.indexReferences)
              reference.offset -= sizeof(uint32_t);
@@ -325,7 +336,7 @@ index 944a17bfb4..c813752040 100644
      }
      auto offsetOf = [&](CCallHelpers::Label label) {
          return static_cast<unsigned>(static_cast<uint8_t*>(linkBuffer.locationOf<JSEntryPtrTag>(label).untaggedPtr()) - static_cast<uint8_t*>(start));
-@@ -383,6 +518,13 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
+@@ -383,6 +529,13 @@ static bool compile(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const CalleeHi
      info.startsCold = graph.startsCold;
      RELEASE_ASSERT(!info.startsCold || info.numSlots <= std::min<uint32_t>(SharedData::maxSlots, FunctionInfo::maxEncodedSlots));
      info.calleeSaveRegisters = proc.calleeSaveRegisterAtOffsetList();
@@ -339,7 +350,7 @@ index 944a17bfb4..c813752040 100644
      for (unsigned i = 0; i < graph.catchEntrypoints.size(); ++i)
          info.catchEntrypoints.append({ graph.catchEntrypoints[i]->bytecodeBegin, offsetOf(proc.code().entrypointLabel(i + 1)) });
  
-@@ -421,6 +563,7 @@ bool recordUsesOfKnownFunctionsForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeB
+@@ -421,6 +574,7 @@ bool recordUsesOfKnownFunctionsForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeB
      graph.noteFieldsComparedWithStrings();
      recordReturnedLiterals(graph);
      graph.noteClassesDefined();
@@ -347,7 +358,7 @@ index 944a17bfb4..c813752040 100644
      if (variableSummaries)
          graph.recordUntrackableVariableAccesses(*variableSummaries);
      return true;
-@@ -444,13 +587,17 @@ Type inferReturnTypeForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const
+@@ -444,13 +598,17 @@ Type inferReturnTypeForImage(VM& vm, UnlinkedCodeBlock* unlinkedCodeBlock, const
      return result;
  }
  
@@ -8550,10 +8561,29 @@ index e3cba80913..701b5ec332 100644
                      return nullptr;
                  previousPool->m_next = pool;
 diff --git a/Source/bmalloc/bmalloc/StaticRegion.cpp b/Source/bmalloc/bmalloc/StaticRegion.cpp
-index 77260b2296..b6f24d2bce 100644
+index 77260b2296..dbcb9c9eed 100644
 --- a/Source/bmalloc/bmalloc/StaticRegion.cpp
 +++ b/Source/bmalloc/bmalloc/StaticRegion.cpp
-@@ -107,6 +107,8 @@ bool StaticRegion::isAllocatingMutable()
+@@ -30,14 +30,16 @@ bool StaticRegion::beginBuilding()
+ {
+     RELEASE_BASSERT(!s_isBuilding);
+     constexpr size_t size = numberOfArenasInFile * arenaReservation;
+-    void* result = mmap(reinterpret_cast<void*>(base), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
++    // MAP_NORESERVE: the reservation is far larger than what is used of it, and Linux's default overcommit heuristic refuses a
++    // mapping much larger than the machine's memory when it counts it (building on a machine with 16 GB failed).
++    void* result = mmap(reinterpret_cast<void*>(base), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+     if (result == MAP_FAILED)
+         return false;
+     if (result != reinterpret_cast<void*>(base)) {
+         munmap(result, size);
+         return false;
+     }
+-    void* scratch = mmap(reinterpret_cast<void*>(startOf(Arena::Scratch)), arenaReservation, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
++    void* scratch = mmap(reinterpret_cast<void*>(startOf(Arena::Scratch)), arenaReservation, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+     if (scratch != reinterpret_cast<void*>(startOf(Arena::Scratch))) {
+         if (scratch != MAP_FAILED)
+             munmap(scratch, arenaReservation);
+@@ -107,6 +109,8 @@ bool StaticRegion::isAllocatingMutable()
      return t_isAllocatingMutable;
  }
  
@@ -8562,7 +8592,7 @@ index 77260b2296..b6f24d2bce 100644
  void StaticRegion::mapBss()
  {
      static bool isMapped = false;
-@@ -114,8 +116,30 @@ void StaticRegion::mapBss()
+@@ -114,8 +118,30 @@ void StaticRegion::mapBss()
          return;
      isMapped = true;
      void* wanted = reinterpret_cast<void*>(startOf(Arena::Bss));
