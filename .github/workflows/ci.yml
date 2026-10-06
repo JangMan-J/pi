@@ -179,7 +179,7 @@ jobs:
         run: scripts/check-patches.sh
       - name: Whether the release's runtime is still this engine
         run: |
-          stamp=$(cat sources.json patches/webkit.patch patches/bun.patch scripts/build-runtime.sh scripts/toolchain/*.sh | sha256sum | cut -c1-16)
+          stamp=$(scripts/runtime-stamp.sh)
           released=$(curl -fsSL https://github.com/opensec-git/Pi-Bolt/releases/latest/download/RUNTIME_STAMP || true)
           if [ "$stamp" != "$released" ]; then
             echo "::notice title=Engine changed::The engine differs from the latest release's runtime ($released, now $stamp): the next release needs its runtime built (docs/RELEASING.md). The Pi-Bolt jobs above used the released runtime."

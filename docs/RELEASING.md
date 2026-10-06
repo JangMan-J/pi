@@ -47,7 +47,8 @@ the engine or the build.
 
 The runtime (patched WebKit and Bun) takes about 32 GB of RAM, 40 GB of disk and an hour on 16 cores to build, more than
 GitHub's runners give. `release` therefore uses the previous release's runtime when the engine is the same: `RUNTIME_STAMP`
-is the hash of `sources.json`, the patches and the runtime build scripts. `ci` says when it differs.
+is the hash of the engine entries of `sources.json`, the patches and the runtime build scripts
+(`scripts/runtime-stamp.sh`). `ci` says when it differs.
 
 When it changed, build both runtimes by hand before tagging:
 

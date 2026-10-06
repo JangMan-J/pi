@@ -56,7 +56,7 @@ jobs:
           pi=$(python3 -c 'import json; print(json.load(open("sources.json"))["pi"]["tag"][1:])')
           test -f "profiles/pi-$pi/bytecode.order" || { echo "no training profile for Pi $pi (scripts/train-profile.sh)"; exit 1; }
           test -f "docs/releases/$version.md" || { echo "no release notes: docs/releases/$version.md"; exit 1; }
-          stamp=$(cat sources.json patches/webkit.patch patches/bun.patch scripts/build-runtime.sh scripts/toolchain/*.sh | sha256sum | cut -c1-16)
+          stamp=$(scripts/runtime-stamp.sh)
           previous=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
           released=""
           [ -z "$previous" ] || released=$(gh release download "$previous" --repo "$GITHUB_REPOSITORY" --pattern RUNTIME_STAMP --output - 2>/dev/null || true)
