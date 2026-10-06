@@ -213,7 +213,12 @@ static void work(int stream, int directory, int count, int* fds, const int32_t* 
     reply(stream, PIBOLT_SPAWN_EXITED, status);
     // The program's pid stays taken until pi-spawn has exited (pi-bin may signal the pid until it learns that).
     char discard[64];
-    while (read(stream, discard, sizeof(discard)) > 0 || errno == EINTR) { }
+    for (;;) {
+        ssize_t got = read(stream, discard, sizeof(discard));
+        if (got > 0 || (got < 0 && errno == EINTR))
+            continue;
+        break; // (The end, or an error: errno is only looked at when read() failed.)
+    }
     waitpid(pid, NULL, 0);
     _exit(0);
 }

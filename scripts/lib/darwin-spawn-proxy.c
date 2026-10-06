@@ -162,8 +162,12 @@ static int request(int helper, int status, const char* path, char** argv, uint32
     params.umask = mask;
     for (int resource = 0; resource < PIBOLT_SPAWN_RLIMITS; resource++) {
         struct rlimit limit;
-        if (getrlimit(resource, &limit))
+        if (getrlimit(resource, &limit)) {
+            // (Closed: the program would otherwise inherit it, and the helper's worker would wait on it.)
+            close(*stream);
+            *stream = -1;
             return -1;
+        }
         params.rlimits[resource][0] = limit.rlim_cur;
         params.rlimits[resource][1] = limit.rlim_max;
     }
