@@ -59,7 +59,9 @@ for t in "${tests[@]}"; do
 			"$BUN" build --compile --bytecode --format=esm --target="bun-$PIBOLT_PLATFORM" --bytecode-order="$OUT/$name.order" \
 			"$t" "${extra[@]}" --outfile "$OUT/$name-$mode" >"$OUT/$name-$mode.build" 2>&1
 		built=$?
-		if [ $built != 0 ] && [ -z "$allow" ] && grep -q "an address in the code" "$OUT/$name-$mode.build"; then
+		# (Only on macOS, and only for the function known to make such a number: any other decline is a failure.)
+		if [ $built != 0 ] && [ -z "$allow" ] && [ "$(uname -s)" = Darwin ] &&
+			grep -q 'the function `wideSum` .*an address in the code' "$OUT/$name-$mode.build"; then
 			echo "  ($name, $mode: $(grep -o 'the function `[^`]*`' "$OUT/$name-$mode.build" | head -1) was taken for an address in this build's memory; built again with it run from bytecode)"
 			allow=BUN_JSC_allowAOTDeclinedFunctions=1
 			continue

@@ -114,7 +114,9 @@ own in `~/.pi/agent/settings.json`:
 ```
 
 Pi-Bolt then reads and changes `piBolt.packages` (`pi-bolt install`, `remove`, `config`), and Pi keeps `packages`. Without
-`piBolt`, both use `packages`. To keep Pi-Bolt's whole setup apart instead, point it at a directory of its own with
+`piBolt`, both use `packages`. The installed files are shared: `pi-bolt remove` keeps those of a package Pi's list still uses, and if
+Pi removes one that Pi-Bolt's list uses, Pi-Bolt installs it again when it next starts, as it does any listed package that is
+missing. To keep Pi-Bolt's whole setup apart instead, point it at a directory of its own with
 `PI_CODING_AGENT_DIR`.
 
 ### Requirements
