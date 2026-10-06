@@ -9,10 +9,14 @@ name: publish
 # pi-bolt-darwin-arm64-jit (docs/RELEASING.md), then set the repository variable NPM_TRUSTED_PUBLISHING to true. Until then the
 # npm job is skipped and the packages are published from the maintainer's machine.
 #
-# Run it from the tag: Actions → publish → "Use workflow from" the bolt-vX.Y.Z tag, or
-#   gh workflow run publish.yml -R opensec-git/Pi-Bolt --ref bolt-vX.Y.Z
+# Run it from pi-bolt with the tag (the workflow is pi-bolt's, the files published are the tag's):
+#   gh workflow run publish.yml -R opensec-git/Pi-Bolt -f tag=bolt-vX.Y.Z
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "The signed draft to publish (bolt-vX.Y.Z)"
+        required: true
 
 permissions:
   contents: read
@@ -22,19 +26,21 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TAG: ${{ github.ref_name }}
+  TAG: ${{ github.event.inputs.tag }}
 
 jobs:
   verify:
     name: Signature and checksums
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: write # (A draft release is only visible to a token that may write.)
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: The tag
         run: |
-          [ "$GITHUB_REF_TYPE" = tag ] || { echo "run this workflow from the release's tag, not from a branch"; exit 1; }
+          [ "$GITHUB_REF" = refs/heads/pi-bolt ] || { echo "run this workflow from pi-bolt"; exit 1; }
           printf '%s' "$TAG" | grep -Eq '^bolt-v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "not a release tag: $TAG"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -31,9 +31,9 @@ The release key never leaves the maintainer's machine: a release is signed there
    scripts/sign-release.sh --key ~/pi-bolt-signing-key.pem dist/X.Y.Z
    gh release upload bolt-vX.Y.Z -R opensec-git/Pi-Bolt dist/X.Y.Z/SHA256SUMS.sig
    ```
-5. Run `publish` from the tag: in the Actions tab, publish → "Use workflow from" → the tag, or
-   `gh workflow run publish.yml -R opensec-git/Pi-Bolt --ref bolt-vX.Y.Z`. It refuses a draft whose signature does not
-   verify against `keys/release.pub`.
+5. Run `publish` with the tag: in the Actions tab, publish → Run workflow (from `pi-bolt`) with the tag, or
+   `gh workflow run publish.yml -R opensec-git/Pi-Bolt -f tag=bolt-vX.Y.Z`. It refuses a draft whose signature does not verify
+   against `keys/release.pub`.
 6. Try both installs: `curl -fsSL https://pi-bolt.opensec.in/install.sh | sh` and `npm install -g pi-bolt`, looking for
    "signature verified".
 
@@ -68,7 +68,7 @@ always come from the GitHub release.
 
 `publish` publishes the six packages with npm's trusted publishing: npm trusts this repository's `publish.yml` through OpenID
 Connect, so no token is stored in GitHub, and each version carries a provenance statement. The job runs in the `npm`
-environment, which accepts only `bolt-v*` tags. To set it up once, logged in to npm with two-factor authentication:
+environment, which accepts only the `pi-bolt` branch and `bolt-v*` tags. To set it up once, logged in to npm with two-factor authentication:
 
 ```bash
 for p in pi-bolt pi-bolt-linux-x64 pi-bolt-linux-x64-baseline pi-bolt-linux-x64-jit pi-bolt-darwin-arm64 pi-bolt-darwin-arm64-jit; do

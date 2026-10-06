@@ -212,7 +212,7 @@ jobs:
             echo "gh release upload $TAG -R $GITHUB_REPOSITORY dist/$VERSION/SHA256SUMS.sig"
             echo '```'
             echo
-            echo "Then run the **publish** workflow from the tag: \`gh workflow run publish.yml -R $GITHUB_REPOSITORY --ref $TAG\`"
+            echo "Then run the **publish** workflow: \`gh workflow run publish.yml -R $GITHUB_REPOSITORY -f tag=$TAG\`"
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           GH_TOKEN: ${{ github.token }}
