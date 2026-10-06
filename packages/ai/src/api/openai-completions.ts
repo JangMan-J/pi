@@ -824,7 +824,7 @@ function buildParams(
 		messages,
 		stream: true,
 		prompt_cache_key:
-			(hostIs(model.baseUrl, "api.openai.com") && cacheRetention !== "none") ||
+			(hostMatches(hostOf(model.baseUrl), "api.openai.com") && cacheRetention !== "none") ||
 			(cacheRetention === "long" && compat.supportsLongCacheRetention)
 				? clampOpenAIPromptCacheKey(options?.sessionId)
 				: undefined,
@@ -1585,14 +1585,17 @@ function mapStopReason(reason: ChatCompletionChunk.Choice["finish_reason"] | str
 	}
 }
 
-/** Whether `baseUrl`'s host is `domain` or a subdomain of it (not merely a URL that contains the name). */
-function hostIs(baseUrl: string, domain: string): boolean {
-	let host: string;
+/** The host name of `baseUrl`, lower-cased; "" when it is not a URL. */
+function hostOf(baseUrl: string): string {
 	try {
-		host = new URL(baseUrl).hostname.toLowerCase();
+		return new URL(baseUrl).hostname.toLowerCase();
 	} catch {
-		return false;
+		return "";
 	}
+}
+
+/** Whether `host` is `domain` or a subdomain of it (not merely a URL that contains the name). */
+function hostMatches(host: string, domain: string): boolean {
 	return host === domain || host.endsWith(`.${domain}`);
 }
 
@@ -1603,46 +1606,46 @@ function hostIs(baseUrl: string, domain: string): boolean {
  */
 function detectCompat(model: Model<"openai-completions">): ResolvedOpenAICompletionsCompat {
 	const provider = model.provider;
-	const baseUrl = model.baseUrl;
+	const host = hostOf(model.baseUrl);
 
 	const isZai =
 		provider === "zai" ||
 		provider === "zai-coding-cn" ||
-		hostIs(baseUrl, "api.z.ai") ||
-		hostIs(baseUrl, "open.bigmodel.cn");
+		hostMatches(host, "api.z.ai") ||
+		hostMatches(host, "open.bigmodel.cn");
 	const isTogether =
-		provider === "together" || hostIs(baseUrl, "api.together.ai") || hostIs(baseUrl, "api.together.xyz");
+		provider === "together" || hostMatches(host, "api.together.ai") || hostMatches(host, "api.together.xyz");
 	const isMoonshot =
 		provider === "moonshotai" ||
 		provider === "moonshotai-cn" ||
-		hostIs(baseUrl, "api.moonshot.ai") ||
-		hostIs(baseUrl, "api.moonshot.cn");
-	const isOpenRouter = provider === "openrouter" || hostIs(baseUrl, "openrouter.ai");
-	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || hostIs(baseUrl, "api.cloudflare.com");
-	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || hostIs(baseUrl, "gateway.ai.cloudflare.com");
-	const isNvidia = provider === "nvidia" || hostIs(baseUrl, "integrate.api.nvidia.com");
-	const isAntLing = provider === "ant-ling" || hostIs(baseUrl, "api.ant-ling.com");
-	const isCerebras = provider === "cerebras" || hostIs(baseUrl, "cerebras.ai");
-	const isDeepSeek = provider === "deepseek" || hostIs(baseUrl, "deepseek.com");
+		hostMatches(host, "api.moonshot.ai") ||
+		hostMatches(host, "api.moonshot.cn");
+	const isOpenRouter = provider === "openrouter" || hostMatches(host, "openrouter.ai");
+	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || hostMatches(host, "api.cloudflare.com");
+	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || hostMatches(host, "gateway.ai.cloudflare.com");
+	const isNvidia = provider === "nvidia" || hostMatches(host, "integrate.api.nvidia.com");
+	const isAntLing = provider === "ant-ling" || hostMatches(host, "api.ant-ling.com");
+	const isCerebras = provider === "cerebras" || hostMatches(host, "cerebras.ai");
+	const isDeepSeek = provider === "deepseek" || hostMatches(host, "deepseek.com");
 
 	const isNonStandard =
 		isNvidia ||
 		isCerebras ||
 		provider === "xai" ||
-		hostIs(baseUrl, "api.x.ai") ||
+		hostMatches(host, "api.x.ai") ||
 		isTogether ||
-		hostIs(baseUrl, "chutes.ai") ||
+		hostMatches(host, "chutes.ai") ||
 		isDeepSeek ||
 		isZai ||
 		isMoonshot ||
 		provider === "opencode" ||
-		hostIs(baseUrl, "opencode.ai") ||
+		hostMatches(host, "opencode.ai") ||
 		isCloudflareWorkersAI ||
 		isCloudflareAiGateway ||
 		isAntLing;
 
 	const useMaxTokens =
-		hostIs(baseUrl, "chutes.ai") ||
+		hostMatches(host, "chutes.ai") ||
 		isDeepSeek ||
 		isMoonshot ||
 		isCloudflareAiGateway ||
@@ -1651,7 +1654,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		isAntLing ||
 		isZai;
 
-	const isGrok = provider === "xai" || hostIs(baseUrl, "api.x.ai");
+	const isGrok = provider === "xai" || hostMatches(host, "api.x.ai");
 	const isOpenRouterDeveloperRoleModel =
 		isOpenRouter && (model.id.startsWith("anthropic/") || model.id.startsWith("openai/"));
 	const cacheControlFormat = provider === "openrouter" && model.id.startsWith("anthropic/") ? "anthropic" : undefined;
