@@ -5,7 +5,7 @@
  * variant (x64, x64-baseline, x64-jit, arm64), and whether the JIT is on). In every other build it is undefined and nothing here changes what Pi does.
  */
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 declare const PIBOLT_BUILD: string | undefined;
 
@@ -46,14 +46,18 @@ export function piBoltInstallMethod(): "npm" | "installer" {
 
 /** The environment that makes the installer replace this installation with the latest release, keeping its variant and place. */
 export function piBoltUpdateEnvironment(): NodeJS.ProcessEnv {
-	// ~/.pi-bolt/pi-bolt-linux-x64/pi (or pi-bolt-darwin-arm64/pi) -> ~/.pi-bolt
-	const installDir = join(process.execPath, "..", "..");
+	// <install>/pi-bolt-linux-x64/pi (or pi-bolt-darwin-arm64/pi-bin) -> <install>, wherever that is (~/.pi-bolt, /opt/pi-bolt):
+	// the installer replaces that copy, which the user's pi-bolt command points to. Another layout (a build run from its
+	// output folder) is not an installation, and gets the default one.
+	const releaseDir = dirname(process.execPath);
+	const installDir = /^pi-bolt-(linux|darwin)-/.test(basename(releaseDir))
+		? dirname(releaseDir)
+		: join(homedir(), ".pi-bolt");
 	return {
 		...process.env,
 		PIBOLT_YES: "1",
 		PIBOLT_NO_START: "1",
 		PIBOLT_VARIANT: PIBOLT?.variant ?? "x64",
-		PIBOLT_INSTALL:
-			process.env.PIBOLT_INSTALL ?? (installDir.startsWith(homedir()) ? installDir : join(homedir(), ".pi-bolt")),
+		PIBOLT_INSTALL: process.env.PIBOLT_INSTALL ?? installDir,
 	};
 }
