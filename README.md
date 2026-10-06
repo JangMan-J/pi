@@ -99,6 +99,24 @@ The installer offers two that OpenSec maintains for Pi-Bolt, prebuilt for Bun so
 Install them with `pi-bolt install npm:opensec-pi-subagents` and `pi-bolt install npm:opensec-pi-todo`. For scripted
 installs, `PIBOLT_EXTENSIONS=yes` (or `no`) answers the installer's question in advance.
 
+### Pi and Pi-Bolt side by side
+
+Pi-Bolt uses Pi's agent directory (`~/.pi/agent`): logins, models, sessions and settings are shared, and so are installed
+packages. Where both are used and should load different packages, such as `@juicesharp/rpiv-todo` in Pi and its fork
+`opensec-pi-todo` in Pi-Bolt (both provide a `todo` tool, so they cannot load together), give Pi-Bolt a package list of its
+own in `~/.pi/agent/settings.json`:
+
+```json
+{
+  "packages": ["npm:@juicesharp/rpiv-todo"],
+  "piBolt": { "packages": ["npm:opensec-pi-todo"] }
+}
+```
+
+Pi-Bolt then reads and changes `piBolt.packages` (`pi-bolt install`, `remove`, `config`), and Pi keeps `packages`. Without
+`piBolt`, both use `packages`. To keep Pi-Bolt's whole setup apart instead, point it at a directory of its own with
+`PI_CODING_AGENT_DIR`.
+
 ### Requirements
 
 - **Linux** on x86-64 with glibc 2.17 or later: Ubuntu 20.04+, Debian 11+, Rocky Linux 8+, CentOS 7, Amazon Linux 2 and

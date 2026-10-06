@@ -1084,6 +1084,11 @@ export class DefaultPackageManager implements PackageManager {
 		const scope: SourceScope = options?.local ? "project" : "user";
 		this.assertProjectTrustedForScope(scope);
 		await this.withProgress("remove", source, `Removing ${source}...`, async () => {
+			// Pi-Bolt with a package list of its own: Pi's list may still use this package, whose files stay.
+			const keptForPi = this.settingsManager.getPackagesKeptForPi(scope === "project" ? "project" : "global");
+			if (keptForPi.some((existing) => this.packageSourcesMatch(existing, source, scope))) {
+				return;
+			}
 			if (parsed.type === "npm") {
 				await this.uninstallNpm(parsed, scope);
 				return;
