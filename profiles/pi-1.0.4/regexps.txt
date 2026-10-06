@@ -74,6 +74,7 @@
 /(AV|CA|CF|CG|CI|CL|CM|CN|CT|MK|MP|MTK|MTL|NS|SCN|SK|UI|WK|XC)(([a-zA-Z_]|[\\u00A8\\u00AA\\u00AD\\u00AF\\u00B2-\\u00B5\\u00B7-\\u00BA]|[\\u00BC-\\u00BE\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u00FF]|[\\u0100-\\u02FF\\u0370-\\u167F\\u1681-\\u180D\\u180F-\\u1DBF]|[\\u1E00-\\u1FFF]|[\\u200B-\\u200D\\u202A-\\u202E\\u203F-\\u2040\\u2054\\u2060-\\u206F]|[\\u2070-\\u20CF\\u2100-\\u218F\\u2460-\\u24FF\\u2776-\\u2793]|[\\u2C00-\\u2DFF\\u2E80-\\u2FFF]|[\\u3004-\\u3007\\u3021-\\u302F\\u3031-\\u303F\\u3040-\\uD7FF]|[\\uF900-\\uFD3D\\uFD40-\\uFDCF\\uFDF0-\\uFE1F\\uFE30-\\uFE44]|[\\uFE47-\\uFEFE\\uFF00-\\uFFFD])|\\d|[\\u0300-\\u036F\\u1DC0-\\u1DFF\\u20D0-\\u20FF\\uFE20-\\uFE2F])+|
 /(Add|Clear|Close|Copy|Enter|Exit|Find|Format|Get|Hide|Join|Lock|Move|New|Open|Optimize|Pop|Push|Redo|Remove|Rename|Reset|Resize|Search|Select|Set|Show|Skip|Split|Step|Switch|Undo|Unlock|Watch|Backup|Checkpoint|Compare|Compress|Convert|ConvertFrom|ConvertTo|Dismount|Edit|Expand|Export|Group|Import|Initialize|Limit|Merge|Mount|Out|Publish|Restore|Save|Sync|Unpublish|Update|Approve|Assert|Build|Complete|Confirm|Deny|Deploy|Disable|Enable|Install|Invoke|Register|Request|Restart|Resume|Start|Stop|Submit|Suspend|Uninstall|Unregister|Wait|Debug|Measure|Ping|Repair|Resolve|Test|Trace|Connect|Disconnect|Read|Receive|Send|Write|Block|Grant|Protect|Revoke|Unblock|Unprotect|Use|ForEach|Sort|Tee|Where)+(-)[\\w\\d]+|
 /([/=\\-+!*%<>&|^~?]|[\\u00A1-\\u00A7]|[\\u00A9\\u00AB]|[\\u00AC\\u00AE]|[\\u00B0\\u00B1]|[\\u00B6\\u00BB\\u00BF\\u00D7\\u00F7]|[\\u2016-\\u2017]|[\\u2020-\\u2027]|[\\u2030-\\u203E]|[\\u2041-\\u2053]|[\\u2055-\\u205E]|[\\u2190-\\u23FF]|[\\u2500-\\u2775]|[\\u2794-\\u2BFF]|[\\u2E00-\\u2E7F]|[\\u3001-\\u3003]|[\\u3008-\\u3020]|[\\u3030])(([/=\\-+!*%<>&|^~?]|[\\u00A1-\\u00A7]|[\\u00A9\\u00AB]|[\\u00AC\\u00AE]|[\\u00B0\\u00B1]|[\\u00B6\\u00BB\\u00BF\\u00D7\\u00F7]|[\\u2016-\\u2017]|[\\u2020-\\u2027]|[\\u2030-\\u203E]|[\\u2041-\\u2053]|[\\u2055-\\u205E]|[\\u2190-\\u23FF]|[\\u2500-\\u2775]|[\\u2794-\\u2BFF]|[\\u2E00-\\u2E7F]|[\\u3001-\\u3003]|[\\u3008-\\u3020]|[\\u3030])|[\\u0300-\\u036F]|[\\u1DC0-\\u1DFF]|[\\u20D0-\\u20FF]|[\\uFE00-\\uFE0F]|[\\uFE20-\\uFE2F])*|
+/([=+-])
 /([A-Za-z0-9_-]+|"(\\\\"|[^"])*"|'[^']*')(\\s*\\.\\s*([A-Za-z0-9_-]+|"(\\\\"|[^"])*"|'[^']*'))*(?=\\s*=\\s*[^#\\s])|
 /([\u00c0-\u02b8a-zA-Z_$][\u00c0-\u02b8a-zA-Z_$0-9]*(<[\u00c0-\u02b8a-zA-Z_$][\u00c0-\u02b8a-zA-Z_$0-9]*(\\s*,\\s*[\u00c0-\u02b8a-zA-Z_$][\u00c0-\u02b8a-zA-Z_$0-9]*)*>)?\\s+)+[a-zA-Z_]\\w*\\s*\\(|
 /([^a-zA-Z0-9._])(?=(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?[Li]?)|
@@ -429,6 +430,7 @@
 /[A-Za-z0-9_$]+[ \u0009]*:|
 /[A-Za-z]
 /[A-Za-z_]\\w*(::\\w+)*(\\?|!)?|
+/[\\n\\r\\u2028\\u2029]
 /[\\s/]+
 /[\\s\\-_./:]
 /[\\u0e33\\u0eb3]
@@ -686,7 +688,6 @@
 /^(?:\\x1b\\]133;[ABC](?:\\x07|\\x1b\\\\))+
 /^(?<digits>[0-9]+)(?<letters>[a-z]+)$
 /^(?<letters>[a-z]+)(?<digits>[0-9]+)$
-/^([+-\\s])(\\s*\\d*)\\s(.*)$
 /^([>?]>|[\\w#]+\\(\\w+\\):\\d+:\\d+>|(\\w+-)?\\d+\\.\\d+\\.\\d+(p\\d+)?[^\\d][^>]+>)(?=[ ])|
 /^([^\\n]+(?:\\n(?! {0,3}((?:-[\\t ]*){3,}|(?:_[ \\t]*){3,}|(?:\\*[ \\t]*){3,})(?:\\n+|$)| {0,3}#{1,6}(?:\\s|$)| {0,3}>| {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)| {0,3}(?:[*+-]|1[.)])[ \\t]+[^ \\t\\n]|</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)| *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n| {0,3}((?:-[\\t ]*){3,}|(?:_[ \\t]*){3,}|(?:\\*[ \\t]*){3,})(?:\\n+|$)| {0,3}#{1,6}(?:\\s|$)| {0,3}>|(?: {4}| {0,3}\u0009)[^\\n]| {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)| {0,3}(?:[*+-]|1[.)])[ \\t]|<\\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?: +|\\n|\\/?>)|<(?:script|pre|style|textarea|!--)).*(?:\\n|$))*)\\n*|$)|[ \\t]+\\n)[^\\n]+)*)
 /^(\\s*)
@@ -701,7 +702,7 @@
 /^<!--(?:-?>|[\\s\\S]*?-->)|^</[a-zA-Z][\\w:-]*\\s*>|^<[a-zA-Z][\\w-]*(?:\\s+[a-zA-Z:_][\\w.:-]*(?:\\s*=\\s*"[^"]*"|\\s*=\\s*'[^']*'|\\s*=\\s*[^\\s"'=<>`]+)?)*?\\s*/?>|^<\\?[\\s\\S]*?\\?>|^<![a-zA-Z]+\\s[\\s\\S]*?>|^<!\\[CDATA\\[[\\s\\S]*?\\]\\]>
 /^<(.*)>$
 /^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\\s\\x00-\\x1f<>]*|[a-zA-Z0-9.!#$%&'*+/=?_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_]))>
-/^<skill name="([^"]+)" location="([^"]+)">\\n([\\s\\S]*?)\\n<\\/skill>(?:\\n\\n([\\s\\S]+))?$
+/^<skill name="([^"]+)" location="([^"]+)">\\n
 /^=begin|
 /^=end|
 /^>\\s+|
@@ -816,7 +817,6 @@ g/\\r
 g/\\r\\n
 g/\\r\\n|\\r
 g/\\s
-g/\\s*([=+-])\\s*
 g/\\s+
 g/\\t
 g/\\x1b\\[0m
@@ -993,6 +993,7 @@ gm/(@[\u00c0-\u02b8a-zA-Z_$][\u00c0-\u02b8a-zA-Z_$0-9]*)|(')|(")|((\\b([0-9](_*[
 gm/(@\\w+)|(\\B|\\b)
 gm/([A-Za-z$_][0-9A-Za-z$_]*(?=\\s*:))|(\\B|\\b)
 gm/([A-Za-z$_][0-9A-Za-z$_]*)|(\\(\\))|(\\()|(\\{)
+gm/([A-Za-z$_][0-9A-Za-z$_]*)|(\\b(?=constructor))|(\\()|([{;])
 gm/([A-Za-z$_][\\u00C0-\\u02B80-9A-Za-z$_]*)|(\\.(?=(\\bProtocol\\b|\\bType\\b|\\binit\\b|\\bself\\b)))|(\\.(associatedtype|async|await|as\\?|as!|as|break|case|catch|class|continue|convenience|default|defer|deinit|didSet|do|dynamic|else|enum|extension|fallthrough|fileprivate\\(set\\)|fileprivate|final|for|func|get|guard|if|import|indirect|infix|init\\?|init!|inout|internal\\(set\\)|internal|in|is|lazy|let|mutating|nonmutating|open\\(set\\)|open|operator|optional|override|postfix|precedencegroup|prefix|private\\(set\\)|private|protocol|public\\(set\\)|public|repeat|required|rethrows|return|set|some|static|struct|subscript|super|switch|throws|throw|try\\?|try!|try|typealias|unowned\\(safe\\)|unowned\\(unsafe\\)|unowned|var|weak|where|while|willSet))|((\\bas\\?\\B|\\bas!\\B|\\bfileprivate\\(set\\)\\B|\\binit\\?\\B|\\binit!\\B|\\binternal\\(set\\)\\B|\\bopen\\(set\\)\\B|\\bprivate\\(set\\)\\B|\\bpublic\\(set\\)\\B|\\btry\\?\\B|\\btry!\\B|\\bunowned\\(safe\\)\\B|\\bunowned\\(unsafe\\)\\B|\\bAny\\b|\\bSelf\\b|\\binit\\b|\\bself\\b))|(\\{)
 gm/([A-Za-z_]\\w*(::\\w+)*(\\?|!)?)|(<\\s*)|(#)|(^=begin)|(^__END__)|($|;)|(=)
 gm/([^0-9\\n\\t "'(),.`{}\\[\\]:;][^\\n\\t "'(),.`{}\\[\\]:;]+|[^0-9\\n\\t "'(),.`{}\\[\\]:;=])|([:={\\[(\\n;])
@@ -1282,5 +1283,3 @@ v/^(?:\\p{Default_Ignorable_Code_Point}|\\p{Control}|\\p{Mark}|\\p{Surrogate})+$
 v/^[\\p{Default_Ignorable_Code_Point}\\p{Control}\\p{Format}\\p{Mark}\\p{Surrogate}]+
 v/^\\p{Mark}$
 v/^\\p{RGI_Emoji}$
-/^v0\\.6\\.[0-2]|^v0\\.5\\.
-m/[(]|$
