@@ -871,7 +871,7 @@ Content`,
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("git", ["fetch", "--end-of-options", "origin", "v2"], {
+			expect(runCommandSpy).toHaveBeenCalledWith("git", ["fetch", "origin", "v2"], {
 				cwd: targetDir,
 			});
 			expect(runCommandSpy).toHaveBeenCalledWith("git", ["reset", "--hard", "FETCH_HEAD^{commit}"], {
@@ -1342,8 +1342,19 @@ Content`,
 
 			await expect(packageManager.install(source)).rejects.toThrow("simulated git clone failure");
 
-			expect(runCommand).toHaveBeenCalledWith("git", ["clone", "--end-of-options", source, expect.any(String)]);
+			expect(runCommand).toHaveBeenCalledWith("git", ["clone", source, expect.any(String)]);
 			expect(events.some((e) => e.type === "start" && e.action === "install")).toBe(true);
+		});
+
+		it("refuses a git ref that git would read as an option", async () => {
+			const runCommand = vi
+				.spyOn(packageManager as unknown as PackageManagerInternals, "runCommand")
+				.mockResolvedValue(undefined);
+
+			await expect(packageManager.install("git:github.com/user/repo@--upload-pack=touch_pwned")).rejects.toThrow(
+				"Invalid git source",
+			);
+			expect(runCommand).not.toHaveBeenCalled();
 		});
 
 		it("should parse package source types from docs examples", () => {

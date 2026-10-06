@@ -743,7 +743,7 @@ function isEnabledByOverrides(filePath: string, patterns: string[], baseDir: str
 	return enabled;
 }
 
-/** A repository or ref that git would read as an option (they are also passed after --end-of-options). */
+/** A repository or ref that git would read as an option. (Not --end-of-options for that: git 2.24 and later only.) */
 function assertGitSourceIsNotAnOption(source: GitSource): void {
 	if (source.repo.startsWith("-") || source.ref?.startsWith("-")) {
 		throw new Error(`Invalid git source: ${source.repo}${source.ref ? `@${source.ref}` : ""}`);
@@ -1957,7 +1957,7 @@ export class DefaultPackageManager implements PackageManager {
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
 			if (source.ref) {
-				await this.ensureGitRef(targetDir, ["fetch", "--end-of-options", "origin", source.ref], "FETCH_HEAD");
+				await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
 				return;
 			}
 			const target = await this.getLocalGitUpdateTarget(targetDir);
@@ -1972,9 +1972,9 @@ export class DefaultPackageManager implements PackageManager {
 		rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
 
 		try {
-			await this.runCommand("git", ["clone", "--end-of-options", source.repo, targetDir]);
+			await this.runCommand("git", ["clone", source.repo, targetDir]);
 			if (source.ref) {
-				await this.runCommand("git", ["checkout", "--end-of-options", source.ref], { cwd: targetDir });
+				await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
 			}
 			const packageJsonPath = join(targetDir, "package.json");
 			if (existsSync(packageJsonPath)) {
@@ -1996,7 +1996,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		if (source.ref) {
-			await this.ensureGitRef(targetDir, ["fetch", "--end-of-options", "origin", source.ref], "FETCH_HEAD");
+			await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
 			return;
 		}
 
