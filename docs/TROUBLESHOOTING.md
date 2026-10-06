@@ -81,11 +81,6 @@ To rule a compiler optimization in or out of a problem, build with it off (each 
 **`pi-bolt: command not found` after installing.** `~/.local/bin` is not on your `PATH`. Add
 `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
 
-**Building: `the executable does not use its compiled code`, with `[static heap] 0 bytes` (Linux).** Building the prebuilt
-heap reserves 36 GB of address space up front, and Linux's default overcommit heuristic refuses that on a machine with less
-memory. Running Pi-Bolt is not affected, only building it (`scripts/build-pi.sh`, plugins compiled in). Allow it for the build:
-`sudo sysctl -w vm.overcommit_memory=1` (`0` restores the default).
-
 **`GLIBC_2.xx not found` or `No such file or directory` when starting.** The system is musl-based (Alpine), or older than
 glibc 2.17. Pi-Bolt needs glibc 2.17 or later (CentOS 7, Debian 8, Ubuntu 14.04 and anything newer).
 

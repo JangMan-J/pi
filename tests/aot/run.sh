@@ -46,28 +46,12 @@ for t in "${tests[@]}"; do
 		fi
 	fi
 	for mode in jit-on jit-off compact; do
-		allow=""
-		# On macOS the build runs where its own memory lies just above the executable (4 to 8 GB, as it builds without ASLR),
-		# and the compiler declines a 64-bit number in the code that falls in mapped memory ("an address in the code"): a
-		# number made of others, such as 4294967295 + 2147483648, can, depending on that build's memory. Until the engine
-		# tells its own heap from an address, such a build is made again with the declined function run from bytecode, and
-		# said: the program's output is still checked.
-		while :; do
 		# shellcheck disable=SC2046,SC2086 # AOT_BUILD_ENV and the mode's settings are lists of words
-		env BUN_JSC_useAOTLoopSplitting=1 BUN_JSC_aotLoopSplittingPolicy=5 BUN_JSC_useImmutableIntrinsics=1 $own $allow ${AOT_BUILD_ENV:-} $([ $mode != jit-on ] && echo BUN_AOT_JIT=0) $([ $mode = compact ] && echo BUN_JSC_useAOTInlineFastPathsInLoops=0) BUN_JSC_useJIT=0 BUN_STATIC_HEAP=1 BUN_AOT=1 \
+		env BUN_JSC_useAOTLoopSplitting=1 BUN_JSC_aotLoopSplittingPolicy=5 BUN_JSC_useImmutableIntrinsics=1 $own ${AOT_BUILD_ENV:-} $([ $mode != jit-on ] && echo BUN_AOT_JIT=0) $([ $mode = compact ] && echo BUN_JSC_useAOTInlineFastPathsInLoops=0) BUN_JSC_useJIT=0 BUN_STATIC_HEAP=1 BUN_AOT=1 \
 			BUN_JSC_omitBytecodeFromStaticHeap=1 \
 			"$BUN" build --compile --bytecode --format=esm --target="bun-$PIBOLT_PLATFORM" --bytecode-order="$OUT/$name.order" \
 			"$t" "${extra[@]}" --outfile "$OUT/$name-$mode" >"$OUT/$name-$mode.build" 2>&1
 		built=$?
-		# (Only on macOS, and only for the function known to make such a number: any other decline is a failure.)
-		if [ $built != 0 ] && [ -z "$allow" ] && [ "$(uname -s)" = Darwin ] &&
-			grep -q 'the function `wideSum` .*an address in the code' "$OUT/$name-$mode.build"; then
-			echo "  ($name, $mode: $(grep -o 'the function `[^`]*`' "$OUT/$name-$mode.build" | head -1) was taken for an address in this build's memory; built again with it run from bytecode)"
-			allow=BUN_JSC_allowAOTDeclinedFunctions=1
-			continue
-		fi
-		break
-		done
 		BUN_STATIC_HEAP_VERBOSE=1 "$OUT/$name-$mode" >"$OUT/$name.$mode" 2>"$OUT/$name.$mode.err"
 		used=$(grep -c "image registered: true" "$OUT/$name.$mode.err")
 		expected=$(cat "$OUT/$name.expected")
