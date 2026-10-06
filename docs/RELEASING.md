@@ -21,7 +21,8 @@ The release key never leaves the maintainer's machine: a release is signed there
 ## A release, step by step
 
 1. Write the release notes in `docs/releases/X.Y.Z.md`; they become the GitHub release's text.
-2. `scripts/bump-version.sh --version X.Y.Z` (without `--version`: a patch bump), commit, push, and wait for `ci` to pass.
+2. `scripts/bump-version.sh` (the last number goes up by one, 0.7.0 to 0.7.1; `--version X.Y.Z` sets another), commit, push, and
+   wait for `ci` to pass.
 3. Tag it: `git tag -a bolt-vX.Y.Z -m "Pi-Bolt X.Y.Z" && git push origin bolt-vX.Y.Z`. The `release` workflow builds and tests
    for about an hour, then leaves a draft. Its summary shows the SHA-256 of `SHA256SUMS`.
 4. Sign, on your machine:
@@ -94,7 +95,7 @@ npm answers a publish with "being processed": a new version can take a few minut
 
 1. Merge the tag into `pi-bolt` (`git fetch https://github.com/earendil-works/pi.git tag vX.Y.Z && git merge vX.Y.Z`). Where
    Pi-Bolt changed the same code, keep both: Pi-Bolt's changes are listed in the README under [The fork](../README.md#the-fork).
-2. `scripts/bump-version.sh --pi X.Y.Z` (a minor bump), then `scripts/train-profile.sh` **on Linux**, and commit
+2. `scripts/bump-version.sh --pi X.Y.Z` (the last number goes up by one, as for any release), then `scripts/train-profile.sh` **on Linux**, and commit
    `profiles/pi-X.Y.Z`. A profile recorded on Linux serves both platforms.
 3. Push; `ci` builds and tests it. Then release as above.
 
