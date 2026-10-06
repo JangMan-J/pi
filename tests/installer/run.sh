@@ -19,8 +19,13 @@ pass() { printf 'PASS %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1"; status=1; }
 
 mkdir -p "$WORK/good"
-gh release download --repo opensec-git/Pi-Bolt --dir "$WORK/good" --pattern SHA256SUMS --pattern SHA256SUMS.sig \
-	--pattern "$NAME.tar.gz" --pattern "$NAME.tar.xz"
+# (Tried three times: GitHub's API answers a download with an occasional HTTP 500.)
+for attempt in 1 2 3; do
+	gh release download --repo opensec-git/Pi-Bolt --dir "$WORK/good" --clobber --pattern SHA256SUMS --pattern SHA256SUMS.sig \
+		--pattern "$NAME.tar.gz" --pattern "$NAME.tar.xz" && break
+	[ "$attempt" = 3 ] && exit 1
+	sleep 10
+done
 cp -R "$WORK/good" "$WORK/nosig" && rm "$WORK/nosig/SHA256SUMS.sig"
 cp -R "$WORK/good" "$WORK/tampered"
 (
