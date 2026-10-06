@@ -36,6 +36,8 @@ jobs:
     name: Versions and runtime
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: write # (A draft release, and the runtimes uploaded to it, are only visible to a token that may write.)
     outputs:
       version: ${{ steps.check.outputs.version }}
       stamp: ${{ steps.check.outputs.stamp }}
@@ -90,6 +92,8 @@ jobs:
             platform: darwin-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    permissions:
+      contents: write # (To download the runtimes from this tag's draft release.)
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       RUNTIME_FROM: ${{ needs.prepare.outputs.runtime_from }}
