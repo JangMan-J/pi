@@ -54,6 +54,7 @@ import {
 } from "../utils/transcript.ts";
 
 import { shapeOAuthPayload } from "./anthropic-oauth/request-shaping.ts";
+import { claudeCodeSessionId } from "./anthropic-oauth/session-id.ts";
 import { recoverClaudeCodeVersion, resolveClaudeCodeVersion } from "./anthropic-oauth/version.ts";
 import {
 	getJsonSchemaToolParameters,
@@ -623,6 +624,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 
 				const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 				const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
+				const ccSessionId =
+					apiKey && isOAuthToken(apiKey) ? await claudeCodeSessionId(options?.sessionId) : undefined;
 
 				const created = createClient(
 					model,
@@ -633,6 +636,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					cacheSessionId,
 					federation,
 					options?.env,
+					ccSessionId,
 				);
 				client = created.client;
 				isOAuth = created.isOAuthToken;
@@ -1009,6 +1013,7 @@ function createClient(
 	sessionId?: string,
 	federation?: AnthropicFederationConfig,
 	env?: ProviderEnv,
+	ccSessionId?: string,
 ): { client: Anthropic; isOAuthToken: boolean; oauthVersion?: string } {
 	// Copilot: Bearer auth.
 	if (model.provider === "github-copilot") {
@@ -1047,6 +1052,7 @@ function createClient(
 					"anthropic-dangerous-direct-browser-access": "true",
 					"user-agent": `claude-cli/${oauthVersion}`,
 					"x-app": "cli",
+					...(ccSessionId ? { "x-claude-code-session-id": ccSessionId } : {}),
 				},
 				model.headers,
 				optionsHeaders,

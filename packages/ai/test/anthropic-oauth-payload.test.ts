@@ -167,6 +167,24 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(billing(wire.payloads[0]!)).toBeUndefined();
 		expect(JSON.stringify(wire.payloads[0]!.system)).toContain("Pi documentation");
+		expect(wire.headers[0]!.get("x-claude-code-session-id")).toBeNull();
+	});
+
+	it("sends a UUIDv4 x-claude-code-session-id that is stable per session", async () => {
+		const wire = capture();
+		const send = (sessionId?: string) =>
+			stream(model, context, { apiKey, env: pin, fetch: wire.fetch, sessionId }).result();
+		await send("01a115f3-4c34-7791-bbfc-c9688e9c0db4");
+		await send("01a115f3-4c34-7791-bbfc-c9688e9c0db4");
+		await send("other-session");
+		await send();
+		await send();
+		const ids = wire.headers.map((headers) => headers.get("x-claude-code-session-id"));
+		for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+		expect(ids[1]).toBe(ids[0]);
+		expect(ids[2]).not.toBe(ids[0]);
+		expect(ids[4]).toBe(ids[3]);
+		expect(ids[3]).not.toBe(ids[0]);
 	});
 
 	it("preserves signed assistant order, system tool updates, and empty effort messages", async () => {
