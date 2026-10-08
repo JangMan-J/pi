@@ -2,7 +2,7 @@ name: upstream
 
 # Once a day, looks for a new Pi release. When there is one Pi-Bolt does not run yet, opens an issue (once per release) with
 # its changelog and the files where merging its tag into pi-bolt conflicts, worked out without a checkout (git merge-tree).
-# Merging it is done by hand: scripts/bump-version.sh --pi X.Y.Z, scripts/train-profile.sh, then a bolt-vX.Y.Z tag.
+# Merging it: scripts/bump-version.sh --pi X.Y.Z and scripts/train-profile.sh on a branch, and a pull request (docs/RELEASING.md).
 on:
   schedule:
     - cron: "17 4 * * *"

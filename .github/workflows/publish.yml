@@ -1,8 +1,11 @@
 name: publish
 
-# Publishes a release the release workflow drafted and the maintainer signed: checks SHA256SUMS.sig against keys/release.pub and
-# every archive against SHA256SUMS, publishes the GitHub release as the latest, puts install.sh and the site on gh-pages
-# (https://pi-bolt.opensec.in), and publishes the npm packages.
+# Publishes a release the release workflow drafted: signs SHA256SUMS when the draft has no SHA256SUMS.sig yet, checks
+# SHA256SUMS.sig against keys/release.pub and every archive against SHA256SUMS, publishes the GitHub release as the latest, puts
+# install.sh and the site on gh-pages (https://pi-bolt.opensec.in), and publishes the npm packages.
+#
+# Signing: the release key is the secret PIBOLT_SIGNING_KEY of the "release" environment, which only runs this workflow from
+# pi-bolt; it is used in the job below and nowhere else. A draft signed by hand (scripts/sign-release.sh) is published as signed.
 #
 # npm: with trusted publishing (npm's OpenID Connect link to this workflow and its "npm" environment; no token stored here). Set it up once for each of
 # pi-bolt, pi-bolt-linux-x64, pi-bolt-linux-x64-baseline, pi-bolt-linux-x64-jit, pi-bolt-darwin-arm64 and
@@ -35,6 +38,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write # (A draft release is only visible to a token that may write.)
+    environment: release
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -51,10 +55,26 @@ jobs:
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Sign
+        working-directory: release
+        run: |
+          if [ -f SHA256SUMS.sig ]; then echo "the draft is signed"; exit 0; fi
+          [ -n "$SIGNING_KEY" ] || { echo "::error::$TAG has no SHA256SUMS.sig and the release environment has no PIBOLT_SIGNING_KEY"; exit 1; }
+          # (What is signed is checked first: the 12 archives of the draft, as SHA256SUMS lists them.)
+          sha256sum -c SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 12
+          key="$RUNNER_TEMP/release-key.pem"
+          trap 'rm -f "$key"' EXIT
+          (umask 077 && printenv SIGNING_KEY > "$key")
+          openssl pkey -in "$key" -pubout | cmp -s - ../keys/release.pub || { echo "::error::PIBOLT_SIGNING_KEY is not the key of keys/release.pub"; exit 1; }
+          openssl pkeyutl -sign -inkey "$key" -rawin -in SHA256SUMS -out SHA256SUMS.sig
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" SHA256SUMS.sig
+        env:
+          SIGNING_KEY: ${{ secrets.PIBOLT_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
       - name: Check
         working-directory: release
         run: |
-          test -f SHA256SUMS.sig || { echo "::error::$TAG has no SHA256SUMS.sig: sign it first (scripts/sign-release.sh)"; exit 1; }
           openssl version
           openssl pkeyutl -verify -pubin -inkey ../keys/release.pub -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
           sha256sum -c SHA256SUMS

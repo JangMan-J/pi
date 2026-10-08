@@ -1,9 +1,10 @@
 name: release
 
-# Pushing a bolt-vX.Y.Z tag builds the release on GitHub's runners: the Linux x86-64 archives (x64, baseline, jit) and the macOS
-# ones (arm64, jit), each tested, then a draft GitHub release with every archive, SHA256SUMS and RUNTIME_STAMP. Nothing is
-# published and nothing is signed here: the maintainer signs SHA256SUMS with the release key, which never leaves their machine
-# (scripts/sign-release.sh), uploads SHA256SUMS.sig to the draft, and runs the publish workflow (docs/RELEASING.md).
+# A bolt-vX.Y.Z tag (pushed, or created by the tag workflow, which runs this one) builds the release on GitHub's runners: the
+# Linux x86-64 archives (x64, baseline, jit) and the macOS ones (arm64, jit), each tested, then a draft GitHub release with every
+# archive, SHA256SUMS and RUNTIME_STAMP. Nothing is signed or published here: with the repository variable AUTO_RELEASE set to
+# true, the draft is handed to the publish workflow, which signs and publishes it; otherwise publish is run by hand
+# (docs/RELEASING.md).
 #
 # The runtime: when the engine (patches/, sources.json, the runtime build scripts) is the latest release's, its runtime archives
 # are used again. When it changed, build the runtimes by hand (scripts/build-runtime.sh, on Linux and on a Mac) and upload
@@ -167,6 +168,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      actions: write # (To run the publish workflow.)
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       STAMP: ${{ needs.prepare.outputs.stamp }}
@@ -193,11 +195,22 @@ jobs:
               exit 1
             fi
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft --notes-file "docs/releases/$VERSION.md"
+            # (A signature of the SHA256SUMS replaced here no longer holds.)
+            gh release delete-asset "$TAG" SHA256SUMS.sig --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
             gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release/*
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "Pi-Bolt $VERSION" --notes-file "docs/releases/$VERSION.md" release/*
           fi
           sum=$(sha256sum release/SHA256SUMS | cut -c1-64)
+          if [ "$AUTO_RELEASE" = true ]; then
+            gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref pi-bolt -f tag="$TAG"
+            {
+              echo "### $TAG is a draft, handed to publish"
+              echo
+              echo "SHA256SUMS: \`$sum\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           {
             echo "### $TAG is a draft, ready to sign"
             echo
@@ -209,7 +222,9 @@ jobs:
             echo "gh release upload $TAG -R $GITHUB_REPOSITORY dist/$VERSION/SHA256SUMS.sig"
             echo '```'
             echo
-            echo "Then run the **publish** workflow: \`gh workflow run publish.yml -R $GITHUB_REPOSITORY -f tag=$TAG\`"
+            echo "Then run the **publish** workflow: \`gh workflow run publish.yml -R $GITHUB_REPOSITORY -f tag=$TAG\` (it signs the draft"
+            echo "itself when the release environment has the key)."
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           GH_TOKEN: ${{ github.token }}
+          AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}

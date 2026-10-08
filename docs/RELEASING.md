@@ -1,15 +1,17 @@
 # Releasing Pi-Bolt
 
-Four workflows, all on GitHub's own runners and none holding a secret:
+Five workflows, all on GitHub's own runners:
 
 | Workflow | When | What |
 |---|---|---|
 | `ci` | every push to `pi-bolt`, every pull request | lint and types, Pi's tests, Pi-Bolt built and tested on Linux x86-64 and macOS (Apple silicon), the installer's checks, whether the engine patches apply |
-| `release` | a `bolt-vX.Y.Z` tag | builds the 12 archives on Linux and macOS, tests each as unpacked from its archive, and makes a **draft** release with `SHA256SUMS` and `RUNTIME_STAMP` |
-| `publish` | by hand, after signing | checks the signature and the checksums, publishes the release, puts `install.sh` and the site on `gh-pages`, and publishes npm |
+| `tag` | `ci` passed on a push to `pi-bolt` | when `VERSION` has no `bolt-vX.Y.Z` tag yet, tags that commit and runs `release` |
+| `release` | a `bolt-vX.Y.Z` tag | builds the 12 archives on Linux and macOS, tests each as unpacked from its archive, makes a **draft** release with `SHA256SUMS` and `RUNTIME_STAMP`, and runs `publish` |
+| `publish` | after `release`, or by hand | signs `SHA256SUMS`, checks the signature and the checksums, publishes the release, puts `install.sh` and the site on `gh-pages`, and publishes npm |
 | `upstream` | daily | opens an issue when Pi has a new release, with the files where merging it conflicts |
 
-The release key never leaves the maintainer's machine: a release is signed there, between `release` and `publish`.
+`tag` and the hand-over from `release` to `publish` run only when the repository variable `AUTO_RELEASE` is `true`. The
+release key is a secret of the `release` environment, used only by `publish` run from `pi-bolt` ([Signing](#signing)).
 
 - [A release, step by step](#a-release-step-by-step)
 - [When the engine changed](#when-the-engine-changed)
@@ -21,23 +23,26 @@ The release key never leaves the maintainer's machine: a release is signed there
 ## A release, step by step
 
 1. Write the release notes in `docs/releases/X.Y.Z.md`; they become the GitHub release's text.
-2. `scripts/bump-version.sh` (the last number goes up by one, 0.7.0 to 0.7.1; `--version X.Y.Z` sets another), commit, push, and
-   wait for `ci` to pass.
-3. Tag it: `git tag -a bolt-vX.Y.Z -m "Pi-Bolt X.Y.Z" && git push origin bolt-vX.Y.Z`. The `release` workflow builds and tests
-   for about an hour, then leaves a draft. Its summary shows the SHA-256 of `SHA256SUMS`.
-4. Sign, on your machine:
-   ```bash
-   gh release download bolt-vX.Y.Z -R opensec-git/Pi-Bolt -p SHA256SUMS -D dist/X.Y.Z --clobber
-   scripts/sign-release.sh --key ~/pi-bolt-signing-key.pem dist/X.Y.Z
-   gh release upload bolt-vX.Y.Z -R opensec-git/Pi-Bolt dist/X.Y.Z/SHA256SUMS.sig
-   ```
-5. Run `publish` with the tag: in the Actions tab, publish → Run workflow (from `pi-bolt`) with the tag, or
-   `gh workflow run publish.yml -R opensec-git/Pi-Bolt -f tag=bolt-vX.Y.Z`. It refuses a draft whose signature does not verify
-   against `keys/release.pub`.
-6. Try both installs: `curl -fsSL https://pi-bolt.opensec.in/install.sh | sh` and `npm install -g pi-bolt`, looking for
+2. `scripts/bump-version.sh` (the last number goes up by one, 0.7.0 to 0.7.1; `--version X.Y.Z` sets another), commit, and push
+   to `pi-bolt` (or merge a pull request).
+3. When `ci` passes, `tag` tags the commit `bolt-vX.Y.Z` and runs `release`, which builds and tests for about an hour and leaves
+   a draft; `publish` then signs it and publishes it. `tag` leaves a version without its release notes untagged.
+4. Try both installs: `curl -fsSL https://pi-bolt.opensec.in/install.sh | sh` and `npm install -g pi-bolt`, looking for
    "signature verified".
 
-Either workflow can be run again with the same tag: the draft's files are replaced, and a published release is left as it is.
+By hand (with `AUTO_RELEASE` unset, or to redo a step): push the tag yourself
+(`git tag -a bolt-vX.Y.Z -m "Pi-Bolt X.Y.Z" && git push origin bolt-vX.Y.Z`), then, once the draft is there, run `publish` from
+`pi-bolt`: `gh workflow run publish.yml -R opensec-git/Pi-Bolt -f tag=bolt-vX.Y.Z`. A draft can also be signed on a machine that
+has the key, before `publish`:
+
+```bash
+gh release download bolt-vX.Y.Z -R opensec-git/Pi-Bolt -p SHA256SUMS -D dist/X.Y.Z --clobber
+scripts/sign-release.sh --key pi-bolt-signing-key.pem dist/X.Y.Z
+gh release upload bolt-vX.Y.Z -R opensec-git/Pi-Bolt dist/X.Y.Z/SHA256SUMS.sig
+```
+
+`publish` refuses a draft whose signature does not verify against `keys/release.pub`. Either workflow can be run again with the
+same tag: the draft's files are replaced (a signature of the old `SHA256SUMS` is dropped), and a published release is left as it is.
 
 Old-distribution and old-CPU checks (`tests/compat/run.sh`: CentOS 7, Debian 9, Amazon Linux 2, emulated Haswell to Nehalem)
 need bubblewrap and qemu-user, which GitHub's runners do not allow; run them on a Linux machine before a release that changes
@@ -92,13 +97,15 @@ npm answers a publish with "being processed": a new version can take a few minut
 
 ## A new Pi version
 
-`upstream` opens an issue for each new Pi release. To follow it:
+`upstream` opens an issue for each new Pi release. A scheduled agent follows it every day: it merges the release on a branch,
+records the profile, opens a pull request and merges it when `ci` passes, after which `tag`, `release` and `publish` take it out.
+By hand:
 
 1. Merge the tag into `pi-bolt` (`git fetch https://github.com/earendil-works/pi.git tag vX.Y.Z && git merge vX.Y.Z`). Where
    Pi-Bolt changed the same code, keep both: Pi-Bolt's changes are listed in the README under [The fork](../README.md#the-fork).
 2. `scripts/bump-version.sh --pi X.Y.Z` (the last number goes up by one, as for any release), then `scripts/train-profile.sh` **on Linux**, and commit
    `profiles/pi-X.Y.Z`. A profile recorded on Linux serves both platforms.
-3. Push; `ci` builds and tests it. Then release as above.
+3. Push; `ci` builds and tests it, and it is released as above.
 
 ## The macOS builds
 
@@ -114,13 +121,25 @@ its compiled code from its own file (and the `-jit` build `com.apple.security.cs
 `SHA256SUMS` in every release is signed with an Ed25519 key. The installer carries the public key and refuses a download
 whose signature is missing or does not verify. It checks it with OpenSSL 3 (on `PATH` or Homebrew's), or else with the Pi-Bolt
 already installed; with neither (a first install on a Mac without OpenSSL 3), it checks the checksums alone and says so.
-`scripts/fetch-runtime.sh` and the `publish` workflow require the signature too. To make the key pair:
+`scripts/fetch-runtime.sh` and the `publish` workflow require the signature too.
+
+`publish` signs with the secret `PIBOLT_SIGNING_KEY` of the `release` environment. The environment accepts only workflows run
+from `pi-bolt`, a secret cannot be read back from GitHub, and workflows of pull requests from forks get no secrets; what can
+use the key is a workflow on `pi-bolt`, which takes an administrator or a pull request that passes `ci`. It signs only a
+`SHA256SUMS` whose 12 archives it has checked, and only with the key of `keys/release.pub`. To set the key, as an
+administrator, on the machine that has it:
+
+```bash
+gh secret set PIBOLT_SIGNING_KEY -R opensec-git/Pi-Bolt --env release < pi-bolt-signing-key.pem
+```
+
+To make the key pair:
 
 ```bash
 openssl genpkey -algorithm ed25519 -out pi-bolt-signing-key.pem
 openssl pkey -in pi-bolt-signing-key.pem -pubout -out keys/release.pub
 ```
 
-Then copy the contents of `keys/release.pub` into `RELEASE_KEY` in `install.sh`, commit both, and keep
-`pi-bolt-signing-key.pem` somewhere safe and private (a password manager), never in the repository or in GitHub. Rotating the
+Then copy the contents of `keys/release.pub` into `RELEASE_KEY` in `install.sh`, commit both, set the secret as above, and
+keep a copy of `pi-bolt-signing-key.pem` somewhere safe and private (a password manager), never in the repository. Rotating the
 key is the same procedure; releases signed with the old key stay verifiable with an installer that carries the old key.
