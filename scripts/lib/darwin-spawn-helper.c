@@ -88,13 +88,18 @@ static void work(int stream, int directory, int count, int* fds, const int32_t* 
     sigaction(SIGCHLD, &byDefault, NULL);
 
     struct pibolt_spawn_params params;
-    if (readFully(stream, &params, sizeof(params)))
+    // pi-spawn keeps its copy of this end of the stream until it has an answer: every way out answers.
+    if (readFully(stream, &params, sizeof(params))) {
+        reply(stream, PIBOLT_SPAWN_UNAVAILABLE, 0);
         _exit(0);
+    }
     char* path = readStrings(stream, params.path_len);
     char* arguments = path ? readStrings(stream, params.argv_len) : NULL;
     char* environment = arguments ? readStrings(stream, params.envp_len) : NULL;
-    if (!environment || !params.path_len || path[params.path_len - 1])
+    if (!environment || !params.path_len || path[params.path_len - 1]) {
+        reply(stream, PIBOLT_SPAWN_UNAVAILABLE, 0);
         _exit(0);
+    }
     char** argv = splitStrings(arguments, params.argv_len, params.argc);
     char** envp = splitStrings(environment, params.envp_len, params.envc);
     if (!argv || !envp || !params.argc) {
@@ -259,7 +264,11 @@ static int serve(int socket_)
     for (int i = 0; valid && i < request.nfds; i++)
         valid = request.targets[i] >= 0 && request.targets[i] < 4096;
     if (!valid) {
-        closeDescriptors(fds, count); // pi-spawn then starts the program itself
+        // pi-spawn waits for an answer on the stream, the first descriptor (it keeps its own copy of it until then), and
+        // then starts the program itself.
+        if (count > 0)
+            reply(fds[0], PIBOLT_SPAWN_UNAVAILABLE, 0);
+        closeDescriptors(fds, count);
         return 0;
     }
     pid_t worker = fork();
@@ -307,6 +316,10 @@ static void serveUntilParentExits(int socket_, pid_t parent)
         }
     }
 
+    // Take the socket over: until the helper first receives on it, its peer's LOCAL_PEERPID is the launcher's (pi-bin's),
+    // and pi-spawn watches the helper by that pid.
+    char none;
+    recv(socket_, &none, 0, MSG_DONTWAIT | MSG_PEEK);
     int queue = kqueue();
     if (queue < 0)
         _exit(0);
