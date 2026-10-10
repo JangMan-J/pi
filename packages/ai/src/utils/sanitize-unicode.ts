@@ -19,6 +19,9 @@
  * sanitizeSurrogates(`Text ${unpaired} here`) // => "Text  here"
  */
 export function sanitizeSurrogates(text: string): string {
+	// Every text in the context passes through here on every request. Almost all of it has no unpaired surrogate, and
+	// isWellFormed() says so without running the regex (in constant time for Latin-1 strings, which cannot hold one).
+	if (text.isWellFormed()) return text;
 	// Replace unpaired high surrogates (0xD800-0xDBFF not followed by low surrogate)
 	// Replace unpaired low surrogates (0xDC00-0xDFFF not preceded by high surrogate)
 	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");

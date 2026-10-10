@@ -1296,6 +1296,9 @@ export class ExtensionRunner {
 	 * handlers then see the full transcript and their output is used as returned.
 	 */
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
+		// The copy only protects the transcript from handlers that edit it in place. Without
+		// handlers it would duplicate the whole context, images included, on every request.
+		if (!this.hasHandlers("context") && !this.hasHandlers("context_with_system")) return messages;
 		const ctx = this.createContext();
 		let currentMessages = structuredClone(messages);
 

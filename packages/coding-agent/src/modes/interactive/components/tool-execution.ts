@@ -168,6 +168,11 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	updateArgs(args: any): void {
+		// Every message_update hands every tool call of the message its arguments again, and the providers parse
+		// streamed arguments only when they have grown by an eighth (parseStreamingJsonWhileStreaming), keeping the
+		// same object in between: the same object is the same arguments, and drawing them again is wasted work that
+		// grows with their size (the write and edit renderers go over the whole file content).
+		if (args === this.args) return;
 		this.args = args;
 		this.updateDisplay();
 	}

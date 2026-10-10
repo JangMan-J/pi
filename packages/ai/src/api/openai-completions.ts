@@ -52,6 +52,7 @@ import {
 	type TranscriptContext,
 } from "../utils/transcript.ts";
 import {
+	appendGrammarToolInputJsonChunk,
 	appendGrammarToolInputJsonDelta,
 	createGrammarToolInputProperties,
 	type GrammarToolInputJsonBuffer,
@@ -655,8 +656,15 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 								block.partialArgs = (block.partialArgs ?? "") + toolCall.function.arguments;
 								block.arguments = parseStreamingJsonWhileStreaming(block, block.partialArgs, block.arguments);
 							} else if (toolCall.custom?.input) {
-								const nextInput = getCustomToolCallInput(block) + toolCall.custom.input;
-								delta = appendCustomToolCallInput(block, nextInput, false) ?? "";
+								const input = getCustomToolCallInput(block);
+								if (block.customInput && input === block.customInput.jsonBuffer.input) {
+									// Append only the new input: passing all of it compared and copied it on every delta.
+									const { jsonBuffer, property } = block.customInput;
+									delta = appendGrammarToolInputJsonChunk(jsonBuffer, property, toolCall.custom.input) ?? "";
+									block.arguments = { [property]: jsonBuffer.input };
+								} else {
+									delta = appendCustomToolCallInput(block, input + toolCall.custom.input, false) ?? "";
+								}
 							}
 							stream.push({
 								type: "toolcall_delta",
