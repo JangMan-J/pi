@@ -1,11 +1,11 @@
-// The `pi` of a macOS build: starts `pi-bin`, the Pi-Bolt executable beside it, in this same process, with ASLR off for it.
+// The `pi` of a macOS build: starts `pi-bin`, the Pi-Bolt executable beside it, in this same process, at its linked address.
 //
 // An executable with a static heap must run where it was linked to be (docs/ARCHITECTURE.md, "The macOS ARM64 port"). Started
 // directly, it starts again itself, once dyld has loaded it and its libraries; from here it is started that way at once, which
 // saves dyld's work on the first start (about a millisecond and a half). Without this launcher it works all the same.
 //
-// macOS passes ASLR being off on to everything pi-bin starts. So first it forks the helper that starts pi-bin's programs with
-// ASLR (darwin-spawn.h), and tells pi-bin where it is.
+// macOS passes how pi-bin was started on to everything it starts. So first it forks the helper that starts pi-bin's programs
+// with the system's own process setup (darwin-spawn.h), and tells pi-bin where it is.
 // Built by scripts/build-pi.sh: clang -O2 -mmacosx-version-min=13.0 darwin-launcher.c darwin-spawn-helper.c -o pi
 #include "darwin-spawn.h"
 
@@ -85,12 +85,12 @@ int main(int argc, char** argv)
         setenv(PIBOLT_SPAWN_HELPER_ENV, value, 1);
     }
 
-    // What pi-bin's own start without ASLR looks for (c-bindings.cpp in Bun): it is started that way already.
+    // What pi-bin's own start at its linked address looks for (c-bindings.cpp in Bun): it is started that way already.
     setenv("BUN_INTERNAL_STATIC_HEAP_NO_ASLR", "1", 1);
     posix_spawnattr_t attributes;
     if (!posix_spawnattr_init(&attributes)) {
-        const short disableASLR = 0x100; // _POSIX_SPAWN_DISABLE_ASLR
-        posix_spawnattr_setflags(&attributes, disableASLR | POSIX_SPAWN_SETEXEC);
+        const short linkedAddress = 0x100; // (a private posix_spawn flag: no slide for the main executable)
+        posix_spawnattr_setflags(&attributes, linkedAddress | POSIX_SPAWN_SETEXEC);
         posix_spawn(NULL, target, NULL, &attributes, argv, environ);
     }
     // Not started that way: as it is (it then starts again itself, if it can).

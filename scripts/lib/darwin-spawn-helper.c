@@ -1,5 +1,5 @@
-// The helper that starts the programs Pi starts on macOS, so that they run with ASLR (darwin-spawn.h). The launcher forks it
-// before it starts pi-bin without ASLR, so the helper keeps it, and so does every process the helper starts. It lives as
+// The helper that starts the programs Pi starts on macOS, so that they get the system's own process setup (darwin-spawn.h). The launcher forks it
+// before it starts pi-bin at its linked address, so the helper keeps the usual setup, and so does every process the helper starts. It lives as
 // long as pi-bin does. For each program it forks a worker, which starts the program as pi-spawn was asked to, tells pi-spawn
 // when it has exited, and kills it if pi-spawn is killed first.
 #include "darwin-spawn.h"

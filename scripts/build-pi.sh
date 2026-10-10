@@ -133,9 +133,9 @@ log "Pi $VERSION, ahead of time: JIT $JIT, CPU $CPU, $([ -n "$KEEP_BYTECODE" ] &
 		--define "PIBOLT_BUILD=\"$PIBOLT_VERSION $CPU_VARIANT jit-$JIT\"" \
 		--compile-exec-argv=--smol "${ENTRIES[@]}" --outfile "$OUT/pi" 2>&1 | tee "${PIBOLT_BUILD_LOG:-/dev/null}" | grep -v "^AOT: " | tail -3
 )
-# macOS: pi is a launcher that starts the executable, pi-bin, without ASLR for it at once (scripts/lib/darwin-launcher.c): it
+# macOS: pi is a launcher that starts the executable, pi-bin, at its linked address at once (scripts/lib/darwin-launcher.c): it
 # would otherwise start again itself, after a first load by dyld. The launcher also forks the helper that starts the programs
-# Pi starts with ASLR, through pi-spawn (scripts/lib/darwin-spawn.h).
+# Pi starts, through pi-spawn (scripts/lib/darwin-spawn.h).
 if [ "$PIBOLT_OS" = darwin ]; then
 	mv "$OUT/pi" "$OUT/pi-bin"
 	CLANG=(xcrun clang -O2 -Wall -arch arm64 -mmacosx-version-min=13.0 -I"$PIBOLT_ROOT/scripts/lib")

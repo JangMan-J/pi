@@ -1,11 +1,12 @@
-// pi-spawn: what pi-bin starts on macOS in the place of a program, so that the program runs with ASLR (darwin-spawn.h).
+// pi-spawn: what pi-bin starts on macOS in the place of a program, so that the program gets the system's own process setup
+// (darwin-spawn.h).
 //
 //     pi-spawn <helper's socket> <status pipe> <path> <argv[0]> [arguments...]
 //
 // pi-bin started it as it would have started the program: its files, directory, environment, signals, process group or
 // session are the program's. It hands them to the helper, which starts the program; pi-bin is told the program's pid on the
 // status pipe, and signals that pid. pi-spawn ignores signals, waits, and exits as the program did. When the helper cannot
-// start the program, pi-spawn starts it in its own place, without ASLR, as pi-bin would have.
+// start the program, pi-spawn starts it in its own place, as pi-bin would have.
 // Built by scripts/build-pi.sh: clang -O2 -mmacosx-version-min=13.0 darwin-spawn-proxy.c -o pi-spawn
 #include "darwin-spawn.h"
 
@@ -67,7 +68,7 @@ static void tell(int status, int kind, int value)
     writeFully(status, &message, sizeof(message));
 }
 
-// The program in pi-spawn's place, as pi-bin would have started it (without ASLR, then).
+// The program in pi-spawn's place, as pi-bin would have started it.
 static void execute(int helper, int status, const char* path, char** argv)
 {
     for (size_t i = 0; i < ASYNCHRONOUS_COUNT; i++)
@@ -186,7 +187,7 @@ static int request(int helper, int status, const char* path, char** argv, uint32
     // The worker's end of the stream stays open here too until the worker has answered. A socket that is only in flight
     // (in a message not yet received) can be taken for garbage by the kernel's collector of descriptors in flight when
     // another Unix socket closes meanwhile: the worker then reads a stream that has ended, and the program was started here,
-    // without ASLR (0.7.2: 73 of 3,000 programs started 20 at a time). Holding it, the stream cannot end before the worker
+    // itself, with pi-bin's process setup (0.7.2: 73 of 3,000 programs started 20 at a time). Holding it, the stream cannot end before the worker
     // answers, so that is waited for with an eye on the helper. (The protocol is unchanged: a helper of an earlier release,
     // still serving a Pi started before an update, works with this pi-spawn, and the other way round.)
     *stream = pair[0];
