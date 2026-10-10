@@ -11,15 +11,23 @@ Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
   a wrapper read once, ahead of the wrapper's dependencies.
 - Stack traces and crash reports of ahead-of-time code: no CodeBlocks made to read a frame, crash
   reports not uploaded unasked. The default Error.prepareStackTrace takes any object.
-- Memory: garbage collection markers for the prebuilt heap, the allocator's idle sweep every 250 ms,
-  static strings not reference counted from Rust; on macOS a starting heap budget that fits the
-  prebuilt heap, and a collection every 5 seconds while the program waits.
+- Memory: garbage collection markers for the prebuilt heap, the allocator's idle sweep every 250 ms and
+  freed memory purged once 25 ms old, static strings not reference counted from Rust; a collection
+  every 5 seconds while the program waits; on macOS a starting heap budget that fits the prebuilt heap.
+- Streams: fs.WriteStream keeps writev, so writes queued behind one in flight go out together, as in
+  Node; a Writable compacts its queue only once half of it has drained.
+- From upstream ahead of the pin: mimalloc 92ef6587 with the event loop handing its heaps to the
+  scavenger only on a poll that can block (#44560, #44575); fetch sets up TLS once per connection
+  (#44507).
 - fetch: an idle connection waits in the keep-alive pool for 4 seconds, or as long as the server says.
 - macOS: the prebuilt heap and code image mapped from the __BUN section, with the executable where it
   was linked to be; SharedArrayBuffer with the JIT off; a terminal reopened by its own device, which
-  kqueue can watch; the programs an executable starts are started by Pi-Bolt's launcher helper.
+  kqueue can watch; the programs an executable starts are started by Pi-Bolt's launcher helper; no
+  read-ahead of bytecode that a prebuilt heap does not run from.
 ---
  Cargo.lock                                    |   1 +
+ .../bun-usockets/src/eventing/epoll_kqueue.c  |   7 +-
+ scripts/build/deps/mimalloc.ts                |   2 +-
  scripts/build/deps/webkit.ts                  |  18 +
  src/ast/import_record.rs                      |   4 +
  src/bun_alloc/lib.rs                          |  14 +-
@@ -36,9 +44,12 @@ Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
  src/http/HTTPThread.rs                        |  11 +
  src/http/HeaderValueIterator.rs               |  20 +
  src/http/InternalState.rs                     |   4 +
- src/http/lib.rs                               |  39 +-
+ src/http/ProxyTunnel.rs                       |   2 +-
+ src/http/lib.rs                               |  68 ++-
+ src/js/internal/fs/streams.ts                 |   3 +-
+ src/js/internal/streams/writable.ts           |   5 +-
  src/jsc/CachedBytecode.rs                     |  31 ++
- src/jsc/GarbageCollectionController.rs        |  26 +-
+ src/jsc/GarbageCollectionController.rs        |  23 +-
  src/jsc/JSType.rs                             | 144 +++---
  src/jsc/VirtualMachine.rs                     |  18 +-
  src/jsc/bindings/BunClientData.cpp            |   8 +-
@@ -47,20 +58,30 @@ Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
  src/jsc/bindings/FormatStackTraceForJS.cpp    |  27 +-
  src/jsc/bindings/InternalModuleRegistry.cpp   |  15 +-
  src/jsc/bindings/ZigException.cpp             |  14 +-
- src/jsc/bindings/ZigGlobalObject.cpp          |  45 ++
+ src/jsc/bindings/ZigGlobalObject.cpp          |  51 ++
  src/jsc/bindings/ZigSourceProvider.cpp        | 435 +++++++++++++++++-
  src/jsc/bindings/c-bindings.cpp               | 113 +++++
  src/jsc/web_worker.rs                         |   4 +
+ src/runtime/api/BunObject.rs                  |   6 +
  src/runtime/api/bun/subprocess.rs             |   2 +-
  src/runtime/cli/run_command.rs                |   5 +
  src/spawn/process.rs                          |  23 +-
  src/spawn_sys/posix_spawn.rs                  | 173 ++++++-
  src/spawn_sys/spawn_process.rs                |  14 +-
- src/standalone_graph/StandaloneModuleGraph.rs | 215 ++++++++-
- 38 files changed, 1632 insertions(+), 144 deletions(-)
+ src/standalone_graph/StandaloneModuleGraph.rs | 223 ++++++++-
+ test/js/bun/util/sleepSync.test.ts            |  47 ++
+ test/js/node/fs/fs.test.ts                    |  24 +
+ test/js/node/stream/node-stream.test.js       |  22 +
+ .../fetch.tls.renegotiation-client-fixture.ts |  38 ++
+ .../fetch.tls.renegotiation-peer-fixture.mjs  |  86 ++++
+ test/js/web/fetch/fetch.tls.test.ts           |  70 ++-
+ test/js/web/timers/timer-gc-roots.test.ts     |   3 +
+ 51 files changed, 1969 insertions(+), 162 deletions(-)
+ create mode 100644 test/js/web/fetch/fetch.tls.renegotiation-client-fixture.ts
+ create mode 100644 test/js/web/fetch/fetch.tls.renegotiation-peer-fixture.mjs
 
 diff --git a/Cargo.lock b/Cargo.lock
-index cd424128..4ad04f29 100644
+index cd424128a7f..4ad04f29949 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -624,6 +624,7 @@ dependencies = [
@@ -71,8 +92,39 @@ index cd424128..4ad04f29 100644
   "scopeguard",
   "strum",
   "thiserror",
+diff --git a/packages/bun-usockets/src/eventing/epoll_kqueue.c b/packages/bun-usockets/src/eventing/epoll_kqueue.c
+index 28a2040abb2..6806c0940e3 100644
+--- a/packages/bun-usockets/src/eventing/epoll_kqueue.c
++++ b/packages/bun-usockets/src/eventing/epoll_kqueue.c
+@@ -512,9 +512,10 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout
+     /* The scavenger sweeps our heaps while we are in the kernel. Must come after
+      * Bun__JSC_onBeforeWait, which allocates: nothing may touch our heaps until the matching
+      * _end. mimalloc paces the sweep itself, so this costs a compare-and-swap per tick.
+-     * With no scavenger to hand off to, fall back to sweeping inline -- but only on a tick that
+-     * really parks, and rate-limited, because doing it between ticks is what we are avoiding. */
+-    const int handed_off = mi_on_thread_idle_start();
++     * Only on a tick that really parks: there is no time to sweep in a poll that returns at once.
++     * With no scavenger to hand off to, fall back to sweeping inline, rate-limited, because doing
++     * it between ticks is what we are avoiding. */
++    const int handed_off = will_idle_inside_event_loop && mi_on_thread_idle_start();
+     if (!handed_off && will_idle_inside_event_loop) {
+         static const uint64_t idle_sweep_interval_ns = 100 * 1000000ULL;
+         static _Thread_local uint64_t last_idle_sweep_ns = 0;
+diff --git a/scripts/build/deps/mimalloc.ts b/scripts/build/deps/mimalloc.ts
+index 2984efa98b8..f162fdf9783 100644
+--- a/scripts/build/deps/mimalloc.ts
++++ b/scripts/build/deps/mimalloc.ts
+@@ -12,7 +12,7 @@
+ 
+ import type { Dependency, DirectBuild } from "../source.ts";
+ 
+-const MIMALLOC_COMMIT = "eab09015a5850ae18fc43ccfaa5bbe8272992314";
++const MIMALLOC_COMMIT = "92ef6587c57b262f6e6abf513f7776a2f8d12aeb";
+ 
+ export const mimalloc: Dependency = {
+   name: "mimalloc",
 diff --git a/scripts/build/deps/webkit.ts b/scripts/build/deps/webkit.ts
-index bba31a2c..17a71224 100644
+index bba31a2cc89..17a71224f73 100644
 --- a/scripts/build/deps/webkit.ts
 +++ b/scripts/build/deps/webkit.ts
 @@ -275,6 +275,12 @@ export const webkit: Dependency = {
@@ -108,7 +160,7 @@ index bba31a2c..17a71224 100644
          ? {
              CMAKE_SYSTEM_NAME: "FreeBSD",
 diff --git a/src/ast/import_record.rs b/src/ast/import_record.rs
-index 6e582f84..c41f7e5a 100644
+index 6e582f84e53..c41f7e5a16a 100644
 --- a/src/ast/import_record.rs
 +++ b/src/ast/import_record.rs
 @@ -113,6 +113,10 @@ bitflags::bitflags! {
@@ -123,7 +175,7 @@ index 6e582f84..c41f7e5a 100644
  }
  
 diff --git a/src/bun_alloc/lib.rs b/src/bun_alloc/lib.rs
-index 7888ef35..3d4f4e61 100644
+index 7888ef351d0..3d4f4e618fa 100644
 --- a/src/bun_alloc/lib.rs
 +++ b/src/bun_alloc/lib.rs
 @@ -759,6 +759,11 @@ impl WTFStringImplStruct {
@@ -157,7 +209,7 @@ index 7888ef35..3d4f4e61 100644
              .ref_count_atomic()
              .fetch_sub(Self::S_REF_COUNT_INCREMENT, Ordering::Relaxed);
 diff --git a/src/bun_core/env_var.rs b/src/bun_core/env_var.rs
-index b5b37d98..4ecdc6e7 100644
+index b5b37d98870..4ecdc6e765d 100644
 --- a/src/bun_core/env_var.rs
 +++ b/src/bun_core/env_var.rs
 @@ -62,6 +62,7 @@ new!(pub BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS: unsigned, "BUN_CONFIG_DNS_TIME_TO_
@@ -169,7 +221,7 @@ index b5b37d98..4ecdc6e7 100644
  // A peer that accepts the TCP connection but never answers the upgrade fails
  // with error + close(1006). 0 disables; uSockets' 4 s sweep rounds small values up.
 diff --git a/src/bundler/LinkerContext.rs b/src/bundler/LinkerContext.rs
-index 354e7135..96f5b56a 100644
+index 354e7135f57..96f5b56a3b4 100644
 --- a/src/bundler/LinkerContext.rs
 +++ b/src/bundler/LinkerContext.rs
 @@ -1450,6 +1450,8 @@ pub struct LinkerOptions {
@@ -259,7 +311,7 @@ index 354e7135..96f5b56a 100644
          self.stmts.push(stmt);
          Ok(())
 diff --git a/src/bundler/bundle_v2.rs b/src/bundler/bundle_v2.rs
-index 871b0495..df7b61c1 100644
+index 871b0495225..df7b61c1e95 100644
 --- a/src/bundler/bundle_v2.rs
 +++ b/src/bundler/bundle_v2.rs
 @@ -1544,6 +1544,12 @@ pub mod bv2_impl {
@@ -306,7 +358,7 @@ index 871b0495..df7b61c1 100644
              // SAFETY: same `'a`-owned `Transpiler` field as `banner` above.
              this.linker.options.metafile_json_path =
 diff --git a/src/bundler/linker_context/convertStmtsForChunk.rs b/src/bundler/linker_context/convertStmtsForChunk.rs
-index 258b0dfb..be4fcff3 100644
+index 258b0dfbcfd..be4fcff3d21 100644
 --- a/src/bundler/linker_context/convertStmtsForChunk.rs
 +++ b/src/bundler/linker_context/convertStmtsForChunk.rs
 @@ -97,6 +97,74 @@ pub(crate) fn convert_stmts_for_chunk(
@@ -385,7 +437,7 @@ index 258b0dfb..be4fcff3 100644
                          stmts,
                          stmt.loc,
 diff --git a/src/bundler/linker_context/generateChunksInParallel.rs b/src/bundler/linker_context/generateChunksInParallel.rs
-index 88212ec8..ef33e540 100644
+index 88212ec8a68..ef33e540d2c 100644
 --- a/src/bundler/linker_context/generateChunksInParallel.rs
 +++ b/src/bundler/linker_context/generateChunksInParallel.rs
 @@ -1429,6 +1429,7 @@ pub(crate) fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
@@ -438,7 +490,7 @@ index 88212ec8..ef33e540 100644
      internal_names: Vec<Option<crate::bytecode_order::CodeNames>>,
      /// `BUN_BYTECODE_ORDER_NAMES_OUT`, and what is written there.
 diff --git a/src/bundler/linker_context/scanImportsAndExports.rs b/src/bundler/linker_context/scanImportsAndExports.rs
-index 4611b2fe..101b1afe 100644
+index 4611b2fe6f8..101b1afe9d3 100644
 --- a/src/bundler/linker_context/scanImportsAndExports.rs
 +++ b/src/bundler/linker_context/scanImportsAndExports.rs
 @@ -1090,6 +1090,25 @@ pub(crate) fn scan_imports_and_exports(
@@ -480,7 +532,7 @@ index 4611b2fe..101b1afe 100644
                              // We should use "__require" instead of "require" if we're not
                              // generating a CommonJS output file, since it won't exist otherwise.
 diff --git a/src/bundler/prelinked_module_graph.rs b/src/bundler/prelinked_module_graph.rs
-index 497b0694..9517a930 100644
+index 497b0694312..9517a930ed1 100644
 --- a/src/bundler/prelinked_module_graph.rs
 +++ b/src/bundler/prelinked_module_graph.rs
 @@ -12,7 +12,7 @@ use bun_js_printer::analyze_transpiled_module::{
@@ -533,7 +585,7 @@ index 497b0694..9517a930 100644
              put(v);
          }
 diff --git a/src/crash_handler/lib.rs b/src/crash_handler/lib.rs
-index 91e2ee80..c2db8ce8 100644
+index 91e2ee8025f..c2db8ce80ee 100644
 --- a/src/crash_handler/lib.rs
 +++ b/src/crash_handler/lib.rs
 @@ -1118,11 +1118,11 @@ mod draft {
@@ -615,7 +667,7 @@ index 91e2ee80..c2db8ce8 100644
          if cfg!(debug_assertions) {
              return false;
 diff --git a/src/http/Cargo.toml b/src/http/Cargo.toml
-index da1bf199..dd9b7319 100644
+index da1bf1993a4..dd9b7319d5b 100644
 --- a/src/http/Cargo.toml
 +++ b/src/http/Cargo.toml
 @@ -38,4 +38,5 @@ bun_url.workspace = true
@@ -625,7 +677,7 @@ index da1bf199..dd9b7319 100644
 +libc.workspace = true
  bun_zstd.workspace = true
 diff --git a/src/http/HTTPContext.rs b/src/http/HTTPContext.rs
-index 4f00a0c2..c60127a7 100644
+index 4f00a0c2069..c60127a7fb3 100644
 --- a/src/http/HTTPContext.rs
 +++ b/src/http/HTTPContext.rs
 @@ -242,8 +242,32 @@ pub struct PooledSocket<const SSL: bool> {
@@ -711,7 +763,7 @@ index 4f00a0c2..c60127a7 100644
                      Self::terminate_socket(http_socket);
                      continue;
 diff --git a/src/http/HTTPThread.rs b/src/http/HTTPThread.rs
-index b4f2c2f2..4c9a4d3c 100644
+index b4f2c2f208d..4c9a4d3ce45 100644
 --- a/src/http/HTTPThread.rs
 +++ b/src/http/HTTPThread.rs
 @@ -1239,6 +1239,17 @@ mod _event_loop_draft {
@@ -733,7 +785,7 @@ index b4f2c2f2..4c9a4d3c 100644
          // `internal_loop_data.set_parent_raw(2 /* mini */, mini_ptr)` on this
          // thread's uSockets loop. Without it, the macOS DNS cache-miss path
 diff --git a/src/http/HeaderValueIterator.rs b/src/http/HeaderValueIterator.rs
-index f6219fdd..10fd3d85 100644
+index f6219fddc26..10fd3d854ed 100644
 --- a/src/http/HeaderValueIterator.rs
 +++ b/src/http/HeaderValueIterator.rs
 @@ -58,6 +58,26 @@ pub fn fold_transfer_encoding(value: &[u8], coding: &mut Encoding) -> crate::Res
@@ -764,7 +816,7 @@ index f6219fdd..10fd3d85 100644
  pub fn connection_header_keep_alive(value: &[u8]) -> Option<bool> {
      let mut keep_alive = None;
 diff --git a/src/http/InternalState.rs b/src/http/InternalState.rs
-index 041c611e..300b5055 100644
+index 041c611e109..300b50559c0 100644
 --- a/src/http/InternalState.rs
 +++ b/src/http/InternalState.rs
 @@ -45,6 +45,9 @@ pub struct InternalState<'a> {
@@ -785,8 +837,21 @@ index 041c611e..300b5055 100644
              total_body_received: 0,
              request_body: bun_ptr::RawSlice::EMPTY,
              original_request_body: HTTPRequestBody::Bytes(b""),
+diff --git a/src/http/ProxyTunnel.rs b/src/http/ProxyTunnel.rs
+index abdb981d454..2f4e6f99011 100644
+--- a/src/http/ProxyTunnel.rs
++++ b/src/http/ProxyTunnel.rs
+@@ -625,7 +625,7 @@ impl ProxyTunnel {
+                 return;
+             }
+         };
+-        // The inner connection's form of the `set_inline_reject` call in `HTTPClient::on_open`.
++        // The inner connection's form of the `set_inline_reject` call in `HTTPClient::configure_tls`.
+         if this.flags.reject_unauthorized {
+             wrapper.set_inline_reject();
+         }
 diff --git a/src/http/lib.rs b/src/http/lib.rs
-index 265ba9db..ba2c306b 100644
+index 265ba9db804..f1df19c4016 100644
 --- a/src/http/lib.rs
 +++ b/src/http/lib.rs
 @@ -123,7 +123,7 @@ pub enum Protocol {
@@ -815,7 +880,78 @@ index 265ba9db..ba2c306b 100644
  /// Safe accessor for [`IDLE_TIMEOUT_SECONDS`].
  #[inline]
  pub(crate) fn idle_timeout_seconds() -> c_uint {
-@@ -2684,7 +2694,7 @@ impl<'a> HTTPClient<'a> {
+@@ -1099,7 +1109,7 @@ pub enum AlpnOffer {
+ 
+ /// Sets SNI (when `hostname` is non-empty), the legacy-server-connect option,
+ /// the ALPN protocol list for `offer`, and enables SCT/OCSP stapling. Called
+-/// from `on_open` for every TLS socket — must run even when the hostname is an
++/// before a TLS socket's first handshake. It must run even when the hostname is an
+ /// IP literal (with empty SNI) so ALPN is still advertised.
+ ///
+ // `ssl` is the live SSL handle for a just-opened socket (BoringSSL never
+@@ -1844,14 +1854,21 @@ impl<'a> HTTPClient<'a> {
+             self.state.request_stage = RequestStage::Opened;
+         }
+ 
++        if !IS_SSL {
++            self.first_call::<IS_SSL>(socket);
++        }
++        Ok(())
++    }
++
++    /// Valid only before the handshake starts, so [`Self::on_connect`] is the only caller.
++    fn configure_tls<const IS_SSL: bool>(&mut self, socket: HttpSocket<IS_SSL>) {
+         if IS_SSL {
+             // SAFETY: socket.get_native_handle() returns a valid *mut SSL on TLS sockets
+             let ssl_ptr: *mut boringssl::c::SSL = socket
+                 .get_native_handle()
+                 .map(|p| p.cast())
+                 .unwrap_or(core::ptr::null_mut());
+-            // SAFETY: ssl_ptr is a live *mut SSL for the just-opened TLS socket
+-            if !ssl_ptr.is_null() && unsafe { boringssl::c::SSL_is_init_finished(ssl_ptr) } == 0 {
++            if !ssl_ptr.is_null() {
+                 let raw_hostname = get_tls_hostname(self, self.http_proxy.is_some());
+ 
+                 // Build a NUL-terminated SNI string only when the hostname is not an
+@@ -1895,9 +1912,9 @@ impl<'a> HTTPClient<'a> {
+                     .filter(|_| crate::session_cache::eligible(self))
+                 {
+                     let want_tunnel = self.http_proxy.is_some() && self.url.is_https();
+-                    // SAFETY: `ssl_ptr` is live and pre-handshake (guarded by
+-                    // `SSL_is_init_finished == 0` above); `get_ssl_ctx` returns
+-                    // the static `https_context` or the heap context this
++                    // SAFETY: `ssl_ptr` is live and pre-handshake (uSockets starts
++                    // the handshake when the open callback returns); `get_ssl_ctx`
++                    // returns the static `https_context` or the heap context this
+                     // client holds a strong ref on, both of which outlive
+                     // every SSL attached to their socket group.
+                     unsafe {
+@@ -1917,10 +1934,7 @@ impl<'a> HTTPClient<'a> {
+                     }
+                 }
+             }
+-        } else {
+-            self.first_call::<IS_SSL>(socket);
+         }
+-        Ok(())
+     }
+ 
+     /// Runs once per connection, from the uSockets open callback. A socket
+@@ -1954,7 +1968,12 @@ impl<'a> HTTPClient<'a> {
+             let _ = socket.set_keep_alive(true, 60);
+         }
+ 
+-        self.on_open::<IS_SSL>(socket)
++        self.on_open::<IS_SSL>(socket)?;
++        // `on_open` starts the request on a plain socket, which can free `self`.
++        if IS_SSL {
++            self.configure_tls::<IS_SSL>(socket);
++        }
++        Ok(())
+     }
+ 
+     /// Whether to advertise "h2" in the TLS ALPN list. Restricted to request
+@@ -2684,7 +2703,7 @@ impl<'a> HTTPClient<'a> {
                  0,
                  None,
                  self.unix_socket_path,
@@ -824,7 +960,7 @@ index 265ba9db..ba2c306b 100644
              );
          } else {
              GenHttpContext::<IS_SSL>::close_socket(socket);
-@@ -4117,6 +4127,24 @@ impl<'a> HTTPClient<'a> {
+@@ -4117,6 +4136,24 @@ impl<'a> HTTPClient<'a> {
              .unwrap_or_else(idle_timeout_seconds)
      }
  
@@ -849,7 +985,7 @@ index 265ba9db..ba2c306b 100644
      pub(crate) fn set_timeout<S: SocketTimeout>(&self, socket: &S) {
          // Values are pre-normalised (global: `HTTPThread::on_start`;
          // per-request: `AsyncHTTP::init`) so this is a plain pass-through.
-@@ -4339,7 +4367,7 @@ impl<'a> HTTPClient<'a> {
+@@ -4339,7 +4376,7 @@ impl<'a> HTTPClient<'a> {
                      },
                      None,
                      self.unix_socket_path,
@@ -858,7 +994,7 @@ index 265ba9db..ba2c306b 100644
                  );
              } else {
                  if self.proxy_tunnel.is_some() {
-@@ -4993,6 +5021,11 @@ impl<'a> HTTPClient<'a> {
+@@ -4993,6 +5030,11 @@ impl<'a> HTTPClient<'a> {
                          None => {}
                      }
                  }
@@ -870,8 +1006,38 @@ index 265ba9db..ba2c306b 100644
                  h if h == hash_header_const(b"Last-Modified") => {
                      pretend_304 = self.flags.force_last_modified
                          && response.status_code > 199
+diff --git a/src/js/internal/fs/streams.ts b/src/js/internal/fs/streams.ts
+index 8547718d143..cf631a4ed14 100644
+--- a/src/js/internal/fs/streams.ts
++++ b/src/js/internal/fs/streams.ts
+@@ -436,7 +436,8 @@ function WriteStream(this: FSStream, path: string | null | undefined, options?:
+     if (!write) this._write = null;
+     if (!writev) this._writev = null;
+   } else {
+-    this._writev = undefined;
++    // Keep the prototype's _writev: writes queued while one is in flight go out in one writev instead of one
++    // thread-pool round trip each (800k queued lines: 10 s one by one, 0.3 s coalesced, like Node).
+     $assert(this[kFs].write, "assuming user does not delete fs.write!");
+   }
+ 
+diff --git a/src/js/internal/streams/writable.ts b/src/js/internal/streams/writable.ts
+index d192409e5c1..60b8244c4b4 100644
+--- a/src/js/internal/streams/writable.ts
++++ b/src/js/internal/streams/writable.ts
+@@ -735,7 +735,10 @@ function clearBuffer(stream, state) {
+ 
+     if (i === buffered.length) {
+       resetBuffer(state);
+-    } else if (i > 256) {
++    } else if (i > 256 && i >= buffered.length >>> 1) {
++      // Compact only once at least half the queue has drained: each entry then moves a bounded number of times. Splicing
++      // the front off a long queue on every completion costs O(queue) per write, and a front splice that leaves 100,000 or
++      // more entries turns the array into ArrayStorage, where the next ones take the slow per-element path.
+       buffered.splice(0, i);
+       state.bufferedIndex = 0;
+     } else {
 diff --git a/src/jsc/CachedBytecode.rs b/src/jsc/CachedBytecode.rs
-index 2364c15d..60175edb 100644
+index 2364c15de80..60175edbe91 100644
 --- a/src/jsc/CachedBytecode.rs
 +++ b/src/jsc/CachedBytecode.rs
 @@ -105,6 +105,15 @@ unsafe extern "C" {
@@ -920,7 +1086,7 @@ index 2364c15d..60175edb 100644
  /// payload's regions ends (`JSC::BytecodeLinkEncoder`), how many of the order files' hot functions are functions
  /// of this link, and for each module how many functions with code its names did not cover.
 diff --git a/src/jsc/GarbageCollectionController.rs b/src/jsc/GarbageCollectionController.rs
-index 96ff316e..5ca64ff9 100644
+index 96ff316eafb..dfd2b9f8698 100644
 --- a/src/jsc/GarbageCollectionController.rs
 +++ b/src/jsc/GarbageCollectionController.rs
 @@ -79,7 +79,7 @@ impl GarbageCollectionController {
@@ -941,24 +1107,21 @@ index 96ff316e..5ca64ff9 100644
                  this.gc_repeating_timer_fast.set(false);
              }
          } else {
-@@ -253,3 +253,25 @@ impl Drop for GarbageCollectionController {
+@@ -253,3 +253,22 @@ impl Drop for GarbageCollectionController {
          self.deinit();
      }
  }
 +
-+/// The fast interval of the repeating timer, unless `BUN_GC_TIMER_INTERVAL` says. macOS, an executable compiled ahead of time:
-+/// 5 s rather than 1 s. Such a program (an interactive one) left waiting still collected every second for half a minute, the
-+/// only thing that woke it (Pi at its prompt: 1.4 ms of CPU a second); at 5 s it gives the same memory back as soon, in a fifth
-+/// of the wake-ups.
++/// The fast interval of the repeating timer, unless `BUN_GC_TIMER_INTERVAL` says. An executable compiled ahead of time: 5 s
++/// rather than 1 s. Such a program (an interactive one) left waiting still collected every second for half a minute, the only
++/// thing that woke it (Pi at its prompt: 1.4 ms of CPU a second on macOS; on Linux 7.9 wake-ups a second, 0.73 ms of CPU); at
++/// 5 s it gives the same memory back as soon, in a fifth of the wake-ups (Linux: 1.9 a second, 0.49 ms).
 +fn default_fast_interval_ms() -> u64 {
-+    #[cfg(target_os = "macos")]
-+    {
-+        unsafe extern "C" {
-+            safe fn Bun__AOTImage__isMapped() -> bool;
-+        }
-+        if Bun__AOTImage__isMapped() {
-+            return 5000;
-+        }
++    unsafe extern "C" {
++        safe fn Bun__AOTImage__isMapped() -> bool;
++    }
++    if Bun__AOTImage__isMapped() {
++        return 5000;
 +    }
 +    1000
 +}
@@ -968,7 +1131,7 @@ index 96ff316e..5ca64ff9 100644
 +    (30_000 / fast_interval_ms.max(1000)).clamp(1, 30) as u8
 +}
 diff --git a/src/jsc/JSType.rs b/src/jsc/JSType.rs
-index 3c21ec7b..6503c62d 100644
+index 3c21ec7b288..6503c62dced 100644
 --- a/src/jsc/JSType.rs
 +++ b/src/jsc/JSType.rs
 @@ -176,49 +176,51 @@ impl JSType {
@@ -1410,7 +1573,7 @@ index 3c21ec7b..6503c62d 100644
      pub const Event: JSType = JSType(0b11101111);
      pub const DOMWrapper: JSType = JSType(0b11101110);
 diff --git a/src/jsc/VirtualMachine.rs b/src/jsc/VirtualMachine.rs
-index 3848fa53..816ff36b 100644
+index 3848fa534cd..816ff36b6ba 100644
 --- a/src/jsc/VirtualMachine.rs
 +++ b/src/jsc/VirtualMachine.rs
 @@ -1455,9 +1455,25 @@ impl VirtualMachine {
@@ -1441,7 +1604,7 @@ index 3848fa53..816ff36b 100644
              JSC__Heap__setInitialAllocationBudget(self.jsc_vm(), budget);
          }
 diff --git a/src/jsc/bindings/BunClientData.cpp b/src/jsc/bindings/BunClientData.cpp
-index 6434aa34..97ac963d 100644
+index 6434aa343d1..97ac963d3af 100644
 --- a/src/jsc/bindings/BunClientData.cpp
 +++ b/src/jsc/bindings/BunClientData.cpp
 @@ -1,6 +1,7 @@
@@ -1470,7 +1633,7 @@ index 6434aa34..97ac963d 100644
  }
  
 diff --git a/src/jsc/bindings/BunClientData.h b/src/jsc/bindings/BunClientData.h
-index 34af44c7..004ab02b 100644
+index 34af44c71ae..004ab02bf96 100644
 --- a/src/jsc/bindings/BunClientData.h
 +++ b/src/jsc/bindings/BunClientData.h
 @@ -301,7 +301,7 @@ public:
@@ -1483,7 +1646,7 @@ index 34af44c7..004ab02b 100644
      // The executable's pre-resolved module graph for this VM, created on first use over decoderStringTable() from the
      // standalone module graph; null when there is none (or it does not validate).
 diff --git a/src/jsc/bindings/ErrorStackTrace.cpp b/src/jsc/bindings/ErrorStackTrace.cpp
-index 0b0e9e59..9aea36cf 100644
+index 0b0e9e5920b..9aea36cf614 100644
 --- a/src/jsc/bindings/ErrorStackTrace.cpp
 +++ b/src/jsc/bindings/ErrorStackTrace.cpp
 @@ -31,16 +31,6 @@ using namespace WebCore;
@@ -1636,7 +1799,7 @@ index 0b0e9e59..9aea36cf 100644
      } else if (callee) {
          functionName = Zig::functionName(vm, callee);
 diff --git a/src/jsc/bindings/FormatStackTraceForJS.cpp b/src/jsc/bindings/FormatStackTraceForJS.cpp
-index cebb7c8f..a49505f3 100644
+index cebb7c8f74c..a49505f3d0d 100644
 --- a/src/jsc/bindings/FormatStackTraceForJS.cpp
 +++ b/src/jsc/bindings/FormatStackTraceForJS.cpp
 @@ -335,7 +335,15 @@ WTF::String formatStackTrace(
@@ -1691,7 +1854,7 @@ index cebb7c8f..a49505f3 100644
      }
      if (!callSites) {
 diff --git a/src/jsc/bindings/InternalModuleRegistry.cpp b/src/jsc/bindings/InternalModuleRegistry.cpp
-index baf1b157..d2182382 100644
+index baf1b157677..d2182382b0f 100644
 --- a/src/jsc/bindings/InternalModuleRegistry.cpp
 +++ b/src/jsc/bindings/InternalModuleRegistry.cpp
 @@ -7,6 +7,7 @@
@@ -1732,7 +1895,7 @@ index baf1b157..d2182382 100644
      RETURN_IF_EXCEPTION(throwScope, {});
      if (globalObject->hasDebugger() && globalObject->debugger()->isInteractivelyDebugging()) [[unlikely]] {
 diff --git a/src/jsc/bindings/ZigException.cpp b/src/jsc/bindings/ZigException.cpp
-index cfd1059c..e6aa41f7 100644
+index cfd1059c2e7..e6aa41f79d7 100644
 --- a/src/jsc/bindings/ZigException.cpp
 +++ b/src/jsc/bindings/ZigException.cpp
 @@ -30,6 +30,7 @@
@@ -1778,7 +1941,7 @@ index cfd1059c..e6aa41f7 100644
          uint8_t frame_i = 0;
          size_t stack_frame_i = 0;
 diff --git a/src/jsc/bindings/ZigGlobalObject.cpp b/src/jsc/bindings/ZigGlobalObject.cpp
-index 9de807ad..bb219910 100644
+index 9de807adfae..d5f3606b5e3 100644
 --- a/src/jsc/bindings/ZigGlobalObject.cpp
 +++ b/src/jsc/bindings/ZigGlobalObject.cpp
 @@ -1,4 +1,5 @@
@@ -1842,7 +2005,7 @@ index 9de807ad..bb219910 100644
              if (envc > 0) [[likely]] {
                  auto envc_copy = envc;
                  while (envc_copy--) {
-@@ -378,8 +413,18 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+@@ -378,8 +413,24 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
                      }
                  }
              }
@@ -1858,11 +2021,17 @@ index 9de807ad..bb219910 100644
 +        // MIMALLOC_PURGE_HOLES_MIN_INTERVAL overrides.
 +        if (Bun__AOTImage__isMapped() && !getenv("MIMALLOC_PURGE_HOLES_MIN_INTERVAL"))
 +            mi_option_set(mi_option_purge_holes_min_interval, 250);
++        // Freed memory is purged once it is this old, also while the thread stays busy. At mimalloc's 100 ms a session
++        // that streams one reply after another keeps what it freed resident (measured on Pi, 50 prompts: 62-91 MB of
++        // footprint at 100 ms, 43-50 MB at 25 for some 4% more CPU, still 13% less than 0.7.2; at 10 it rose to 74 MB).
++        // MIMALLOC_PURGE_DELAY overrides.
++        if (Bun__AOTImage__isMapped() && !getenv("MIMALLOC_PURGE_DELAY"))
++            mi_option_set(mi_option_purge_delay, 25);
  
  #if OS(WINDOWS) && (CPU(X86_64) || CPU(ARM64))
          // JSC::initialize() registered unwind info + a language-specific SEH
 diff --git a/src/jsc/bindings/ZigSourceProvider.cpp b/src/jsc/bindings/ZigSourceProvider.cpp
-index fbfaa2ff..b2bab3c0 100644
+index fbfaa2ffb62..b2bab3c0bf0 100644
 --- a/src/jsc/bindings/ZigSourceProvider.cpp
 +++ b/src/jsc/bindings/ZigSourceProvider.cpp
 @@ -2,6 +2,14 @@
@@ -2363,7 +2532,7 @@ index fbfaa2ff..b2bab3c0 100644
      memcpySpan(std::span { regionEnds, JSC::BytecodeLinkEncoder::numberOfRegions }, std::span<const uint32_t> { result.regionEnds });
      *namedHotFunctions = result.namedHotFunctions;
 diff --git a/src/jsc/bindings/c-bindings.cpp b/src/jsc/bindings/c-bindings.cpp
-index a3fd0268..27a3940a 100644
+index a3fd0268c05..27a3940aa42 100644
 --- a/src/jsc/bindings/c-bindings.cpp
 +++ b/src/jsc/bindings/c-bindings.cpp
 @@ -21,6 +21,7 @@
@@ -2511,7 +2680,7 @@ index a3fd0268..27a3940a 100644
  
  extern "C" BlobHeader __attribute__((section(".bun"), aligned(BLOB_HEADER_ALIGNMENT), used)) BUN_COMPILED = { 0 };
 diff --git a/src/jsc/web_worker.rs b/src/jsc/web_worker.rs
-index 486a196f..299d3f13 100644
+index 486a196fc8f..299d3f13781 100644
 --- a/src/jsc/web_worker.rs
 +++ b/src/jsc/web_worker.rs
 @@ -154,6 +154,7 @@ pub enum Status {
@@ -2532,8 +2701,28 @@ index 486a196f..299d3f13 100644
                  let start = start;
                  start.worker.thread_main(start.init);
                  // The thread's ref (and the parent ticket) drop here.
+diff --git a/src/runtime/api/BunObject.rs b/src/runtime/api/BunObject.rs
+index b216ec4eb03..31ce8060de8 100644
+--- a/src/runtime/api/BunObject.rs
++++ b/src/runtime/api/BunObject.rs
+@@ -1025,9 +1025,15 @@ fn sleep_sync(global_object: &JSGlobalObject, callframe: &CallFrame) -> JsResult
+         )));
+     }
+ 
++    // mimalloc's scavenger sweeps this thread's heaps while it sleeps, as it does across the event loop's poll.
++    // SAFETY: nothing allocates or frees on this thread until `mi_on_thread_idle_end` below.
++    let handed_off = unsafe { bun_alloc::mimalloc::mi_on_thread_idle_start() };
+     std::thread::sleep(core::time::Duration::from_millis(
+         u64::try_from(milliseconds).expect("int cast"),
+     ));
++    if handed_off {
++        bun_alloc::mimalloc::mi_on_thread_idle_end();
++    }
+     Ok(JSValue::UNDEFINED)
+ }
+ 
 diff --git a/src/runtime/api/bun/subprocess.rs b/src/runtime/api/bun/subprocess.rs
-index 4ae01e96..296759b7 100644
+index 4ae01e9699d..296759b7ee9 100644
 --- a/src/runtime/api/bun/subprocess.rs
 +++ b/src/runtime/api/bun/subprocess.rs
 @@ -848,7 +848,7 @@ impl Subprocess<'_> {
@@ -2546,7 +2735,7 @@ index 4ae01e96..296759b7 100644
  
      #[bun_jsc::host_fn(getter)]
 diff --git a/src/runtime/cli/run_command.rs b/src/runtime/cli/run_command.rs
-index aea7e78e..5cede4c3 100644
+index aea7e78ed53..5cede4c334b 100644
 --- a/src/runtime/cli/run_command.rs
 +++ b/src/runtime/cli/run_command.rs
 @@ -1116,6 +1116,11 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
@@ -2562,7 +2751,7 @@ index aea7e78e..5cede4c3 100644
          bun_jsc::initialize(bun_jsc::InitializeOptions::default());
          bun_analytics::features::standalone_executable.fetch_add(1, Ordering::Relaxed);
 diff --git a/src/spawn/process.rs b/src/spawn/process.rs
-index 4ae154d4..193fe0b2 100644
+index 4ae154d480f..193fe0b28a7 100644
 --- a/src/spawn/process.rs
 +++ b/src/spawn/process.rs
 @@ -119,6 +119,10 @@ fn call_exit_handler(
@@ -2631,7 +2820,7 @@ index 4ae154d4..193fe0b2 100644
  
              for fd in out_fds {
 diff --git a/src/spawn_sys/posix_spawn.rs b/src/spawn_sys/posix_spawn.rs
-index 6555894c..41e25d24 100644
+index 6555894ca83..41e25d243e9 100644
 --- a/src/spawn_sys/posix_spawn.rs
 +++ b/src/spawn_sys/posix_spawn.rs
 @@ -610,6 +610,167 @@ pub mod posix_spawn {
@@ -2848,7 +3037,7 @@ index 6555894c..41e25d24 100644
  
              sys::Result::Err(sys::Error {
 diff --git a/src/spawn_sys/spawn_process.rs b/src/spawn_sys/spawn_process.rs
-index 0de81dcb..e59e0d6e 100644
+index 0de81dcb9f6..e59e0d6e696 100644
 --- a/src/spawn_sys/spawn_process.rs
 +++ b/src/spawn_sys/spawn_process.rs
 @@ -458,6 +458,8 @@ impl PosixStdio {
@@ -2888,7 +3077,7 @@ index 0de81dcb..e59e0d6e 100644
  
              #[cfg(any(target_os = "linux", target_os = "android"))]
 diff --git a/src/standalone_graph/StandaloneModuleGraph.rs b/src/standalone_graph/StandaloneModuleGraph.rs
-index a1cfe230..8fcf89ac 100644
+index a1cfe230615..d68cc363a95 100644
 --- a/src/standalone_graph/StandaloneModuleGraph.rs
 +++ b/src/standalone_graph/StandaloneModuleGraph.rs
 @@ -63,6 +63,8 @@ pub struct StandaloneModuleGraph {
@@ -3159,7 +3348,22 @@ index a1cfe230..8fcf89ac 100644
      if !target.is_host_platform()
          && output_files
              .iter()
-@@ -3348,6 +3523,44 @@ fn append_bytecode_aligned(
+@@ -3103,6 +3278,14 @@ impl StandaloneModuleGraph {
+         {
+             return;
+         }
++        // With a static heap the program runs from its code image, not from these bytes: reading them ahead only competes
++        // with the pages it does need (macOS, 0.7.2, pi-bin dropped from memory: `pi -p` 172 ms with this read, 163 without).
++        // Pi-Bolt's macOS launcher reads ahead what a start does touch (pi-bin.hot). (If the heap is then declined, the
++        // program decodes from these bytes as they fault in, as without this read.)
++        #[cfg(target_os = "macos")]
++        if !self.static_heap.is_empty() {
++            return;
++        }
+         let startup = &self.files.values()[..self.startup_module_count as usize];
+         let span = if startup.iter().any(|f| !f.bytecode.is_empty()) {
+             // A linked payload follows the string table; its hot front is what any module reads at startup.
+@@ -3348,6 +3531,44 @@ fn append_bytecode_aligned(
      }
  }
  
@@ -3204,6 +3408,371 @@ index a1cfe230..8fcf89ac 100644
  /// Allocates a StandaloneModuleGraph in the process-static `INSTANCE`,
  /// populates it from bytes, sets it globally, and returns the pointer.
  fn from_bytes_alloc(
+diff --git a/test/js/bun/util/sleepSync.test.ts b/test/js/bun/util/sleepSync.test.ts
+index 45361c2b5b3..99a9f820e94 100644
+--- a/test/js/bun/util/sleepSync.test.ts
++++ b/test/js/bun/util/sleepSync.test.ts
+@@ -1,5 +1,6 @@
+ import { sleepSync } from "bun";
+ import { expect, it } from "bun:test";
++import { bunEnv, bunExe, isASAN } from "harness";
+ 
+ it("sleepSync uses milliseconds", async () => {
+   const start = performance.now();
+@@ -28,3 +29,49 @@ it("sleepSync with negative number throws", async () => {
+ it("can map with sleepSync", async () => {
+   [1, 2, 3].map(sleepSync);
+ });
++
++// Free blocks inside pages that are still in use belong to the thread that owns the pages. They go back to the OS
++// when that thread tells mimalloc that it is about to block.
++it.skipIf(isASAN /* malloc is not mimalloc */)(
++  "sleepSync lets mimalloc release this thread's free memory",
++  async () => {
++    await using proc = Bun.spawn({
++      cmd: [
++        bunExe(),
++        "-e",
++        `
++      const { heapStats } = require("bun:jsc");
++      const purgeCalls = () => heapStats().mimalloc.purge_calls;
++      const spin = ms => { const start = performance.now(); while (performance.now() - start < ms); };
++
++      // the characters of these strings are allocated and freed by this thread
++      let strings = [];
++      for (let i = 0; i < 100000; i++) strings.push(Buffer.alloc(900 + (i % 5) * 8, 97).toString("latin1"));
++      // (far enough apart that whole OS pages are free in between, also where those are 16 KB)
++      strings = strings.filter((_, i) => i % 64 === 0);
++      Bun.gc(true);
++
++      // what needs no idle thread settles first, without going idle
++      let before = purgeCalls();
++      for (let stable = 0, tries = 0; stable < 3 && tries < 50; tries++) {
++        spin(60);
++        const now = purgeCalls();
++        stable = now === before ? stable + 1 : 0;
++        before = now;
++      }
++
++      let released = 0;
++      for (let i = 0; i < 20 && released < 500; i++) {
++        Bun.sleepSync(100);
++        released = purgeCalls() - before;
++      }
++      console.log(released >= 500, strings.length);
++      `,
++      ],
++      env: bunEnv,
++      stderr: "pipe",
++    });
++    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
++    expect({ stdout, stderr, exitCode }).toEqual({ stdout: "true 1563\n", stderr: "", exitCode: 0 });
++  },
++);
+diff --git a/test/js/node/fs/fs.test.ts b/test/js/node/fs/fs.test.ts
+index ac3c8fc43d9..f68235303e4 100644
+--- a/test/js/node/fs/fs.test.ts
++++ b/test/js/node/fs/fs.test.ts
+@@ -4175,6 +4175,30 @@ describe("fs.WriteStream", () => {
+     expect(events).toEqual(["write", "write", "close", "close-event"]);
+     expect(readFileSync(join(pathToDir, "out.txt"), "utf8")).toBe("aabb");
+   });
++
++  it("coalesces writes queued behind one in flight into writev", async () => {
++    const pathToDir = `${tmpdir()}/${Date.now()}`;
++    mkdirForce(pathToDir);
++    const path = join(pathToDir, "out.txt");
++    const writes = spyOn(fs, "write");
++    const writevs = spyOn(fs, "writev");
++    try {
++      const stream = fs.createWriteStream(path);
++      let expected = "";
++      for (let i = 0; i < 10_000; i++) {
++        const line = `line ${i}\n`;
++        expected += line;
++        stream.write(line);
++      }
++      await new Promise<void>((resolve, reject) => stream.end(resolve).on("error", reject));
++      expect(readFileSync(path, "utf8")).toBe(expected);
++      expect(writevs).toHaveBeenCalled();
++      expect(writes.mock.calls.length + writevs.mock.calls.length).toBeLessThan(100);
++    } finally {
++      writes.mockRestore();
++      writevs.mockRestore();
++    }
++  });
+ });
+ 
+ describe("fs.ReadStream", () => {
+diff --git a/test/js/node/stream/node-stream.test.js b/test/js/node/stream/node-stream.test.js
+index 782ed9039c6..f56f70122d0 100644
+--- a/test/js/node/stream/node-stream.test.js
++++ b/test/js/node/stream/node-stream.test.js
+@@ -213,6 +213,28 @@ describe("Writable", () => {
+     expect(s._events).toHaveProperty("finish");
+     expect(s._events).toHaveProperty("drain");
+   });
++
++  it("drains a long queue of writes in order without a front splice per completion", async () => {
++    const n = 300_000;
++    const seen = [];
++    const w = new Writable({
++      write(chunk, encoding, cb) {
++        seen.push(chunk.toString());
++        setImmediate(cb);
++      },
++    });
++    for (let i = 0; i < n; i++) w.write(String(i));
++    const splice = jest.spyOn(Array.prototype, "splice");
++    try {
++      await new Promise((resolve, reject) => w.end(resolve).on("error", reject));
++      // At most one compaction per halving of the queue, instead of one per completion after the first 256.
++      expect(splice.mock.calls.length).toBeLessThan(64);
++    } finally {
++      splice.mockRestore();
++    }
++    expect(seen.length).toBe(n);
++    expect(seen.every((v, i) => v === String(i))).toBe(true);
++  });
+ });
+ 
+ describe("Duplex", () => {
+diff --git a/test/js/web/fetch/fetch.tls.renegotiation-client-fixture.ts b/test/js/web/fetch/fetch.tls.renegotiation-client-fixture.ts
+new file mode 100644
+index 00000000000..57dbcf99e72
+--- /dev/null
++++ b/test/js/web/fetch/fetch.tls.renegotiation-client-fixture.ts
+@@ -0,0 +1,38 @@
++// Bun client for the "pooled socket mid-renegotiation" tests in
++// fetch.tls.test.ts.
++// argv: the <relayPort> <controlPort> of fetch.tls.renegotiation-peer-fixture.mjs,
++//       then "await-second" to wait for the request that takes the pooled socket
++// env:  CA_CERT, the certificate of the origin
++const [relayPort, controlPort, mode] = process.argv.slice(2);
++const origin = `https://127.0.0.1:${relayPort}/`;
++const control = (path: string) => fetch(`http://127.0.0.1:${controlPort}${path}`).then(res => res.text());
++// Verification stays on: fetch keeps no TLS session for a client without it.
++const tls = { ca: process.env.CA_CERT };
++
++// Parks the connection in the keep-alive pool and its TLS 1.2 session in
++// fetch's session cache.
++console.log("first", await (await fetch(origin, { tls })).text());
++
++// The origin asks for a renegotiation and the relay holds the client's
++// ClientHello, so the pooled socket stays mid-handshake until "/release".
++console.log("held record type", await control("/renegotiate"));
++
++// The pooled pickup. It is queued on the HTTP thread before the control
++// request below, so once that one is answered the pickup has run.
++const second = fetch(origin, { tls }).then(res => res.text());
++// Only "await-second" reads the outcome of that request.
++second.catch(() => {});
++console.log("after the pooled pickup", await control("/ping"));
++
++await control("/release");
++
++if (mode === "await-second") {
++  console.log("second", await second);
++  process.exit(0);
++}
++
++// `keepalive: false` takes a connection of its own, so the origin reports
++// whether the cached session is still there to offer.
++console.log("third", await (await fetch(origin, { tls, keepalive: false })).text());
++console.log("resumed", await control("/resumed"));
++process.exit(0);
+diff --git a/test/js/web/fetch/fetch.tls.renegotiation-peer-fixture.mjs b/test/js/web/fetch/fetch.tls.renegotiation-peer-fixture.mjs
+new file mode 100644
+index 00000000000..5ccb2da7de6
+--- /dev/null
++++ b/test/js/web/fetch/fetch.tls.renegotiation-peer-fixture.mjs
+@@ -0,0 +1,86 @@
++// Node peer for the "pooled socket that is mid-renegotiation" test in
++// fetch.tls.test.ts. It has to be Node: BoringSSL cannot start a renegotiation
++// from the server side, so a Bun server cannot send a HelloRequest.
++//
++//   origin:  a TLS 1.2 keep-alive https server
++//   relay:   a TCP proxy in front of the origin that can hold the client's bytes
++//   control: a plain http server through which the client fixture drives both
++//
++// The first line on stdout is "<relayPort> <controlPort>".
++import http from "node:http";
++import https from "node:https";
++import net from "node:net";
++
++const listen = server => new Promise(resolve => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
++
++// One entry per TLS connection: did the client resume a cached session?
++// A renegotiation adds no entry, it runs on the connection it belongs to.
++const resumed = [];
++let lastSecure;
++const origin = https.createServer(
++  { key: process.env.SERVER_KEY, cert: process.env.SERVER_CERT, minVersion: "TLSv1.2", maxVersion: "TLSv1.2" },
++  (req, res) => res.end("ok"),
++);
++// The idle connection has to stay open however slow the machine is.
++origin.keepAliveTimeout = 0;
++origin.on("secureConnection", socket => {
++  lastSecure = socket;
++  resumed.push(socket.isSessionReused());
++  socket.on("error", () => {});
++});
++origin.on("tlsClientError", () => {});
++const originPort = await listen(origin);
++
++let holding = false;
++let onHeld;
++const releases = [];
++const relay = net.createServer(client => {
++  const upstream = net.connect(originPort, "127.0.0.1");
++  const held = [];
++  releases.push(() => {
++    for (const chunk of held.splice(0)) upstream.write(chunk);
++  });
++  client.on("data", chunk => {
++    if (!holding) return void upstream.write(chunk);
++    held.push(chunk);
++    // The connection is idle, so the first held chunk is the client's
++    // renegotiation ClientHello. Its first byte is the TLS record type.
++    onHeld?.(chunk[0]);
++    onHeld = undefined;
++  });
++  upstream.on("data", chunk => client.write(chunk));
++  for (const socket of [client, upstream]) {
++    socket.on("error", () => {});
++    socket.on("close", () => {
++      client.destroy();
++      upstream.destroy();
++    });
++  }
++});
++const relayPort = await listen(relay);
++
++const control = http.createServer((req, res) => {
++  switch (req.url) {
++    case "/renegotiate": {
++      // Answers once the relay holds the client's ClientHello. From then on
++      // the client's SSL is mid-handshake, until "/release".
++      holding = true;
++      onHeld = recordType => res.end(String(recordType));
++      // A renegotiation that does not start must not leave the client waiting.
++      const fail = reason => void (res.writableEnded || res.end("no renegotiation: " + reason));
++      lastSecure.once("close", () => fail("the connection closed"));
++      if (!lastSecure.renegotiate({}, error => error && fail(error.code))) fail("refused");
++      return;
++    }
++    case "/release":
++      holding = false;
++      for (const release of releases) release();
++      return void res.end("released");
++    case "/resumed":
++      return void res.end(JSON.stringify(resumed));
++    default:
++      return void res.end("pong");
++  }
++});
++const controlPort = await listen(control);
++console.log(relayPort, controlPort);
+diff --git a/test/js/web/fetch/fetch.tls.test.ts b/test/js/web/fetch/fetch.tls.test.ts
+index 3cf57b86d0c..695c1c8097a 100644
+--- a/test/js/web/fetch/fetch.tls.test.ts
++++ b/test/js/web/fetch/fetch.tls.test.ts
+@@ -1,5 +1,5 @@
+ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+-import { bunEnv, bunExe, isASAN, isIPv6, isWindows, tmpdirSync } from "harness";
++import { bunEnv, bunExe, isASAN, isIPv6, isWindows, nodeExe, tmpdirSync } from "harness";
+ import { once } from "node:events";
+ import { readFileSync } from "node:fs";
+ import net from "node:net";
+@@ -551,6 +551,74 @@ describe.concurrent("fetch-tls", () => {
+         timeout,
+       );
+     }
++
++    // A pooled keep-alive socket is mid-handshake while its server
++    // renegotiates. The peer holds the client's renegotiation ClientHello, so
++    // the client's next request picks the socket up in that state. Node is the
++    // peer because BoringSSL cannot send a HelloRequest.
++    async function pickUpMidRenegotiation(...mode: string[]) {
++      await using peer = Bun.spawn({
++        cmd: [nodeExe()!, join(import.meta.dir, "fetch.tls.renegotiation-peer-fixture.mjs")],
++        env: { ...bunEnv, SERVER_CERT: validTls.cert, SERVER_KEY: validTls.key },
++        stdout: "pipe",
++        stderr: "inherit",
++      });
++      // The peer prints "<relayPort> <controlPort>" when its servers listen.
++      let line = "";
++      for await (const chunk of peer.stdout) {
++        line += new TextDecoder().decode(chunk);
++        if (line.includes("\n")) break;
++      }
++      const ports = line.trim().split(" ");
++      expect(ports).toHaveLength(2);
++
++      await using client = Bun.spawn({
++        cmd: [bunExe(), join(import.meta.dir, "fetch.tls.renegotiation-client-fixture.ts"), ...ports, ...mode],
++        env: { ...bunEnv, CA_CERT: validTls.cert },
++        stdout: "pipe",
++        stderr: "pipe",
++      });
++      const [stdout, stderr, exitCode] = await Promise.all([client.stdout.text(), client.stderr.text(), client.exited]);
++      return { stdout: stdout.trim().split("\n"), stderr, exitCode };
++    }
++
++    // The TLS setup of a connection (SNI, ALPN, the cached session) ran again
++    // for the request that picked the socket up. BoringSSL aborts the process
++    // when a session is offered after the handshake has begun. The setup also
++    // took the session out of the cache.
++    it.skipIf(!nodeExe())(
++      "a request that reuses a pooled socket mid-renegotiation does not set up TLS again",
++      async () => {
++        const { stdout, stderr, exitCode } = await pickUpMidRenegotiation();
++        expect(stderr).toBe("");
++        expect(stdout).toEqual([
++          "first ok",
++          // 22 is a handshake record: the client's renegotiation ClientHello.
++          "held record type 22",
++          // The process died in the pooled pickup.
++          "after the pooled pickup pong",
++          "third ok",
++          // The third request is on a connection of its own, and it resumes
++          // the session that the first one cached.
++          "resumed [false,true]",
++        ]);
++        expect(exitCode).toBe(0);
++      },
++      timeout,
++    );
++
++    // Observed: the request gets no answer, and the test times out. Its write
++    // parks while the renegotiation runs, and uSockets does not retry it when
++    // the renegotiation ends.
++    it.todo(
++      "a request that reuses a pooled socket mid-renegotiation gets its answer",
++      async () => {
++        const { stdout, exitCode } = await pickUpMidRenegotiation("await-second");
++        expect(stdout).toEqual(["first ok", "held record type 22", "after the pooled pickup pong", "second ok"]);
++        expect(exitCode).toBe(0);
++      },
++      timeout,
++    );
+   });
+ 
+   // Covers a family of HTTP-thread crashes (sentry BUN-2WC6 and siblings) where
+diff --git a/test/js/web/timers/timer-gc-roots.test.ts b/test/js/web/timers/timer-gc-roots.test.ts
+index 73509515e25..49386f1c637 100644
+--- a/test/js/web/timers/timer-gc-roots.test.ts
++++ b/test/js/web/timers/timer-gc-roots.test.ts
+@@ -131,6 +131,9 @@ describe.concurrent("AbortSignal.timeout is released when its wrapper is collect
+           await new Promise(r => setTimeout(r, 10));
+         }
+       }
++      // RSS still climbs to its plateau in the first rounds
++      await round();
++      await round();
+       await round();
+       const before = process.memoryUsage().rss;
+       await round();
 -- 
 2.54.0 (Apple Git-157)
 
