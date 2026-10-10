@@ -246,7 +246,7 @@ index 0000000000..269bde9aa5
 +    }
 +}
 diff --git a/Source/JavaScriptCore/aot/AOTCompiler.cpp b/Source/JavaScriptCore/aot/AOTCompiler.cpp
-index 944a17bfb4..923871482a 100644
+index 944a17bfb4..9615607b75 100644
 --- a/Source/JavaScriptCore/aot/AOTCompiler.cpp
 +++ b/Source/JavaScriptCore/aot/AOTCompiler.cpp
 @@ -32,8 +32,79 @@
@@ -312,10 +312,10 @@ index 944a17bfb4..923871482a 100644
 +    // is used of it is a region of its own.
 +    if (!(address >= start && address - start < size && info.protection != VM_PROT_NONE))
 +        return false;
-+    // The image is built without ASLR, so this process's own memory (malloc's zones, the heap of the VM that builds) lies just
-+    // above the executable, at 4 to 8 GB, where numbers made of others land (4294967295 + 2147483648): there only what is mapped
-+    // from a file (the executable, a library) or is the static region is taken for an address. (On Linux that memory is far
-+    // from such numbers, and every mapping counts.)
++    // The image is built with the executable at its linked address, so this process's own memory (malloc's zones, the heap of
++    // the VM that builds) lies just above the executable, at 4 to 8 GB, where numbers made of others land (4294967295 +
++    // 2147483648): there only what is mapped from a file (the executable, a library) or is the static region is taken for an
++    // address. (On Linux that memory is far from such numbers, and every mapping counts.)
 +    if (bmalloc::StaticRegion::contains(reinterpret_cast<const void*>(address)))
 +        return true;
 +    char path[PATH_MAX];

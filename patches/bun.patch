@@ -60,8 +60,9 @@ Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
  src/jsc/bindings/ZigException.cpp             |  14 +-
  src/jsc/bindings/ZigGlobalObject.cpp          |  51 ++
  src/jsc/bindings/ZigSourceProvider.cpp        | 435 +++++++++++++++++-
- src/jsc/bindings/c-bindings.cpp               | 113 +++++
+ src/jsc/bindings/c-bindings.cpp               | 114 +++++
  src/jsc/web_worker.rs                         |   4 +
+ src/resolver/resolver.rs                      |   7 +-
  src/runtime/api/BunObject.rs                  |   6 +
  src/runtime/api/bun/subprocess.rs             |   2 +-
  src/runtime/cli/run_command.rs                |   5 +
@@ -76,7 +77,7 @@ Bun's changes for Pi-Bolt's executables, on Linux x86-64 and macOS ARM64:
  .../fetch.tls.renegotiation-peer-fixture.mjs  |  86 ++++
  test/js/web/fetch/fetch.tls.test.ts           |  70 ++-
  test/js/web/timers/timer-gc-roots.test.ts     |   3 +
- 51 files changed, 1969 insertions(+), 162 deletions(-)
+ 52 files changed, 1976 insertions(+), 163 deletions(-)
  create mode 100644 test/js/web/fetch/fetch.tls.renegotiation-client-fixture.ts
  create mode 100644 test/js/web/fetch/fetch.tls.renegotiation-peer-fixture.mjs
 
@@ -2031,7 +2032,7 @@ index 9de807adfae..d5f3606b5e3 100644
  #if OS(WINDOWS) && (CPU(X86_64) || CPU(ARM64))
          // JSC::initialize() registered unwind info + a language-specific SEH
 diff --git a/src/jsc/bindings/ZigSourceProvider.cpp b/src/jsc/bindings/ZigSourceProvider.cpp
-index fbfaa2ffb62..b2bab3c0bf0 100644
+index fbfaa2ffb62..99f21fcdb3e 100644
 --- a/src/jsc/bindings/ZigSourceProvider.cpp
 +++ b/src/jsc/bindings/ZigSourceProvider.cpp
 @@ -2,6 +2,14 @@
@@ -2274,8 +2275,8 @@ index fbfaa2ffb62..b2bab3c0bf0 100644
 +        return false;
 +#if OS(DARWIN)
 +    if (_dyld_get_image_vmaddr_slide(0)) {
-+        // (c-bindings.cpp starts a build with BUN_STATIC_HEAP=1 again without ASLR; that did not work.)
-+        fprintf(stderr, "error: the static heap can only be built with the executable at the address it was linked for (ASLR off); building without it\n");
++        // (c-bindings.cpp starts a build with BUN_STATIC_HEAP=1 again at its linked address; that did not work.)
++        fprintf(stderr, "error: the static heap can only be built with the executable at the address it was linked for; building without it\n");
 +        s_builtStaticHeap = { };
 +        s_builtAOTImage = { };
 +        return false;
@@ -2532,7 +2533,7 @@ index fbfaa2ffb62..b2bab3c0bf0 100644
      memcpySpan(std::span { regionEnds, JSC::BytecodeLinkEncoder::numberOfRegions }, std::span<const uint32_t> { result.regionEnds });
      *namedHotFunctions = result.namedHotFunctions;
 diff --git a/src/jsc/bindings/c-bindings.cpp b/src/jsc/bindings/c-bindings.cpp
-index a3fd0268c05..27a3940aa42 100644
+index a3fd0268c05..cb3c00a7789 100644
 --- a/src/jsc/bindings/c-bindings.cpp
 +++ b/src/jsc/bindings/c-bindings.cpp
 @@ -21,6 +21,7 @@
@@ -2586,18 +2587,18 @@ index a3fd0268c05..27a3940aa42 100644
  extern "C" BlobHeader __attribute__((section("__BUN,__bun"))) BUN_COMPILED = { 0, 0 };
  
  extern "C" uint64_t* Bun__getStandaloneModuleGraphMachoLength()
-@@ -1189,6 +1216,92 @@ extern "C" uint64_t* Bun__getStandaloneModuleGraphMachoLength()
+@@ -1189,6 +1216,93 @@ extern "C" uint64_t* Bun__getStandaloneModuleGraphMachoLength()
      return &BUN_COMPILED.size;
  }
  
 +// A static heap (StandaloneModuleGraph's Flags::HAS_STATIC_HEAP) holds pointers into this executable: to native functions, to
 +// what describes the engine's classes, to the text of static strings. On Linux the executable is not position independent, so
-+// they are good in every process; macOS loads it somewhere else each time (ASLR, and an ARM64 executable must be position
++// they are good in every process; macOS loads it somewhere else each time (an ARM64 executable must be position
 +// independent). So an executable with a static heap, and the build that makes one (BUN_STATIC_HEAP=1), run with the main
-+// executable where it was linked to be: they start again at once, before anything else, with ASLR turned off for it. The
++// executable where it was linked to be: they start again at once, before anything else, at their linked address. The
 +// system's libraries move as before; the static heap must not point into them (JSC::StaticHeap checks while building). With
 +// BUN_AOT=0 the static heap is not used, and the executable runs as it was started.
-+static constexpr const char* reexecutedWithoutASLR = "BUN_INTERNAL_STATIC_HEAP_NO_ASLR";
++static constexpr const char* reexecutedAtLinkedAddress = "BUN_INTERNAL_STATIC_HEAP_AT_LINKED_ADDRESS";
 +
 +static bool hasStaticHeap()
 +{
@@ -2612,9 +2613,10 @@ index a3fd0268c05..27a3940aa42 100644
 +    return flags & hasStaticHeapFlag;
 +}
 +
-+// macOS passes ASLR being off on to every process this one starts. Pi-Bolt's launcher (scripts/lib/darwin-launcher.c) forks a
-+// helper with ASLR before it starts this executable without it, and says so in BUN_INTERNAL_SPAWN_HELPER: <pid>:<socket>:<path
-+// of pi-spawn>. posix_spawn.rs then starts pi-spawn in the place of a program, which has the helper start it.
++// macOS passes how this executable was started on to every process it starts. Pi-Bolt's launcher
++// (scripts/lib/darwin-launcher.c) forks a helper, started the usual way, before it starts this executable, and says so in
++// BUN_INTERNAL_SPAWN_HELPER: <pid>:<socket>:<path of pi-spawn>. posix_spawn.rs then starts pi-spawn in the place of a program,
++// which has the helper start it.
 +static constexpr const char* spawnHelperVariable = "BUN_INTERNAL_SPAWN_HELPER";
 +extern "C" int Bun__spawnHelperFd = -1;
 +extern "C" const char* Bun__spawnProxyPath = nullptr;
@@ -2639,11 +2641,11 @@ index a3fd0268c05..27a3940aa42 100644
 +    unsetenv(spawnHelperVariable);
 +}
 +
-+__attribute__((constructor(101))) static void Bun__reexecWithoutASLRForStaticHeap(int, char** argv, char**)
++__attribute__((constructor(101))) static void Bun__reexecAtLinkedAddressForStaticHeap(int, char** argv, char**)
 +{
-+    if (getenv(reexecutedWithoutASLR)) {
++    if (getenv(reexecutedAtLinkedAddress)) {
 +        // Whether or not it worked: once. (Bun__StaticHeap__map() checks where the executable is.)
-+        unsetenv(reexecutedWithoutASLR);
++        unsetenv(reexecutedAtLinkedAddress);
 +        takeSpawnHelper();
 +        return;
 +    }
@@ -2666,13 +2668,13 @@ index a3fd0268c05..27a3940aa42 100644
 +    posix_spawnattr_t attributes;
 +    if (posix_spawnattr_init(&attributes))
 +        return;
-+    constexpr short disableASLR = 0x100; // _POSIX_SPAWN_DISABLE_ASLR
-+    posix_spawnattr_setflags(&attributes, disableASLR | POSIX_SPAWN_SETEXEC);
-+    setenv(reexecutedWithoutASLR, "1", 1);
++    constexpr short linkedAddress = 0x100; // (a private posix_spawn flag: no slide for the main executable)
++    posix_spawnattr_setflags(&attributes, linkedAddress | POSIX_SPAWN_SETEXEC);
++    setenv(reexecutedAtLinkedAddress, "1", 1);
 +    extern char** environ;
 +    posix_spawn(nullptr, path, nullptr, &attributes, argv, environ);
 +    // Not started again: go on as it is (the static heap is then not used).
-+    unsetenv(reexecutedWithoutASLR);
++    unsetenv(reexecutedAtLinkedAddress);
 +    posix_spawnattr_destroy(&attributes);
 +}
 +
@@ -2701,6 +2703,24 @@ index 486a196fc8f..299d3f13781 100644
                  let start = start;
                  start.worker.thread_main(start.init);
                  // The thread's ref (and the parent ticket) drop here.
+diff --git a/src/resolver/resolver.rs b/src/resolver/resolver.rs
+index 3615a6efe7f..a140bb42b32 100644
+--- a/src/resolver/resolver.rs
++++ b/src/resolver/resolver.rs
+@@ -1329,7 +1329,12 @@ impl<'a> Resolver<'a> {
+                             ..Default::default()
+                         });
+                     }
+-                    if specifier_is_embedded_path {
++                    // An embedded module resolves nothing in the working directory: the program must not run a
++                    // package or file that the directory it is started in supplies. Absolute paths still resolve,
++                    // and so do the directories a caller names itself (`require.resolve(id, { paths })`).
++                    if specifier_is_embedded_path
++                        || (!bun_paths::is_absolute(import_path) && self.custom_dir_paths.is_none())
++                    {
+                         self.extension_order = original_order;
+                         return ResultUnion::NotFound;
+                     }
 diff --git a/src/runtime/api/BunObject.rs b/src/runtime/api/BunObject.rs
 index b216ec4eb03..31ce8060de8 100644
 --- a/src/runtime/api/BunObject.rs
@@ -2820,19 +2840,19 @@ index 4ae154d480f..193fe0b28a7 100644
  
              for fd in out_fds {
 diff --git a/src/spawn_sys/posix_spawn.rs b/src/spawn_sys/posix_spawn.rs
-index 6555894ca83..41e25d243e9 100644
+index 6555894ca83..908802f7a45 100644
 --- a/src/spawn_sys/posix_spawn.rs
 +++ b/src/spawn_sys/posix_spawn.rs
 @@ -610,6 +610,167 @@ pub mod posix_spawn {
          Ok((posix_actions, posix_attr))
      }
  
-+    /// pi-bin, Pi-Bolt's executable on macOS, runs without ASLR, and macOS passes that on to every process it starts. When
-+    /// Pi-Bolt's launcher has made a helper with ASLR (see `Bun__spawnHelperFd` in c-bindings.cpp), the program is started by
-+    /// it: this starts pi-spawn (Pi-Bolt's scripts/lib/darwin-spawn-proxy.c) in the program's place, with everything the
-+    /// program would get, and two more files: the helper's socket, and a pipe on which pi-spawn says how it went. pi-spawn
-+    /// then waits for the program and exits as it did, so its pid is the one to wait for; the program's pid is the one to
-+    /// signal. `None`: start the program directly.
++    /// pi-bin, Pi-Bolt's executable on macOS, runs at its linked address, and macOS passes how it was started on to every
++    /// process it starts. When Pi-Bolt's launcher has made a helper (see `Bun__spawnHelperFd` in c-bindings.cpp), the program
++    /// is started by it: this starts pi-spawn (Pi-Bolt's scripts/lib/darwin-spawn-proxy.c) in the program's place, with
++    /// everything the program would get, and two more files: the helper's socket, and a pipe on which pi-spawn says how it
++    /// went. pi-spawn then waits for the program and exits as it did, so its pid is the one to wait for; the program's pid is
++    /// the one to signal. `None`: start the program directly.
 +    #[cfg(target_os = "macos")]
 +    fn spawn_through_proxy(
 +        path: &CStr,

@@ -42,4 +42,23 @@ describe("getNativeModuleCandidates", () => {
 			join(dirname(execPath), nativePath),
 		]);
 	});
+
+	it("does not look the TUI package up from a module embedded in a compiled executable", () => {
+		const execPath = resolve("virtual", "pi-bolt", "pi");
+		const nativePath = join("native", "darwin", "prebuilds", "darwin-arm64", "darwin-platform.node");
+		let looked = false;
+
+		const candidates = getNativeModuleCandidates(nativePath, {
+			moduleUrl: "file:///$bunfs/root/pi",
+			execPath,
+			resolvePackage: () => {
+				looked = true;
+				return resolve("untrusted-repo", "node_modules", "@earendil-works", "pi-tui", "index.js");
+			},
+		});
+
+		assert.equal(looked, false);
+		assert.ok(candidates.every((candidate) => !candidate.includes("untrusted-repo")));
+		assert.equal(candidates.at(-1), join(dirname(execPath), nativePath));
+	});
 });
