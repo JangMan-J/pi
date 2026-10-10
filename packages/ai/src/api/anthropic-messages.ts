@@ -53,6 +53,9 @@ import {
 	type TranscriptContext,
 } from "../utils/transcript.ts";
 
+import { shapeOAuthPayload } from "./anthropic-oauth/request-shaping.ts";
+import { claudeCodeSessionId } from "./anthropic-oauth/session-id.ts";
+import { recoverClaudeCodeVersion, resolveClaudeCodeVersion } from "./anthropic-oauth/version.ts";
 import {
 	getJsonSchemaToolParameters,
 	resolveJsonSchemaStrictSampling,
@@ -91,9 +94,6 @@ function getCacheControl(
 		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
 	};
 }
-
-// Stealth mode: Mimic Claude Code's tool naming exactly
-const claudeCodeVersion = "2.1.280";
 
 // Claude Code 2.x tool names (canonical casing)
 // Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
@@ -291,13 +291,13 @@ export interface AnthropicOptions extends StreamOptions {
 }
 
 function mergeHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
-	const merged: ProviderHeaders = {};
+	const merged = new Map<string, [string, string | null]>();
 	for (const headers of headerSources) {
-		if (headers) {
-			Object.assign(merged, headers);
+		for (const [name, value] of Object.entries(headers ?? {})) {
+			merged.set(name.toLowerCase(), [name, value]);
 		}
 	}
-	return merged;
+	return Object.fromEntries(merged.values());
 }
 
 function mergeClientHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
@@ -584,6 +584,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 		try {
 			let client: Anthropic;
 			let isOAuth: boolean;
+			let oauthVersion: string | undefined;
 			let usageModel = model;
 			let inputTransformations: BetaInputTransformation[] | undefined;
 
@@ -606,6 +607,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 
 				const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 				const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
+				const ccSessionId =
+					apiKey && isOAuthToken(apiKey) ? await claudeCodeSessionId(options?.sessionId) : undefined;
 
 				const created = createClient(
 					model,
@@ -615,22 +618,44 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					copilotDynamicHeaders,
 					cacheSessionId,
 					federation,
+					options?.env,
+					ccSessionId,
 				);
 				client = created.client;
 				isOAuth = created.isOAuthToken;
+				oauthVersion = created.oauthVersion;
 			}
 			let params = buildParams(model, normalizedContext, isOAuth, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = { ...(nextParams as MessageCreateParamsStreaming), stream: true };
 			}
+			if (oauthVersion) params = await shapeOAuthPayload(params, oauthVersion);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
+				headers: undefined as ProviderHeaders | undefined,
 			};
+			let recoveredVersion = false;
 			const response = await retryProviderRequest(
-				() => client.beta.messages.create(params, requestOptions).asResponse(),
+				async () => {
+					for (;;) {
+						try {
+							return await client.beta.messages.create(params, requestOptions).asResponse();
+						} catch (error) {
+							if (!oauthVersion || options?.signal?.aborted) throw error;
+							oauthVersion = recoverClaudeCodeVersion(error, oauthVersion, recoveredVersion, options?.env);
+							recoveredVersion = true;
+							params = await shapeOAuthPayload(params, oauthVersion);
+							requestOptions.headers = mergeHeaders(
+								{ "user-agent": `claude-cli/${oauthVersion}` },
+								model.headers,
+								options?.headers,
+							);
+						}
+					}
+				},
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
@@ -970,7 +995,9 @@ function createClient(
 	dynamicHeaders?: Record<string, string>,
 	sessionId?: string,
 	federation?: AnthropicFederationConfig,
-): { client: Anthropic; isOAuthToken: boolean } {
+	env?: ProviderEnv,
+	ccSessionId?: string,
+): { client: Anthropic; isOAuthToken: boolean; oauthVersion?: string } {
 	// Copilot: Bearer auth.
 	if (model.provider === "github-copilot") {
 		const client = new PiAnthropic({
@@ -995,6 +1022,7 @@ function createClient(
 
 	// OAuth: Bearer auth, Claude Code identity headers
 	if (apiKey && isOAuthToken(apiKey)) {
+		const oauthVersion = resolveClaudeCodeVersion(env);
 		const client = new PiAnthropic({
 			apiKey: null,
 			authToken: apiKey,
@@ -1005,15 +1033,16 @@ function createClient(
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
-					"user-agent": `claude-cli/${claudeCodeVersion}`,
+					"user-agent": `claude-cli/${oauthVersion}`,
 					"x-app": "cli",
+					...(ccSessionId ? { "x-claude-code-session-id": ccSessionId } : {}),
 				},
 				model.headers,
 				optionsHeaders,
 			),
 		});
 
-		return { client, isOAuthToken: true };
+		return { client, isOAuthToken: true, oauthVersion };
 	}
 
 	// API key, header-owned auth, or workload identity federation.
