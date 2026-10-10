@@ -44,7 +44,8 @@ jobs:
       - name: Test
         run: |
           out/pi-bolt/pi --version | tee /dev/stderr | grep -q "Pi-Bolt"
-          out/pi-bolt/pi --list-models antigravity | grep -q antigravity
+          # The native Antigravity provider is compiled in: known to auth check, with no credentials on a runner.
+          out/pi-bolt/pi auth check --provider antigravity --json | tee /dev/stderr | grep -q '"reason":"credentials_not_configured"'
           tests/pi/run.sh "$PWD/out/pi-bolt/pi"
       - name: Archive
         id: archive
