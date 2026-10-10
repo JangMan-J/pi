@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import harness
 from harness import (
     DONE, MACOS, MODEL_ARGS, PROMPT, Tty, done, fake_model, maxrss_mb, median, parse_builds, peak_footprint_mb, pi_env, pi_home,
     pinned, workdir,
@@ -42,6 +43,7 @@ def run_plain(build, args, env, cwd, cpus):
          "cpu_ms": (ru.ru_utime + ru.ru_stime) * 1e3, "peak_mb": maxrss_mb(ru)}
     if peak_fp is not None:
         r["peak_fp_mb"] = peak_fp
+        r.update(harness.last_exit_counters)
     return out, r
 
 
@@ -85,6 +87,7 @@ def interactive(build, env, cwd, cpus, prompts=5):
     r["peak_mb"] = maxrss_mb(ru)
     if getattr(tty, "peak_footprint_mb", None) is not None:
         r["peak_fp_mb"] = tty.peak_footprint_mb
+        r.update(getattr(tty, "exit_counters", {}))
     return r
 
 
@@ -97,7 +100,7 @@ COLUMNS = {
 if MACOS:
     # (peak_mb, ru_maxrss, counts clean file pages and freed pages the kernel may take back; the footprint does not.)
     for columns in COLUMNS.values():
-        columns.append("peak_fp_mb")
+        columns.extend(["peak_fp_mb", "instr_m"])
 
 
 def summarize(rows, baseline=None):
