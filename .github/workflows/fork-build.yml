@@ -1,0 +1,85 @@
+name: fork-build
+
+# JangMan-J/pi: builds this fork's Pi-Bolt (Pi with the native Antigravity and Anthropic OAuth patches) on Linux x86-64 with
+# the released Pi-Bolt runtime, runs the Pi tests against it, and uploads the archive. A jang-vX.Y.Z tag also publishes a
+# GitHub release. The upstream release workflow (release.yml) is for the Pi-Bolt maintainers and needs macOS runners,
+# signing keys and an existing release to borrow the runtime from; this one does not.
+on:
+  push:
+    branches: [pi-bolt]
+    tags: ["jang-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test (Linux x86-64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xz-utils
+          # The build's code uses what the building CPU has (AVX2, LZCNT, BMI1); other CPUs run from bytecode.
+          for flag in avx2 bmi1 abm; do grep -qw "$flag" /proc/cpuinfo || { echo "this runner's CPU has no $flag"; exit 1; }; done
+      - name: Runtime
+        run: |
+          scripts/fetch-runtime.sh
+          .work/runtime/bun --version
+      - name: Pi
+        run: scripts/prepare-pi.sh
+      - name: Build
+        run: scripts/build-pi.sh
+      - name: Test
+        run: |
+          out/pi-bolt/pi --version | tee /dev/stderr | grep -q "Pi-Bolt"
+          out/pi-bolt/pi --list-models antigravity | grep -q antigravity
+          tests/pi/run.sh "$PWD/out/pi-bolt/pi"
+      - name: Archive
+        id: archive
+        run: |
+          name="pi-bolt-linux-x64-$(git rev-parse --short HEAD)"
+          mv out/pi-bolt "out/$name"
+          tar -C out -cJf "$name.tar.xz" "$name"
+          sha256sum "$name.tar.xz" > "$name.tar.xz.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: |
+            ${{ steps.archive.outputs.name }}.tar.xz
+            ${{ steps.archive.outputs.name }}.tar.xz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/jang-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release
+          merge-multiple: true
+      - name: Release
+        run: |
+          ls -la release
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            --title "Pi-Bolt (JangMan-J fork) $GITHUB_REF_NAME" release/*
+        env:
+          GH_TOKEN: ${{ github.token }}
