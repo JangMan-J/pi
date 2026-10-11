@@ -291,13 +291,13 @@ export interface AnthropicOptions extends StreamOptions {
 }
 
 function mergeHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
-	const merged: ProviderHeaders = {};
+	const merged = new Map<string, [string, string | null]>();
 	for (const headers of headerSources) {
-		if (headers) {
-			Object.assign(merged, headers);
+		for (const [name, value] of Object.entries(headers ?? {})) {
+			merged.set(name.toLowerCase(), [name, value]);
 		}
 	}
-	return merged;
+	return Object.fromEntries(merged.values());
 }
 
 function mergeClientHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
