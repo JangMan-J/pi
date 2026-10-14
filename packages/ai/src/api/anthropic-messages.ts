@@ -60,7 +60,7 @@ import {
 	resolveTranscript,
 	type TranscriptContext,
 } from "../utils/transcript.ts";
-
+import { createAnthropicMessagesRequest } from "./anthropic-oauth/request-shaping.ts";
 import {
 	getJsonSchemaToolParameters,
 	prefersJsonSchemaStrictSampling,
@@ -767,13 +767,16 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
-			const send = (body: ThreadedParams) =>
-				retryProviderRequest(() => client.beta.messages.create(body, requestOptions).asResponse(), {
-					maxRetries: options?.maxRetries,
-					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
-					onErrorResponse: (errorResponse) => options?.onResponse?.(errorResponse, model),
-				});
+			const send = async (body: ThreadedParams) =>
+				retryProviderRequest(
+					await createAnthropicMessagesRequest(client, body, requestOptions, isOAuth, model.headers, options),
+					{
+						maxRetries: options?.maxRetries,
+						maxRetryDelayMs: options?.maxRetryDelayMs,
+						signal: options?.signal,
+						onErrorResponse: (errorResponse) => options?.onResponse?.(errorResponse, model),
+					},
+				);
 			let disablePreferredStrictTools = hasExceededStrictToolLimits(options?.sessionId);
 			let response: Response;
 			let params: MessageCreateParamsStreaming;
