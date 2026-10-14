@@ -3,6 +3,7 @@ import { defineProvider, mergeCompat, mergeThinking } from "../define.ts";
 import {
 	enableOpenAiGrammarTools,
 	enableOpenAiMidConvoSystemMessages,
+	OPENAI_MID_CONVO_EFFORT_MODEL_IDS,
 	OPENAI_TOOL_SEARCH_MODEL_IDS,
 	openAiStandardCost,
 	supportsOpenAiXhigh,
@@ -13,16 +14,15 @@ import {
 // accounts: GPT-5.5 and GPT-5.3 Codex Spark are rejected with "not supported
 // when using Codex with a ChatGPT account".
 const MODELS = [
-	// GPT-6.1 uses the 500k default returned by /backend-api/codex/models.
+	// GPT-5.6 and GPT-6 use a 500k context window.
 	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", contextWindow: 500000 },
 	{ id: "gpt-6.1-terra", name: "GPT-6.1 Terra", contextWindow: 500000 },
-	// GPT-5.6 and GPT-6 use Codex's 272k default catalog limit.
-	{ id: "gpt-6-astra", name: "GPT-6 Astra", contextWindow: 272000 },
-	{ id: "gpt-6-sol", name: "GPT-6 Sol", contextWindow: 272000 },
-	{ id: "gpt-6-luna", name: "GPT-6 Luna", contextWindow: 272000 },
-	{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna", contextWindow: 272000 },
-	{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", contextWindow: 272000 },
-	{ id: "gpt-5.6-terra", name: "GPT-5.6 Terra", contextWindow: 272000 },
+	{ id: "gpt-6-astra", name: "GPT-6 Astra", contextWindow: 500000 },
+	{ id: "gpt-6-sol", name: "GPT-6 Sol", contextWindow: 500000 },
+	{ id: "gpt-6-luna", name: "GPT-6 Luna", contextWindow: 500000 },
+	{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna", contextWindow: 500000 },
+	{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", contextWindow: 500000 },
+	{ id: "gpt-5.6-terra", name: "GPT-5.6 Terra", contextWindow: 500000 },
 ];
 
 // Codex CLI keeps additional_tools behind its own model list.
@@ -64,5 +64,8 @@ export default defineProvider({
 			});
 		}
 		enableOpenAiMidConvoSystemMessages(model, { proxy: false });
+		if (OPENAI_MID_CONVO_EFFORT_MODEL_IDS.has(model.id)) {
+			mergeCompat(model as Model<"openai-codex-responses">, { supportsMidConvoEffort: true });
+		}
 	},
 });
