@@ -610,7 +610,8 @@ function buildRequestBody(
 	}
 
 	if (options?.serviceTier !== undefined) {
-		body.service_tier = options.serviceTier;
+		// The Codex backend rejects "fast" with HTTP 400 and exposes Fast mode as "priority".
+		body.service_tier = options.serviceTier === "fast" ? "priority" : options.serviceTier;
 	}
 
 	if (requestTools.length > 0) body.tools = requestTools;
@@ -638,7 +639,10 @@ function getServiceTierCostMultiplier(
 		case "flex":
 			return 0.5;
 		case "priority":
+		case "fast":
 			return model.id === "gpt-5.5" ? 2.5 : 2;
+		case "ultrafast":
+			return 6;
 		default:
 			return 1;
 	}
@@ -659,11 +663,18 @@ function applyServiceTierPricing(
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
 }
 
+// The body maps fast to priority; options retain fast for pricing when the server reports default.
 function resolveCodexServiceTier(
 	responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 	requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 ): ResponseCreateParamsStreaming["service_tier"] | undefined {
-	if (responseServiceTier === "default" && (requestServiceTier === "flex" || requestServiceTier === "priority")) {
+	if (
+		responseServiceTier === "default" &&
+		(requestServiceTier === "flex" ||
+			requestServiceTier === "priority" ||
+			requestServiceTier === "fast" ||
+			requestServiceTier === "ultrafast")
+	) {
 		return requestServiceTier;
 	}
 	return responseServiceTier ?? requestServiceTier;
