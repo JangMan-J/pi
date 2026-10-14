@@ -97,6 +97,15 @@ const GPT_6_MODEL_IDS = new Set([
 // GPT-6 models that reject reasoning.effort "none", so `off` is unavailable. For GPT-6.2 see
 // https://developers.openai.com/api/docs/models/gpt-6.2-sol
 const GPT_6_NO_NONE_EFFORT_MODEL_IDS = new Set(["gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"]);
+// GPT-6 models that accept mid-conversation reasoning.effort changes on Codex (verified October
+// 2026, before GPT-6.2; 6.2 is untested).
+export const OPENAI_MID_CONVO_EFFORT_MODEL_IDS = new Set([
+	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
+	"gpt-6.1-sol",
+	"gpt-6.1-terra",
+]);
 
 /** Thinking levels of GPT models on any host. */
 export function applyOpenAiFamilyRules(model: ChatModel): void {
