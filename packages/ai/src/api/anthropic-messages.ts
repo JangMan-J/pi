@@ -52,7 +52,7 @@ import {
 	resolveTranscript,
 	type TranscriptContext,
 } from "../utils/transcript.ts";
-
+import { createAnthropicMessagesRequest } from "./anthropic-oauth/request-shaping.ts";
 import {
 	getJsonSchemaToolParameters,
 	resolveJsonSchemaStrictSampling,
@@ -656,7 +656,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				}
 				try {
 					response = await retryProviderRequest(
-						() => client.beta.messages.create(params, requestOptions).asResponse(),
+						await createAnthropicMessagesRequest(client, params, requestOptions, isOAuth, model.headers, options),
 						{
 							maxRetries: options?.maxRetries,
 							maxRetryDelayMs: options?.maxRetryDelayMs,
