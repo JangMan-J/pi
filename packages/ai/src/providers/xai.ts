@@ -1,4 +1,5 @@
-import { openAIResponsesApi } from "../api/openai-responses.lazy.ts";
+import { buildXaiModels } from "../api/xai-responses/models.ts";
+import { xaiResponsesApi } from "../api/xai-responses.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadXaiOAuth } from "../auth/oauth/load.ts";
 import { createProvider, type Provider } from "../models.ts";
@@ -18,7 +19,7 @@ export function xaiProvider(): Provider<"openai-responses"> {
 				load: loadXaiOAuth,
 			}),
 		},
-		models: Object.values(XAI_MODELS),
-		api: openAIResponsesApi(),
+		models: buildXaiModels(XAI_MODELS),
+		api: xaiResponsesApi(),
 	});
 }
