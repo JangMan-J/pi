@@ -75,18 +75,26 @@ describe("max thinking level", () => {
 				systemPrompt: "You are a helpful assistant.",
 				messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
 			});
-			let payload: unknown;
+			let payload: { reasoning?: unknown; input?: unknown[] } | undefined;
 
 			await streamSimpleOpenAICodexResponses(model, context, {
 				apiKey: mockToken(),
 				reasoning: "max",
 				onPayload: (request) => {
-					payload = request;
+					payload = request as { reasoning?: unknown; input?: unknown[] };
 					throw new Error("payload captured");
 				},
 			}).result();
 
-			expect(payload).toMatchObject({ reasoning: { effort: "max", summary: "auto" } });
+			if (model.compat?.supportsMidConvoEffort) {
+				expect(payload).toMatchObject({ reasoning: { effort: "medium", summary: "auto" } });
+				expect(payload?.input?.at(-1)).toEqual({
+					type: "configuration_update",
+					reasoning: { effort: "max" },
+				});
+			} else {
+				expect(payload).toMatchObject({ reasoning: { effort: "max", summary: "auto" } });
+			}
 		},
 	);
 });
