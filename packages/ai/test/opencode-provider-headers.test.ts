@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
+import { opencodeGoProvider } from "../src/providers/opencode-go.ts";
 import { withOpenCodeSessionHeader } from "../src/providers/opencode-headers.ts";
 import type { Api, Model, ProviderStreams, StreamOptions } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
@@ -86,5 +87,29 @@ describe("OpenCode provider headers", () => {
 		streams.streamSimple(model, context, { headers: { "x-custom": "value" } });
 
 		expect(captured?.headers).toEqual({ "x-custom": "value" });
+	});
+
+	it("routes OpenCode Go Google models through the Google API", async () => {
+		const fetchMock = vi.fn(async () => {
+			throw new Error("mock fetch reached");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		try {
+			const googleModel: Model<"google-generative-ai"> = {
+				...model,
+				api: "google-generative-ai",
+				provider: "opencode-go",
+				baseUrl: "https://opencode.ai/zen/go/v1",
+			};
+
+			let eventCount = 0;
+			for await (const _event of opencodeGoProvider().stream(googleModel, context, { apiKey: "test" })) eventCount++;
+
+			expect(eventCount).toBeGreaterThan(0);
+			expect(fetchMock).toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });
