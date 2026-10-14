@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `loginShell` starts the daemon when the account's shell is not POSIX, such as fish, instead of failing with exit code 127; the variable that names the daemon to the login shell is removed before commands run.
+
 ## [1.3.0] - 2026-10-15
 
 ## [1.2.0] - 2026-10-12

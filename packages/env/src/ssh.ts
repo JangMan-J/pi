@@ -478,8 +478,13 @@ function launchCommand(remote: RemotePlatform, file: string, loginShell: boolean
 		if (remote.shell === "powershell") return `& ${quotePowerShell(file)}`;
 		return file.includes(" ") ? `"${file}"` : file;
 	}
-	// `$0` is the daemon, `"$@"` its arguments; `$SHELL` is the login shell's own name for itself.
-	if (loginShell) return `exec "$SHELL" -lc 'exec "$0" "$@"' ${quotePosix(file)}`;
+	// `$SHELL` is the login shell's own name for itself and need not be POSIX: fish has no `$0` or `"$@"`. So `sh` takes
+	// the daemon as `$0` and its arguments (plain `serve --token <hex>` words), and hands the path to the login shell
+	// in a variable: every common shell reads `"$VAR"` alike. The daemon removes the variable before it runs anything.
+	if (loginShell) {
+		const script = 'export PI_ENV_LAUNCH="$0"; exec "$SHELL" -lc "exec \\"\\$PI_ENV_LAUNCH\\" $*"';
+		return `sh -c ${quotePosix(script)} ${quotePosix(file)}`;
+	}
 	return quotePosix(file);
 }
 
