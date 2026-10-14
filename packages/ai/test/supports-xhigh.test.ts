@@ -165,6 +165,7 @@ describe("getSupportedThinkingLevels", () => {
 				maxTokens: 128000,
 				compat: {
 					supportsAdditionalTools: true,
+					supportsMidConvoEffort: true,
 					supportsMidConvoSystemMessages: true,
 					supportsOpenAIGrammarTools: true,
 					supportsToolSearch: true,
