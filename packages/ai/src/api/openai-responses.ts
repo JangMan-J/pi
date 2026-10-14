@@ -427,6 +427,8 @@ function getServiceTierCostMultiplier(
 		case "priority":
 		case "fast":
 			return model.id === "gpt-5.5" ? 2.5 : 2;
+		case "ultrafast":
+			return 6;
 		default:
 			return 1;
 	}
