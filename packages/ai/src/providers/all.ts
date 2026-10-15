@@ -45,6 +45,16 @@ import { xiaomiTokenPlanSgpProvider } from "./xiaomi-token-plan-sgp.ts";
 import { zaiProvider } from "./zai.ts";
 import { zaiCodingCnProvider } from "./zai-coding-cn.ts";
 
+export {
+	addGenericEndpointProviders,
+	GENERIC_ENDPOINT_APIS,
+	type GenericEndpointApi,
+	type GenericEndpointConfig,
+	type GenericEndpointConfigSource,
+	type GenericEndpointProviderOptions,
+	genericEndpointProvider,
+	isGenericEndpointApi,
+} from "./generic-endpoint.ts";
 export { radiusProvider };
 
 /** Providers present in the generated catalog. `KnownProvider` additionally
