@@ -283,6 +283,7 @@ export class ModelRuntime implements Models {
 				}),
 			);
 		}
+		builtinProviderCatalog.addGenericEndpointProviders(this.builtins, this.config);
 	}
 
 	private providerIds(): Set<string> {
