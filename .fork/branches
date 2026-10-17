@@ -1,0 +1,9 @@
+# Feature branches in merge order for next. One per line. Lines starting with # are ignored.
+feat/native-anthropic-oauth
+feat/native-antigravity
+feat/native-meta
+feat/native-openai
+feat/native-xai
+feat/generic-endpoints
+feat/generic-endpoints-coding-agent
+fix/coding-agent

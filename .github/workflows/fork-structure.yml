@@ -1,0 +1,30 @@
+name: fork-structure
+# Enforces this fork's branch rules (.fork/README.md): feature branches stay inside
+# their package area and are based on main; main mirrors upstream; next contains all.
+on:
+  push:
+    branches: ["feat/**", "fix/**", "next", "main"]
+  pull_request:
+    branches: ["next", "main"]
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Add upstream
+        run: |
+          git remote add upstream https://github.com/earendil-works/pi.git
+          git fetch -q upstream main
+          git fetch -q origin main next || true
+      - name: Check
+        env:
+          MAIN_REF: origin/main
+        run: |
+          ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git fetch -q origin "$ref" || true
+          case "$ref" in
+            main) .fork/check.sh main ;;
+            next) .fork/check.sh next ;;
+            *) .fork/check.sh "origin/$ref" ;;
+          esac
