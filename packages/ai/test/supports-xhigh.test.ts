@@ -140,7 +140,7 @@ describe("getSupportedThinkingLevels", () => {
 		// Codex serves GPT-6.1 Sol with a 500K default context window (#10840)
 		["gpt-6.1-sol", { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, 500000],
 		["gpt-6.1-terra", { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25 }, 500000],
-	] as const)("includes official metadata for OpenAI and Codex %s", (modelId, cost, codexContextWindow) => {
+	] as const)("includes official metadata for OpenAI and Codex %s", (modelId, cost, _codexContextWindow) => {
 		for (const provider of ["openai", "openai-codex"] as const) {
 			const model = getModel(provider, modelId);
 			expect(model).toMatchObject({
