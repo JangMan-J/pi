@@ -484,6 +484,9 @@ describe("openai-responses provider defaults", () => {
 		// GPT-6 models report Fast mode as "fast" even when "priority" is requested (#10034)
 		["gpt-6-luna", "priority", "fast", 2],
 		["gpt-6-luna", "fast", "fast", 2],
+		// Ultrafast mode is 6x standard pricing on GPT-6 Astra and GPT-6.1 Sol
+		["gpt-6-astra", "ultrafast", "ultrafast", 6],
+		["gpt-6.1-sol", "ultrafast", "ultrafast", 6],
 	] as const)(
 		"applies %s cost multiplier for requested %s and returned %s service tier",
 		async (modelId, serviceTier, responseServiceTier, multiplier) => {
