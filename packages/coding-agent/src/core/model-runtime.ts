@@ -444,6 +444,11 @@ export class ModelRuntime implements Models {
 		return this.models.getProviders();
 	}
 
+	/** The models.json this runtime reads, or undefined when configured without one. */
+	getModelsPath(): string | undefined {
+		return this.modelsPath;
+	}
+
 	getProvider(providerId: string): Provider | undefined {
 		return this.models.getProvider(providerId);
 	}
