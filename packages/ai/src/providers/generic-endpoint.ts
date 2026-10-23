@@ -6,6 +6,7 @@ import { envApiKeyAuth } from "../auth/helpers.ts";
 import { createProvider, type Provider, type RefreshModelsContext } from "../models.ts";
 import type { Model, ProviderStreams } from "../types.ts";
 import { type OpenRouterPricing, openRouterCost } from "./openrouter-api.ts";
+import { isOpenRouterRegionalBaseUrl, openRouterRegionalProvider } from "./openrouter-regional.ts";
 
 /**
  * Protocols with a standard `GET /models` list endpoint that pi can discover
@@ -300,7 +301,9 @@ export interface GenericEndpointConfigSource {
 
 /**
  * Register a generic endpoint provider for each config entry that names a
- * supported `api` and `baseUrl` but lists no models, skipping provider ids
+ * supported `api` and `baseUrl` but lists no models (an OpenRouter in-region
+ * host such as `https://us.openrouter.ai/api/v1` gets a regional OpenRouter
+ * provider instead, and needs no `api`), skipping provider ids
  * already present in `providers` (built-ins keep their own catalogs) and
  * entries claimed by another mechanism (`oauth`).
  */
@@ -312,6 +315,14 @@ export function addGenericEndpointProviders(
 		if (providers.has(providerId)) continue;
 		const config = source.getProvider(providerId);
 		if (!config?.baseUrl || config.oauth || config.models?.length) continue;
+		const openrouter = providers.get("openrouter");
+		if (openrouter && isOpenRouterRegionalBaseUrl(config.baseUrl)) {
+			providers.set(
+				providerId,
+				openRouterRegionalProvider(openrouter, providerId, config.name ?? providerId, config.baseUrl),
+			);
+			continue;
+		}
 		if (!isGenericEndpointApi(config.api)) continue;
 		providers.set(
 			providerId,
