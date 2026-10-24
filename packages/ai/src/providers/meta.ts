@@ -3,6 +3,7 @@ import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadMetaOAuth } from "../auth/oauth/load.ts";
 import { createProvider, isModelType, type Provider } from "../models.ts";
 import type { Model, ModelCost, OpenAIResponsesCompat, ThinkingLevelMap } from "../types.ts";
+import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { META_MODELS } from "./meta.models.ts";
 
 const DEFAULT_META_BASE_URL = "https://api.meta.ai/v1";
@@ -61,8 +62,8 @@ export function buildMetaModels(
 		const isFullEffort = model.id.startsWith("muse-spark-1.3") || model.id.startsWith("muse-wonder");
 		return {
 			...model,
-			contextWindow: META_CONTEXT_WINDOW,
-			maxTokens: META_MAX_TOKENS,
+			contextWindow: model.contextWindow || META_CONTEXT_WINDOW,
+			maxTokens: model.maxTokens || META_MAX_TOKENS,
 			thinkingLevelMap: isFullEffort ? { ...META_FULL_EFFORT_MAP } : model.thinkingLevelMap,
 			compat: { ...META_RESPONSES_COMPAT, ...model.compat },
 			inputLimits: model.inputLimits ?? DEFAULT_META_INPUT_LIMITS,
@@ -124,24 +125,22 @@ function humanizeMetaModelId(id: string): string {
 		.join(" ");
 }
 
-function inferMetaCost(id: string, rawCost: MuseCodeModelMetadata["cost"]): ModelCost {
-	if (
-		rawCost &&
-		typeof rawCost.input === "number" &&
-		Number.isFinite(rawCost.input) &&
-		typeof rawCost.output === "number" &&
-		Number.isFinite(rawCost.output)
-	) {
-		return {
-			input: rawCost.input,
-			output: rawCost.output,
-			cacheRead: typeof rawCost.cached === "number" && Number.isFinite(rawCost.cached) ? rawCost.cached : 0,
-			cacheWrite: 0,
-		};
-	}
-	if (id.endsWith("-contributor")) return { ...META_CONTRIBUTOR_COST };
-	if (id.includes("wonder")) return { ...META_WONDER_COST };
-	return { ...META_SPARK_COST };
+function inferMetaCost(id: string, rawCost: MuseCodeModelMetadata["cost"], fallback?: ModelCost): ModelCost {
+	const base =
+		fallback ??
+		(id.endsWith("-contributor")
+			? META_CONTRIBUTOR_COST
+			: id.includes("wonder")
+				? META_WONDER_COST
+				: META_SPARK_COST);
+	const price = (value: number | undefined, defaultValue: number): number =>
+		typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : defaultValue;
+	return {
+		input: price(rawCost?.input, base.input),
+		output: price(rawCost?.output, base.output),
+		cacheRead: price(rawCost?.cached, base.cacheRead),
+		cacheWrite: base.cacheWrite,
+	};
 }
 
 function buildMetaThinkingLevelMap(
@@ -173,11 +172,11 @@ function mergeWithBaseline(
 		if (base) {
 			merged.set(model.id, {
 				...model,
-				name: base.name,
-				cost: base.cost,
+				name: model.name || base.name,
+				cost: model.cost ?? base.cost,
 				contextWindow: model.contextWindow || base.contextWindow,
 				maxTokens: model.maxTokens || base.maxTokens,
-				reasoning: base.reasoning,
+				reasoning: model.reasoning ?? base.reasoning,
 				thinkingLevelMap: model.thinkingLevelMap ?? base.thinkingLevelMap,
 				compat: { ...META_RESPONSES_COMPAT, ...base.compat, ...model.compat },
 				inputLimits: model.inputLimits ?? base.inputLimits,
@@ -244,7 +243,10 @@ export function metaProvider(): Provider<"openai-responses"> {
 			const apiKey = context.credential.type === "oauth" ? context.credential.access : context.credential.key;
 			if (!apiKey) return;
 
-			const configuredInterval = Number.parseInt(process.env.PI_META_CATALOG_REFRESH_INTERVAL_MS ?? "", 10);
+			const configuredInterval = Number.parseInt(
+				getProviderEnvValue("PI_META_CATALOG_REFRESH_INTERVAL_MS") ?? "",
+				10,
+			);
 			const refreshInterval =
 				Number.isFinite(configuredInterval) && configuredInterval >= 0
 					? configuredInterval
@@ -292,13 +294,13 @@ export function metaProvider(): Provider<"openai-responses"> {
 				discovered.push({
 					type: "chat",
 					id,
-					name: base?.name ?? (mc.name && mc.name !== id ? mc.name : humanizeMetaModelId(id)),
+					name: mc.name && mc.name !== id ? mc.name : (base?.name ?? humanizeMetaModelId(id)),
 					api: "openai-responses",
 					provider: "meta",
 					baseUrl,
 					reasoning: mc.reasoning ?? base?.reasoning ?? true,
 					input: supportsImage ? ["text", "image"] : ["text"],
-					cost: base?.cost ?? inferMetaCost(id, mc.cost),
+					cost: inferMetaCost(id, mc.cost, base?.cost),
 					contextWindow: mc.limit?.context ?? base?.contextWindow ?? META_CONTEXT_WINDOW,
 					maxTokens: mc.limit?.output ?? base?.maxTokens ?? META_MAX_TOKENS,
 					thinkingLevelMap: buildMetaThinkingLevelMap(mc.variants, base?.thinkingLevelMap),
