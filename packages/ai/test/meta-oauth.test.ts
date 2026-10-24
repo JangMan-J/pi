@@ -5,7 +5,7 @@ import { metaOAuth } from "../src/auth/oauth/meta.ts";
 import type { ProviderAuthInteraction } from "../src/auth/types.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
 import { getSupportedThinkingLevels } from "../src/models.ts";
-import { metaProvider } from "../src/providers/meta.ts";
+import { buildMetaModels, metaProvider } from "../src/providers/meta.ts";
 import type { AssistantMessage, Model } from "../src/types.ts";
 
 const CLIENT_ID = "1031625952748946";
@@ -278,7 +278,7 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 		expect(getSupportedThinkingLevels(discovered!)).toEqual(["low", "medium", "high", "xhigh", "max"]);
 	});
 
-	it("sends Meta gateway headers, clamps tool_choice to auto, defaults forceReasoning to high, and preserves fc_ tool call IDs", async () => {
+	it("sends Meta gateway headers, auto tool choice, default high reasoning, and preserves fc_ tool call IDs", async () => {
 		const wonderFull = metaProvider()
 			.getModels()
 			.find((m) => m.id === "muse-wonder-full-1.0")!;
@@ -355,7 +355,7 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 				apiKey: "LLM|test-key",
 				sessionId: "sess-meta-42",
 				cacheRetention: "long",
-				toolChoice: "required",
+				toolChoice: "auto",
 				onPayload: (payload) => {
 					capturedPayload = payload as Record<string, unknown>;
 				},
@@ -396,4 +396,123 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 		});
 		expect(midConvoDev.length).toBe(2);
 	});
+});
+
+describe("Meta audit regressions", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+	});
+	it.each(["none", "required", { type: "function", name: "ping" }] as const)(
+		"honors tool choice %j",
+		async (toolChoice) => {
+			const fetch = vi
+				.spyOn(globalThis, "fetch")
+				.mockResolvedValue(
+					new Response(
+						'data: {"type":"response.completed","response":{"id":"done","status":"completed","output":[]}}\n\n',
+					),
+				);
+			let payload: Record<string, unknown> | undefined;
+			const result = await streamOpenAIResponses(
+				metaProvider().getModels()[0],
+				normalizeContext({
+					messages: [{ role: "user", content: "Ping", timestamp: 0 }],
+					tools: [{ name: "ping", description: "Ping", parameters: Type.Object({}) }],
+				}),
+				{
+					apiKey: "test",
+					toolChoice,
+					onPayload: (value) => {
+						payload = value as Record<string, unknown>;
+					},
+				},
+			).result();
+			if (toolChoice === "none") {
+				expect(result.stopReason, result.errorMessage).toBe("stop");
+				expect(payload).not.toHaveProperty("tools");
+				expect(payload).not.toHaveProperty("tool_choice");
+				expect(fetch).toHaveBeenCalledOnce();
+			} else {
+				expect(result.stopReason).toBe("error");
+				expect(result.errorMessage).toContain("Meta does not support required or forced tool choice");
+				expect(fetch).not.toHaveBeenCalled();
+			}
+		},
+	);
+	it("keeps catalog baseline limits and uses constants only when missing", () => {
+		const base = metaProvider().getModels()[0];
+		expect(buildMetaModels([{ ...base, contextWindow: 90000, maxTokens: 12000 }])[0]).toMatchObject({
+			contextWindow: 90000,
+			maxTokens: 12000,
+		});
+		expect(buildMetaModels([{ ...base, contextWindow: 0, maxTokens: 0 }])[0]).toMatchObject({
+			contextWindow: 1007997,
+			maxTokens: 128000,
+		});
+	});
+	it.each([undefined, { input: null, output: -1, cached: -1 }, { input: 0 }])(
+		"prefers live metadata with baseline fallback for %j",
+		async (partialCost) => {
+			const provider = metaProvider();
+			const base = provider.getModels()[0];
+			vi.stubEnv("PI_META_CATALOG_REFRESH_INTERVAL_MS", "0");
+			const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+				Response.json({
+					data: [
+						{
+							id: base.id,
+							metadata: {
+								"muse-code": {
+									tool_call: true,
+									name: "Live name",
+									reasoning: false,
+									cost: { input: 2, output: 8, cached: 0.5 },
+									limit: { context: 90000, output: 12000 },
+								},
+							},
+						},
+					],
+				}),
+			);
+			await provider.refreshModels!({
+				allowNetwork: true,
+				credential: { type: "api_key", key: "test" },
+				stored: { models: [base], checkedAt: Date.now() },
+				signal: new AbortController().signal,
+				publish: async (pub) => {
+					pub.update?.();
+					return true;
+				},
+			});
+			expect(fetch).toHaveBeenCalledOnce();
+			expect(provider.getModels().find((m) => m.id === base.id)).toMatchObject({
+				name: "Live name",
+				reasoning: false,
+				cost: { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+				contextWindow: 90000,
+				maxTokens: 12000,
+			});
+			fetch.mockResolvedValue(
+				Response.json({
+					data: [{ id: base.id, metadata: { "muse-code": { tool_call: true, cost: partialCost } } }],
+				}),
+			);
+			await provider.refreshModels!({
+				allowNetwork: true,
+				force: true,
+				credential: { type: "api_key", key: "test" },
+				signal: new AbortController().signal,
+				publish: async (pub) => {
+					pub.update?.();
+					return true;
+				},
+			});
+			expect(provider.getModels().find((m) => m.id === base.id)).toMatchObject({
+				name: base.name,
+				cost: { ...base.cost, ...(partialCost?.input === 0 ? { input: 0 } : {}) },
+				reasoning: base.reasoning,
+			});
+		},
+	);
 });
