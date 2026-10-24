@@ -407,9 +407,9 @@ const OPENAI_MID_CONVO_EFFORT_MODEL_IDS = new Set([
 	"gpt-6.1-terra",
 ]);
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272000;
-const OPENAI_EXTENDED_CONTEXT_WINDOW = 500000;
-const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set(["gpt-5.4", "gpt-5.5"]);
-const OPENAI_EXTENDED_CONTEXT_MODEL_IDS = new Set([
+const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
+	"gpt-5.4",
+	"gpt-5.5",
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
@@ -2918,10 +2918,6 @@ async function generateModels() {
 			candidate.contextWindow = OPENAI_LONG_CONTEXT_INPUT_THRESHOLD;
 			candidate.maxTokens = 128000;
 		}
-		if (candidate.provider === "openai" && OPENAI_EXTENDED_CONTEXT_MODEL_IDS.has(candidate.id)) {
-			candidate.contextWindow = OPENAI_EXTENDED_CONTEXT_WINDOW;
-			candidate.maxTokens = 128000;
-		}
 		if (candidate.provider === "openai" && OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS.has(candidate.id)) {
 			const standardCost = OPENAI_STANDARD_COSTS[candidate.id];
 			candidate.cost = withOpenAiLongContextPricing(standardCost ?? candidate.cost);
@@ -2977,7 +2973,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-sol"]),
-			contextWindow: OPENAI_EXTENDED_CONTEXT_WINDOW,
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
 		{
@@ -3001,7 +2997,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-astra"]),
-			contextWindow: OPENAI_EXTENDED_CONTEXT_WINDOW,
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
 		{
@@ -3013,7 +3009,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-sol"]),
-			contextWindow: OPENAI_EXTENDED_CONTEXT_WINDOW,
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
 		{
@@ -3025,7 +3021,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-luna"]),
-			contextWindow: OPENAI_EXTENDED_CONTEXT_WINDOW,
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
 		{
@@ -3037,7 +3033,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-sol"]),
-			contextWindow: OPENAI_EXTENDED_CONTEXT_WINDOW,
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
 		{
@@ -3049,7 +3045,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-terra"]),
-			contextWindow: OPENAI_EXTENDED_CONTEXT_WINDOW,
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
 		{
@@ -3061,7 +3057,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-luna"]),
-			contextWindow: OPENAI_EXTENDED_CONTEXT_WINDOW,
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
 		{
@@ -3208,9 +3204,10 @@ async function generateModels() {
 	// NOTE: These are not fetched from models.dev; we keep a small, explicit list to avoid aliases.
 	// Only list models the Codex backend accepts for ChatGPT accounts. GPT-5.5 and GPT-5.3 Codex Spark are rejected
 	// with "not supported when using Codex with a ChatGPT account".
-	// GPT-5.6 and GPT-6 use a 500k context window.
+	// Authenticated Codex /models on 2026-10-24 confirms 272k defaults, except 500k for gpt-6.1-sol.
 	const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
-	const CODEX_EXTENDED_CONTEXT = OPENAI_EXTENDED_CONTEXT_WINDOW;
+	const CODEX_DEFAULT_CONTEXT = 272000;
+	const CODEX_GPT61_SOL_CONTEXT = 500000;
 	const CODEX_MAX_TOKENS = 128000;
 	const codexModels: Model<"openai-codex-responses">[] = [
 		{
@@ -3222,7 +3219,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-sol"]),
-			contextWindow: CODEX_EXTENDED_CONTEXT,
+			contextWindow: CODEX_GPT61_SOL_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -3246,7 +3243,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-astra"]),
-			contextWindow: CODEX_EXTENDED_CONTEXT,
+			contextWindow: CODEX_DEFAULT_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -3258,7 +3255,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-sol"]),
-			contextWindow: CODEX_EXTENDED_CONTEXT,
+			contextWindow: CODEX_DEFAULT_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -3270,7 +3267,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-luna"]),
-			contextWindow: CODEX_EXTENDED_CONTEXT,
+			contextWindow: CODEX_DEFAULT_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -3282,7 +3279,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-luna"]),
-			contextWindow: CODEX_EXTENDED_CONTEXT,
+			contextWindow: CODEX_DEFAULT_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -3294,7 +3291,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-sol"]),
-			contextWindow: CODEX_EXTENDED_CONTEXT,
+			contextWindow: CODEX_DEFAULT_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -3306,7 +3303,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-terra"]),
-			contextWindow: CODEX_EXTENDED_CONTEXT,
+			contextWindow: CODEX_DEFAULT_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 	];
