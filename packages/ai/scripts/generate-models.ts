@@ -2131,8 +2131,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					reasoning: m.reasoning === true,
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: getModelsDevCost(m.cost),
-					contextWindow: 1007997,
-					maxTokens: 128000,
+					contextWindow: m.limit?.context || 1007997,
+					maxTokens: m.limit?.output || 128000,
 				});
 				recordModelsDevReasoningOptions("meta", modelId, m);
 			}
