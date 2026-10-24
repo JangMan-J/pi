@@ -2,13 +2,13 @@
  * Shared utilities for Google Generative AI and Google Vertex providers.
  */
 
-import {
-	type Content,
+import type {
+	Content,
 	FinishReason,
 	FunctionCallingConfigMode,
 	ThinkingLevel as GoogleSdkThinkingLevel,
-	type Part,
-	type ThinkingConfig,
+	Part,
+	ThinkingConfig,
 } from "@google/genai";
 import { clampThinkingLevel } from "../models.ts";
 import type {
@@ -37,13 +37,21 @@ type GoogleApiType = "google-generative-ai" | "google-vertex";
 export type GoogleApiThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
 export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "xhigh" | "max">;
 
-const GOOGLE_SDK_THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, GoogleSdkThinkingLevel> = {
-	THINKING_LEVEL_UNSPECIFIED: GoogleSdkThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
-	MINIMAL: GoogleSdkThinkingLevel.MINIMAL,
-	LOW: GoogleSdkThinkingLevel.LOW,
-	MEDIUM: GoogleSdkThinkingLevel.MEDIUM,
-	HIGH: GoogleSdkThinkingLevel.HIGH,
-};
+// Keep shared wire helpers independent of the SDK runtime. Type-check its enum values.
+const GOOGLE_SDK_THINKING_LEVEL_MAP = {
+	THINKING_LEVEL_UNSPECIFIED: "THINKING_LEVEL_UNSPECIFIED",
+	MINIMAL: "MINIMAL",
+	LOW: "LOW",
+	MEDIUM: "MEDIUM",
+	HIGH: "HIGH",
+} satisfies Record<GoogleApiThinkingLevel, `${GoogleSdkThinkingLevel}`>;
+
+const GOOGLE_FUNCTION_CALLING_MODES = {
+	AUTO: "AUTO",
+	NONE: "NONE",
+	ANY: "ANY",
+	VALIDATED: "VALIDATED",
+} satisfies Record<string, `${FunctionCallingConfigMode}`>;
 
 /** Resolve a supported pi level or model-specific Google mapping to a standard Google level. */
 export function resolveGoogleThinkingLevel<T extends Api>(
@@ -99,7 +107,7 @@ export function toGoogleThinkingLevel(level: ResolvedGoogleThinkingLevel): Googl
 }
 
 export function toGoogleSdkThinkingLevel(level: GoogleApiThinkingLevel): GoogleSdkThinkingLevel {
-	return GOOGLE_SDK_THINKING_LEVEL_MAP[level];
+	return GOOGLE_SDK_THINKING_LEVEL_MAP[level] as GoogleSdkThinkingLevel;
 }
 
 export function getDisabledGoogleThinkingConfig<T extends Api>(model: Model<T>): ThinkingConfig {
@@ -497,13 +505,13 @@ export function supportsGoogleStrictToolSampling(modelId: string): boolean {
 export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 	switch (choice) {
 		case "auto":
-			return FunctionCallingConfigMode.AUTO;
+			return GOOGLE_FUNCTION_CALLING_MODES.AUTO as FunctionCallingConfigMode;
 		case "none":
-			return FunctionCallingConfigMode.NONE;
+			return GOOGLE_FUNCTION_CALLING_MODES.NONE as FunctionCallingConfigMode;
 		case "any":
-			return FunctionCallingConfigMode.ANY;
+			return GOOGLE_FUNCTION_CALLING_MODES.ANY as FunctionCallingConfigMode;
 		default:
-			return FunctionCallingConfigMode.AUTO;
+			return GOOGLE_FUNCTION_CALLING_MODES.AUTO as FunctionCallingConfigMode;
 	}
 }
 
@@ -517,7 +525,7 @@ export function resolveGoogleFunctionCallingMode(
 		return mapToolChoice(toolChoice);
 	}
 	if (useStrictMode) {
-		return FunctionCallingConfigMode.VALIDATED;
+		return GOOGLE_FUNCTION_CALLING_MODES.VALIDATED as FunctionCallingConfigMode;
 	}
 	return toolChoice ? mapToolChoice(toolChoice) : undefined;
 }
@@ -527,26 +535,26 @@ export function resolveGoogleFunctionCallingMode(
  */
 export function mapStopReason(reason: FinishReason): StopReason {
 	switch (reason) {
-		case FinishReason.STOP:
+		case "STOP":
 			return "stop";
-		case FinishReason.MAX_TOKENS:
+		case "MAX_TOKENS":
 			return "length";
-		case FinishReason.BLOCKLIST:
-		case FinishReason.PROHIBITED_CONTENT:
-		case FinishReason.SPII:
-		case FinishReason.SAFETY:
-		case FinishReason.IMAGE_SAFETY:
-		case FinishReason.IMAGE_PROHIBITED_CONTENT:
-		case FinishReason.IMAGE_RECITATION:
-		case FinishReason.IMAGE_OTHER:
-		case FinishReason.RECITATION:
-		case FinishReason.FINISH_REASON_UNSPECIFIED:
-		case FinishReason.OTHER:
-		case FinishReason.LANGUAGE:
-		case FinishReason.MALFORMED_FUNCTION_CALL:
-		case FinishReason.UNEXPECTED_TOOL_CALL:
-		case FinishReason.TOO_MANY_TOOL_CALLS:
-		case FinishReason.NO_IMAGE:
+		case "BLOCKLIST":
+		case "PROHIBITED_CONTENT":
+		case "SPII":
+		case "SAFETY":
+		case "IMAGE_SAFETY":
+		case "IMAGE_PROHIBITED_CONTENT":
+		case "IMAGE_RECITATION":
+		case "IMAGE_OTHER":
+		case "RECITATION":
+		case "FINISH_REASON_UNSPECIFIED":
+		case "OTHER":
+		case "LANGUAGE":
+		case "MALFORMED_FUNCTION_CALL":
+		case "UNEXPECTED_TOOL_CALL":
+		case "TOO_MANY_TOOL_CALLS":
+		case "NO_IMAGE":
 			return "error";
 		default: {
 			const _exhaustive: never = reason;
