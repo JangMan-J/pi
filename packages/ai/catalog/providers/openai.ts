@@ -37,17 +37,6 @@ const SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
 	"gpt-6.1-sol",
 	"gpt-6.1-terra",
 ]);
-const EXTENDED_CONTEXT_MODEL_IDS = new Set([
-	"gpt-5.6-sol",
-	"gpt-5.6-terra",
-	"gpt-5.6-luna",
-	"gpt-6-astra",
-	"gpt-6-sol",
-	"gpt-6-luna",
-	"gpt-6.1-sol",
-	"gpt-6.1-terra",
-]);
-const EXTENDED_CONTEXT_WINDOW = 500000;
 const LONG_CONTEXT_PRICING_MODEL_IDS = new Set([...SHORT_CONTEXT_CAPPED_MODEL_IDS, "gpt-5.4-pro", "gpt-5.5-pro"]);
 
 const NONE_REASONING_MODEL_IDS = new Set([
@@ -102,10 +91,6 @@ const CLASSIFIER_MODELS: ClassifierModel<"openai-decisions">[] = [
 function correctUpstream(model: ChatModel): ChatModel {
 	if (SHORT_CONTEXT_CAPPED_MODEL_IDS.has(model.id)) {
 		model.contextWindow = OPENAI_LONG_CONTEXT_INPUT_THRESHOLD;
-		model.maxTokens = 128000;
-	}
-	if (EXTENDED_CONTEXT_MODEL_IDS.has(model.id)) {
-		model.contextWindow = EXTENDED_CONTEXT_WINDOW;
 		model.maxTokens = 128000;
 	}
 	if (LONG_CONTEXT_PRICING_MODEL_IDS.has(model.id)) {
