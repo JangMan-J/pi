@@ -93,7 +93,8 @@ function readGeneratorOptions(args: string[]): {
 	return { strict, dataOnly, jsonOnly, jsonOutputDir, pretty };
 }
 
-const generatorOptions = readGeneratorOptions(process.argv.slice(2));
+const isMain = resolve(process.argv[1] ?? "") === __filename;
+const generatorOptions = readGeneratorOptions(isMain ? process.argv.slice(2) : []);
 
 interface ModelsDevModel {
 	id: string;
@@ -521,11 +522,11 @@ const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS = new Set([
 
 // Checked manually against the authenticated GitHub Copilot /models endpoint on 2026-06-15.
 // Keep this to narrow corrections over models.dev metadata instead of snapshotting Copilot's catalog.
-const GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES = {
+const GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES: Record<string, NonNullable<Model<Api>["thinkingLevelMap"]>> = {
 	"claude-opus-4.8": { minimal: "low" },
 	"claude-opus-5": { minimal: "low" },
 	"claude-sonnet-4.6": { minimal: "low", max: "max" },
-} satisfies Record<string, NonNullable<Model<Api>["thinkingLevelMap"]>>;
+};
 
 function mergeThinkingLevelMap(model: Model<any>, map: NonNullable<Model<any>["thinkingLevelMap"]>): void {
 	model.thinkingLevelMap = { ...model.thinkingLevelMap, ...map };
@@ -544,7 +545,9 @@ function recordModelsDevReasoningOptions(provider: string, id: string, sourceMod
 }
 
 function supportsDirectReasoningEffort(model: Model<Api>): boolean {
-	if (model.api === "anthropic-messages") return model.compat?.forceAdaptiveThinking === true;
+	if (model.api === "anthropic-messages") {
+		return (model.compat as AnthropicMessagesCompat | undefined)?.forceAdaptiveThinking === true;
+	}
 	if (
 		model.api === "openai-responses" ||
 		model.api === "azure-openai-responses" ||
@@ -680,7 +683,16 @@ function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 	);
 }
 
-const OPENAI_COMPLETIONS_DEFAULT_COMPAT = {
+type OptionalCompletionsCompat =
+	| "cacheControlFormat"
+	| "supportsThinkingTokenBudget"
+	| "thinkingTokenBudgetField"
+	| "sessionAffinityFormat"
+	| "vllmPriority";
+type OpenAICompletionsResolvedCompat = Required<Omit<OpenAICompletionsCompat, OptionalCompletionsCompat>> &
+	Pick<OpenAICompletionsCompat, OptionalCompletionsCompat>;
+
+const OPENAI_COMPLETIONS_DEFAULT_COMPAT: OpenAICompletionsResolvedCompat = {
 	supportsStore: true,
 	supportsDeveloperRole: true,
 	supportsReasoningEffort: true,
@@ -703,17 +715,6 @@ const OPENAI_COMPLETIONS_DEFAULT_COMPAT = {
 	supportsMidConvoToolAdditions: false,
 	sendSessionAffinityHeaders: false,
 	supportsLongCacheRetention: true,
-} satisfies Required<
-	Omit<
-		OpenAICompletionsCompat,
-		"cacheControlFormat" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField"
-	>
-> & {
-	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
-};
-
-type OpenAICompletionsResolvedCompat = typeof OPENAI_COMPLETIONS_DEFAULT_COMPAT & {
-	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
 };
 
 function mergeAnthropicMessagesCompat(model: Model<Api>, compat: AnthropicMessagesCompat): void {
@@ -1205,7 +1206,10 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
 	if (model.provider === "fireworks") {
-		if (model.api === "anthropic-messages" && model.compat?.forceAdaptiveThinking) {
+		if (
+			model.api === "anthropic-messages" &&
+			(model.compat as AnthropicMessagesCompat | undefined)?.forceAdaptiveThinking
+		) {
 			// Qwen Max currently advertises only a toggle. Prefer upstream effort
 			// metadata once available instead of replacing it with this fallback.
 			if (model.id === "accounts/fireworks/models/qwen3p8-max" && !model.thinkingLevelMap) {
@@ -1328,7 +1332,7 @@ function getModelsDevCost(cost: ModelsDevModel["cost"]): ModelCost {
 	return tiers && tiers.length > 0 ? { ...base, tiers } : base;
 }
 
-async function fetchNvidiaNimModelIds(): Promise<Map<string, string>> {
+async function fetchNvidiaNimModelIds(strict = generatorOptions.strict): Promise<Map<string, string>> {
 	try {
 		console.log("Fetching models from NVIDIA NIM API...");
 		const response = await fetch(`${NVIDIA_BASE_URL}/models`);
@@ -1345,7 +1349,7 @@ async function fetchNvidiaNimModelIds(): Promise<Map<string, string>> {
 		return modelIds;
 	} catch (error) {
 		console.error("Failed to fetch NVIDIA NIM models:", error);
-		if (generatorOptions.strict) throw error;
+		if (strict) throw error;
 		return new Map();
 	}
 }
@@ -1357,7 +1361,7 @@ async function fetchOpenRouterList(query: string): Promise<OpenRouterModelListIt
 	return data.data ?? [];
 }
 
-async function fetchOpenRouterModels(): Promise<OpenRouterCatalog> {
+async function fetchOpenRouterModels(strict = generatorOptions.strict): Promise<OpenRouterCatalog> {
 	try {
 		console.log("Fetching models from OpenRouter API...");
 		const [listed, imageListed, decisionListed] = await Promise.all([
@@ -1369,18 +1373,18 @@ async function fetchOpenRouterModels(): Promise<OpenRouterCatalog> {
 		console.log(
 			`Fetched ${catalog.chat.length} tool-capable, ${catalog.images.length} image, and ${catalog.classifiers.length} classifier models from OpenRouter`,
 		);
-		if (generatorOptions.strict && catalog.images.length === 0) {
+		if (strict && catalog.images.length === 0) {
 			throw new Error("OpenRouter API returned no usable image models");
 		}
 		return catalog;
 	} catch (error) {
 		console.error("Failed to fetch OpenRouter models:", error);
-		if (generatorOptions.strict) throw error;
+		if (strict) throw error;
 		return { chat: [], images: [], classifiers: [] };
 	}
 }
 
-async function fetchRadiusModels(): Promise<Model<"pi-messages">[]> {
+async function fetchRadiusModels(strict = generatorOptions.strict): Promise<Model<"pi-messages">[]> {
 	try {
 		console.log("Fetching models from Radius API...");
 		const config = await loadRadiusGatewayConfig(DEFAULT_RADIUS_GATEWAY);
@@ -1390,12 +1394,12 @@ async function fetchRadiusModels(): Promise<Model<"pi-messages">[]> {
 		return models;
 	} catch (error) {
 		console.error("Failed to fetch Radius models:", error);
-		if (generatorOptions.strict) throw error;
+		if (strict) throw error;
 		return [];
 	}
 }
 
-async function fetchAiGatewayModels(): Promise<{
+async function fetchAiGatewayModels(strict = generatorOptions.strict): Promise<{
 	chat: Model<any>[];
 	classifiers: ClassifierModel<"typesafe-system-one">[];
 }> {
@@ -1468,7 +1472,7 @@ async function fetchAiGatewayModels(): Promise<{
 		return { chat: models, classifiers };
 	} catch (error) {
 		console.error("Failed to fetch Vercel AI Gateway models:", error);
-		if (generatorOptions.strict) throw error;
+		if (strict) throw error;
 		return { chat: [], classifiers: [] };
 	}
 }
@@ -1500,7 +1504,7 @@ function processZaiModels(data: ModelsDevCatalog): Model<Api>[] {
 				thinkingLevelMap.off = "none";
 			}
 			const supportsReasoningEffort = thinkingLevelMap !== undefined;
-			const referenceCost = data.zai?.models[modelId]?.cost ?? m.cost;
+			const referenceCost = data.zai?.models?.[modelId]?.cost ?? m.cost;
 
 			models.push({
 				id: modelId,
@@ -1832,7 +1836,7 @@ function createKimiCodingModels(kimiModels: Record<string, ModelsDevModel>): Mod
 	return models;
 }
 
-async function loadModelsDevData(): Promise<Model<any>[]> {
+async function loadModelsDevData(strict = generatorOptions.strict): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from models.dev API...");
 		const response = await fetch("https://models.dev/api.json");
@@ -1840,7 +1844,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		const data = (await response.json()) as ModelsDevCatalog;
 
 		const models: Model<any>[] = [];
-		const nvidiaNimModelIds = data.nvidia?.models ? await fetchNvidiaNimModelIds() : new Map<string, string>();
+		const nvidiaNimModelIds = data.nvidia?.models ? await fetchNvidiaNimModelIds(strict) : new Map<string, string>();
 
 		// Process Amazon Bedrock models
 		if (data["amazon-bedrock"]?.models) {
@@ -2260,7 +2264,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		for (const variant of opencodeVariants) {
 			if (!data[variant.key]?.models) continue;
 
-			for (const [modelId, model] of Object.entries(data[variant.key].models)) {
+			for (const [modelId, model] of Object.entries(data[variant.key].models ?? {})) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
@@ -2621,7 +2625,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				emittedModelIds?.add(modelId);
 			}
 
-			if (modelIds && emittedModelIds && generatorOptions.strict) {
+			if (modelIds && emittedModelIds && strict) {
 				assertExactModelIds(provider, modelIds, emittedModelIds);
 			}
 		}
@@ -2630,12 +2634,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		return models;
 	} catch (error) {
 		console.error("Failed to load models.dev data:", error);
-		if (generatorOptions.strict) throw error;
+		if (strict) throw error;
 		return [];
 	}
 }
 
-async function loadModelsDevClassifierModels(): Promise<ClassifierModel<"typesafe-system-one">[]> {
+async function loadModelsDevClassifierModels(strict = generatorOptions.strict): Promise<ClassifierModel<"typesafe-system-one">[]> {
 	try {
 		console.log("Fetching classifier models from models.dev API...");
 		const response = await fetch("https://models.dev/models.json?type=decision");
@@ -2666,7 +2670,7 @@ async function loadModelsDevClassifierModels(): Promise<ClassifierModel<"typesaf
 		];
 	} catch (error) {
 		console.error("Failed to load models.dev classifier data:", error);
-		if (generatorOptions.strict) throw error;
+		if (strict) throw error;
 		return [];
 	}
 }
@@ -2793,17 +2797,18 @@ const OPENAI_CLASSIFIER_MODELS: ClassifierModel<"openai-decisions">[] = [
 	},
 ];
 
-async function generateModels() {
+export async function generateModels(options = generatorOptions) {
+	modelsDevReasoningOptions.clear();
 	// Fetch models from all upstream catalogs.
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras, and others
 	// OpenRouter: its tool-capable routed catalog
 	// AI Gateway: OpenAI-compatible catalog with tool-capable models
 	// Radius: its unauthenticated public catalog; authenticated clients overlay it at runtime
-	const modelsDevModels = await loadModelsDevData();
-	const modelsDevClassifierModels = await loadModelsDevClassifierModels();
-	const openRouterCatalog = await fetchOpenRouterModels();
-	const aiGatewayCatalog = await fetchAiGatewayModels();
-	const radiusModels = await fetchRadiusModels();
+	const modelsDevModels = await loadModelsDevData(options.strict);
+	const modelsDevClassifierModels = await loadModelsDevClassifierModels(options.strict);
+	const openRouterCatalog = await fetchOpenRouterModels(options.strict);
+	const aiGatewayCatalog = await fetchAiGatewayModels(options.strict);
+	const radiusModels = await fetchRadiusModels(options.strict);
 
 	// Combine chat models (models.dev has priority where sources overlap).
 	const allModels = [...modelsDevModels, ...openRouterCatalog.chat, ...aiGatewayCatalog.chat, ...radiusModels].filter(
@@ -3494,9 +3499,9 @@ async function generateModels() {
 		];
 	}
 
-	const serializeJson = (value: unknown) => `${JSON.stringify(value, null, generatorOptions.pretty ? 2 : undefined)}\n`;
+	const serializeJson = (value: unknown) => `${JSON.stringify(value, null, options.pretty ? 2 : undefined)}\n`;
 	const writeJson = (path: string, value: unknown) => writeFileSync(path, serializeJson(value));
-	const generatedDataProviderIds = generatorOptions.dataOnly
+	const generatedDataProviderIds = options.dataOnly
 		? readModelDataProviderIds(packageRoot)
 		: sortedProviderIds;
 	const missingProviderIds = generatedDataProviderIds.filter((providerId) => !jsonAllProviders[providerId]);
@@ -3508,14 +3513,17 @@ async function generateModels() {
 	const generatedDataProviders: Record<string, Record<string, Record<string, AnyModel>>> = {};
 	const modelDataStructure: ModelDataStructure = {};
 	for (const providerId of generatedDataProviderIds) {
-		const { groups, structure } = groupProviderModelData(providerId, jsonAllProviders[providerId]);
+		const catalogModels = jsonAllProviders[providerId].map(
+			(model) => ({ ...model, type: model.type ?? "chat" }) as AnyModel & { type: string },
+		);
+		const { groups, structure } = groupProviderModelData(providerId, catalogModels);
 		generatedDataProviders[providerId] = groups;
 		modelDataStructure[providerId] = structure;
 	}
 
 	const generatedAt = new Date().toISOString();
 
-	if (!generatorOptions.jsonOnly) {
+	if (!options.jsonOnly) {
 		// Stage and validate all provider values before replacing the current generated data.
 		const providersDir = join(packageRoot, "src/providers");
 		const dataDir = join(providersDir, "data");
@@ -3538,7 +3546,7 @@ async function generateModels() {
 			);
 			validateModelDataDirectory(modelDataStructure, stagedDataDir);
 
-			if (!generatorOptions.dataOnly) {
+			if (!options.dataOnly) {
 				const previousShardContents = new Map(
 					readdirSync(providersDir)
 						.filter((entry) => entry.endsWith(".models.ts"))
@@ -3630,7 +3638,7 @@ async function generateModels() {
 			}
 			restoreGeneratedCatalog = undefined;
 			console.log(
-				generatorOptions.dataOnly
+				options.dataOnly
 					? "Hydrated JSON model values under src/providers/data/"
 					: "Generated JSON model values under src/providers/data/",
 			);
@@ -3642,20 +3650,20 @@ async function generateModels() {
 		}
 	}
 
-	if (generatorOptions.jsonOutputDir) {
+	if (options.jsonOutputDir) {
 		// `models.json` and `providers/{id}.json` retain the legacy keyed chat catalog.
 		// The `.all` variants are arrays so the same upstream id can appear once per type.
-		const providerOutputDir = join(generatorOptions.jsonOutputDir, "providers");
-		rmSync(generatorOptions.jsonOutputDir, { recursive: true, force: true });
+		const providerOutputDir = join(options.jsonOutputDir, "providers");
+		rmSync(options.jsonOutputDir, { recursive: true, force: true });
 		mkdirSync(providerOutputDir, { recursive: true });
-		writeJson(join(generatorOptions.jsonOutputDir, "models.json"), jsonChatProviders);
-		writeJson(join(generatorOptions.jsonOutputDir, "models.all.json"), jsonAllProviders);
-		writeJson(join(generatorOptions.jsonOutputDir, "providers.json"), sortedProviderIds);
+		writeJson(join(options.jsonOutputDir, "models.json"), jsonChatProviders);
+		writeJson(join(options.jsonOutputDir, "models.all.json"), jsonAllProviders);
+		writeJson(join(options.jsonOutputDir, "providers.json"), sortedProviderIds);
 		for (const providerId of sortedProviderIds) {
 			writeJson(join(providerOutputDir, `${providerId}.json`), jsonChatProviders[providerId]);
 			writeJson(join(providerOutputDir, `${providerId}.all.json`), jsonAllProviders[providerId]);
 		}
-		console.log(`Generated JSON model catalog under ${generatorOptions.jsonOutputDir}`);
+		console.log(`Generated JSON model catalog under ${options.jsonOutputDir}`);
 	}
 
 	// Print statistics
@@ -3673,8 +3681,10 @@ async function generateModels() {
 	}
 }
 
-// Run the generator
-generateModels().catch((error) => {
-	console.error(error);
-	process.exitCode = 1;
-});
+// Run the generator only for CLI invocation; tests can generate into an isolated directory.
+if (isMain) {
+	generateModels().catch((error) => {
+		console.error(error);
+		process.exitCode = 1;
+	});
+}
