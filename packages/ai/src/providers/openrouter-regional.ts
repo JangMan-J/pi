@@ -76,12 +76,12 @@ export function openRouterRegionalProvider(source: Provider, id: string, name: s
 				baseUrl: context.baseUrl ?? baseUrl,
 			});
 			if (context.signal.aborted) return;
-			// The catalog comes back unchanged when the regional host rejects the key (no in-region plan).
-			if (regional === catalog) throw new Error(`${name}: ${baseUrl}/models/user rejected the key`);
+			if (regional.status === "unavailable")
+				throw new Error(`${name}: ${baseUrl}/models/user rejected the key (${regional.reason})`);
 			await context.publish({
-				persist: { models: [...regional], checkedAt: Date.now() },
+				persist: { models: [...regional.models], checkedAt: Date.now() },
 				update: () => {
-					regionalModels = regional;
+					regionalModels = regional.models;
 				},
 			});
 		},
