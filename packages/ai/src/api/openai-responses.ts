@@ -33,7 +33,7 @@ import {
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
-const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode", "meta"]);
 // OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
@@ -53,6 +53,10 @@ function isChatGPTSignIn(model: Model<"openai-responses">, apiKey: string | unde
 		apiKey !== undefined &&
 		!apiKey.startsWith("sk-")
 	);
+}
+
+function isMetaModel(model: Pick<Model<"openai-responses">, "provider" | "baseUrl">): boolean {
+	return model.provider === "meta" || model.baseUrl.includes("api.meta.ai");
 }
 
 function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
@@ -89,15 +93,16 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 }
 
 function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCompat> {
+	const isMeta = isMetaModel(model);
 	return {
 		supportsDeveloperRole: model.compat?.supportsDeveloperRole ?? true,
-		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
+		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? isMeta,
 		sessionAffinityFormat: model.compat?.sessionAffinityFormat ?? detectSessionAffinityFormat(model),
-		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
-		supportsStrictMode: model.compat?.supportsStrictMode ?? false,
+		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? !isMeta,
+		supportsStrictMode: model.compat?.supportsStrictMode ?? isMeta,
 		supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		supportsAdditionalTools: model.compat?.supportsAdditionalTools ?? false,
-		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
+		supportsToolSearch: model.compat?.supportsToolSearch ?? isMeta,
 		supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
 		supportsMaxOutputTokens: model.compat?.supportsMaxOutputTokens ?? true,
 		supportsMidConvoEffort: model.compat?.supportsMidConvoEffort ?? false,
@@ -309,10 +314,15 @@ function createClient(
 			hasImages,
 		});
 		Object.assign(headers, copilotHeaders);
+	} else if (isMetaModel(model)) {
+		headers["x-api-version"] ??= "1.0.0";
+		headers["x-client-id"] ??= "tbh:tui";
 	}
 
 	if (sessionId) {
-		if (compat.sessionAffinityFormat === "openrouter") {
+		if (isMetaModel(model)) {
+			headers["x-meta-ai-gateway-session-id"] = sessionId;
+		} else if (compat.sessionAffinityFormat === "openrouter") {
 			headers["x-session-id"] = sessionId;
 		} else {
 			if (compat.sessionAffinityFormat === "openai") {
@@ -360,6 +370,7 @@ function buildParams(
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 	// Sign in with ChatGPT rejects these request fields.
 	const omitUnsupportedFields = isChatGPTSignIn(model, options?.apiKey);
+	const isMeta = isMetaModel(model);
 	const params: ResponseCreateParamsStreaming = {
 		model: model.id,
 		input: messages,
@@ -390,10 +401,22 @@ function buildParams(
 	}
 
 	if (options?.toolChoice !== undefined) {
-		params.tool_choice = options.toolChoice;
+		if (isMeta && options.toolChoice === "none") {
+			// Meta only accepts auto. With no tools, it cannot select one.
+			delete params.tools;
+		} else if (isMeta && options.toolChoice !== "auto") {
+			throw new Error("Meta does not support required or forced tool choice; use auto or none.");
+		} else {
+			params.tool_choice = options.toolChoice;
+		}
 	}
 
-	const reasoningEffort = options?.reasoningEffort ?? (options?.reasoningSummary ? "medium" : undefined);
+	const defaultReasoningEffort = options?.reasoningSummary
+		? "medium"
+		: isMeta && model.thinkingLevelMap?.off === null
+			? "high"
+			: undefined;
+	const reasoningEffort = options?.reasoningEffort ?? defaultReasoningEffort;
 	if (model.reasoning) {
 		if (reasoningEffort) {
 			const requestedEffort = options?.reasoningEffort
@@ -410,7 +433,7 @@ function buildParams(
 				effort: (model.thinkingLevelMap?.off ?? "none") as NonNullable<typeof params.reasoning>["effort"],
 			};
 		}
-		if (model.provider === "xai") params.include = ["reasoning.encrypted_content"];
+		if (model.provider === "xai" || isMeta) params.include = ["reasoning.encrypted_content"];
 	}
 
 	// Last so model and request sampling parameters override named request fields.
