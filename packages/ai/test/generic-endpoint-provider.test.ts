@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { stream as streamCompletions } from "../src/api/openai-completions.ts";
 import type { Provider, RefreshModelsContext } from "../src/models.ts";
 import type { ModelsStoreEntry } from "../src/models-store.ts";
 import {
@@ -7,6 +8,7 @@ import {
 	genericEndpointProvider,
 } from "../src/providers/generic-endpoint.ts";
 import type { Model } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 interface RecordedRequest {
 	url: string;
@@ -160,6 +162,7 @@ describe("genericEndpointProvider", () => {
 			{
 				id: "gemini-example",
 				name: "Gemini Example",
+				input: ["text", "image"],
 				reasoning: true,
 				contextWindow: 1_048_576,
 				maxTokens: 65_536,
@@ -222,5 +225,45 @@ describe("addGenericEndpointProviders", () => {
 			id: "abliteration",
 			baseUrl: "https://api.abliteration.ai/v1",
 		});
+	});
+});
+
+describe("generic endpoint compatibility defaults", () => {
+	it("discovers bare completions models with conservative compatibility", async () => {
+		stubFetch(() => Response.json({ data: [{ id: "text-model" }] }));
+		const provider = genericEndpointProvider({
+			id: "local",
+			api: "openai-completions",
+			baseUrl: "https://example.test/v1",
+		});
+		await provider.refreshModels!(refreshContext());
+		expect(provider.getModels()[0]).toMatchObject({
+			reasoning: false,
+			input: ["text"],
+			compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: "max_tokens" },
+		});
+		let payload: Record<string, unknown> | undefined;
+		await streamCompletions(
+			provider.getModels()[0] as Model<"openai-completions">,
+			normalizeContext({ systemPrompt: "System", messages: [{ role: "user", content: "Hi", timestamp: 0 }] }),
+			{
+				apiKey: "test",
+				maxTokens: 42,
+				onPayload: (value) => {
+					payload = JSON.parse(JSON.stringify(value));
+					throw new Error("captured");
+				},
+			},
+		).result();
+		expect(payload).toMatchObject({
+			model: "text-model",
+			max_tokens: 42,
+			messages: [
+				{ role: "system", content: "System" },
+				{ role: "user", content: "Hi" },
+			],
+		});
+		expect(payload).not.toHaveProperty("store");
+		expect(payload).not.toHaveProperty("max_completion_tokens");
 	});
 });
