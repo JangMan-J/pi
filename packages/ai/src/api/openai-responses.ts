@@ -401,8 +401,14 @@ function buildParams(
 	}
 
 	if (options?.toolChoice !== undefined) {
-		// Meta's live /v1/responses endpoint rejects non-"auto" tool_choice with HTTP 400.
-		params.tool_choice = isMeta ? "auto" : options.toolChoice;
+		if (isMeta && options.toolChoice === "none") {
+			// Meta only accepts auto. With no tools, it cannot select one.
+			delete params.tools;
+		} else if (isMeta && options.toolChoice !== "auto") {
+			throw new Error("Meta does not support required or forced tool choice; use auto or none.");
+		} else {
+			params.tool_choice = options.toolChoice;
+		}
 	}
 
 	const defaultReasoningEffort = options?.reasoningSummary
