@@ -232,7 +232,7 @@ export class ModelRuntime implements Models {
 			if (provider.id === "openrouter") {
 				return withPersonalizedCatalog(
 					provider,
-					personalizeOpenRouterCatalog,
+					async (catalog, context) => (await personalizeOpenRouterCatalog(catalog, context)).models,
 					options.catalogBaseUrl,
 					builtinModelDataGeneratedAt,
 				);
