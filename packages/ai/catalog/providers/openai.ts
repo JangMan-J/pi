@@ -70,6 +70,32 @@ const GPT_5_CHAT_LATEST: Model<"openai-responses"> = {
 	maxTokens: 16384,
 };
 
+const FALLBACK_MODELS = (
+	[
+		["gpt-6.1-sol", "GPT-6.1 Sol"],
+		["gpt-6.1-terra", "GPT-6.1 Terra"],
+		["gpt-6-astra", "GPT-6 Astra"],
+		["gpt-6-sol", "GPT-6 Sol"],
+		["gpt-6-luna", "GPT-6 Luna"],
+		["gpt-5.6-sol", "GPT-5.6 Sol"],
+		["gpt-5.6-terra", "GPT-5.6 Terra"],
+		["gpt-5.6-luna", "GPT-5.6 Luna"],
+	] as const
+).map(
+	([id, name]): Model<"openai-responses"> => ({
+		id,
+		name,
+		api: "openai-responses",
+		baseUrl: BASE_URL,
+		provider: "openai",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS[id]),
+		contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+		maxTokens: 128000,
+	}),
+);
+
 // OpenAI Decisions API (public beta): gpt-6-luna is its only model. It bills input tokens only,
 // with the same long-context multiplier as chat requests. Only API keys work: Sign in with ChatGPT
 // tokens are rejected on /v1/decisions, and the Codex backend has no Decisions route.
@@ -117,7 +143,7 @@ export default defineProvider({
 				include: (source) => !UNSUPPORTED_MODEL_IDS.has(source.id),
 				map: correctUpstream,
 			}),
-			[GPT_5_CHAT_LATEST],
+			[GPT_5_CHAT_LATEST, ...FALLBACK_MODELS],
 		),
 	classifiers: () => CLASSIFIER_MODELS,
 	finalize: (model) => {
