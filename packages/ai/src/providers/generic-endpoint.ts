@@ -147,6 +147,9 @@ function modelFromListEntry(
 		baseUrl,
 		reasoning: supportsReasoning(entry),
 		input: inputModalities(entry),
+		...(api === "openai-completions"
+			? { compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: "max_tokens" as const } }
+			: {}),
 		cost: pricing ? openRouterCost(pricing) : { ...ZERO_COST },
 		contextWindow:
 			positiveNumber(
@@ -184,7 +187,7 @@ function googleModelFromListEntry(
 		provider: providerId,
 		baseUrl,
 		reasoning: entry.thinking === true,
-		input: ["text"],
+		input: id.startsWith("gemini-") ? ["text", "image"] : ["text"],
 		cost: { ...ZERO_COST },
 		contextWindow: positiveNumber(entry.inputTokenLimit) ?? DEFAULT_CONTEXT_WINDOW,
 		maxTokens: positiveNumber(entry.outputTokenLimit) ?? DEFAULT_MAX_TOKENS,
