@@ -69,8 +69,8 @@ describe("OpenRouter in-region providers", () => {
 		expect(listed.find((model) => model.id === openai.id)).toMatchObject({ api: "openai-completions", baseUrl: US });
 	});
 
-	it("keeps the stored list when the regional host rejects the key", async () => {
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 403 }));
+	it.each([401, 403, 404])("keeps the stored list when the regional host rejects the key (%i)", async (status) => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status }));
 		const provider = regional();
 		await expect(provider.refreshModels?.(refreshContext({ baseUrl: US }))).rejects.toThrow(/rejected the key/);
 		expect(provider.getModels()).toEqual([]);
