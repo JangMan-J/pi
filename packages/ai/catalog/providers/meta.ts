@@ -70,9 +70,9 @@ export default defineProvider({
 				api: "openai-responses",
 				baseUrl: BASE_URL,
 				compat: META_RESPONSES_COMPAT,
+				defaultContextWindow: 1007997,
+				defaultMaxTokens: 128000,
 				map: (model) => {
-					model.contextWindow = 1007997;
-					model.maxTokens = 128000;
 					if (model.id === "muse-spark-1.3-contributor") model.thinkingLevelMap = { ...FULL_EFFORT_MAP };
 					return model;
 				},
