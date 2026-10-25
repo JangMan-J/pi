@@ -73,6 +73,16 @@ function formatErrorDetails(error: unknown): string {
 	return String(error);
 }
 
+function oauthErrorDescription(responseBody: string): string | undefined {
+	try {
+		const body = JSON.parse(responseBody) as { error?: unknown; error_description?: unknown };
+		const description = body.error_description ?? body.error;
+		return typeof description === "string" ? description.slice(0, 300) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 async function postJson(url: string, body: Record<string, string | number>, signal: AbortSignal): Promise<string> {
 	const response = await fetch(url, {
 		method: "POST",
@@ -87,7 +97,10 @@ async function postJson(url: string, body: Record<string, string | number>, sign
 	const responseBody = await response.text();
 
 	if (!response.ok) {
-		throw new Error(`HTTP request failed. status=${response.status}; url=${url}; body=${responseBody}`);
+		const description = oauthErrorDescription(responseBody);
+		throw new Error(
+			`HTTP request failed. status=${response.status}; url=${url}${description ? `; error=${description}` : ""}`,
+		);
 	}
 
 	return responseBody;
@@ -120,25 +133,51 @@ async function exchangeAuthorizationCode(
 		);
 	}
 
-	let tokenData: { access_token: string; refresh_token: string; expires_in: number };
-	try {
-		tokenData = JSON.parse(responseBody) as { access_token: string; refresh_token: string; expires_in: number };
-	} catch (error) {
-		throw new Error(
-			`Token exchange returned invalid JSON. url=${TOKEN_URL}; body=${responseBody}; details=${formatErrorDetails(error)}`,
-		);
-	}
+	return parseOAuthCredential(responseBody, "Token exchange");
+}
 
-	return {
-		type: "oauth",
-		refresh: tokenData.refresh_token,
-		access: tokenData.access_token,
-		expires: Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000,
-	};
+function parseOAuthCredential(
+	responseBody: string,
+	operation: "Token exchange" | "Token refresh",
+	previousRefreshToken?: string,
+): OAuthCredential {
+	let data: unknown;
+	try {
+		data = JSON.parse(responseBody);
+	} catch {
+		throw new Error(`${operation} returned invalid JSON. url=${TOKEN_URL}`);
+	}
+	if (data === null || typeof data !== "object" || Array.isArray(data)) {
+		throw new Error(`${operation} returned an invalid token response. url=${TOKEN_URL}`);
+	}
+	const {
+		access_token: access,
+		refresh_token: rotatedRefresh,
+		expires_in: expiresIn,
+	} = data as Record<string, unknown>;
+	if (
+		typeof access !== "string" ||
+		access.trim().length === 0 ||
+		(rotatedRefresh !== undefined && (typeof rotatedRefresh !== "string" || rotatedRefresh.trim().length === 0)) ||
+		(previousRefreshToken === undefined && typeof rotatedRefresh !== "string") ||
+		typeof expiresIn !== "number" ||
+		!Number.isFinite(expiresIn) ||
+		expiresIn <= 0
+	) {
+		throw new Error(`${operation} returned an invalid token response. url=${TOKEN_URL}`);
+	}
+	const refresh = rotatedRefresh ?? previousRefreshToken;
+	const expires = Date.now() + expiresIn * 1000 - 5 * 60 * 1000;
+	if (!refresh || !Number.isFinite(expires)) {
+		throw new Error(`${operation} returned an invalid token response. url=${TOKEN_URL}`);
+	}
+	return { type: "oauth", access, refresh, expires };
 }
 
 async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+	interaction.signal.throwIfAborted();
 	const { verifier, challenge } = await generatePKCE();
+	const state = crypto.randomUUID();
 	const startCallbackServer = (port: number) =>
 		startOAuthCallbackServer({
 			providerName: "Anthropic",
@@ -146,14 +185,20 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 			port,
 			path: CALLBACK_PATH,
 			redirectHost: "localhost",
-			state: verifier,
+			state,
 			complete: async (code) => code,
 			signal: interaction.signal,
 		});
 	// Without a callback server, login continues with the pasted redirect URL.
 	const callback = await startCallbackServer(CALLBACK_PORT)
-		.catch(() => startCallbackServer(0))
-		.catch(() => undefined);
+		.catch(() => {
+			interaction.signal.throwIfAborted();
+			return startCallbackServer(0);
+		})
+		.catch(() => {
+			interaction.signal.throwIfAborted();
+			return undefined;
+		});
 	const redirectUri = callback?.redirectUri ?? REDIRECT_URI;
 
 	try {
@@ -165,7 +210,7 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 			scope: SCOPES,
 			code_challenge: challenge,
 			code_challenge_method: "S256",
-			state: verifier,
+			state,
 		});
 		interaction.notify({
 			type: "auth_url",
@@ -179,26 +224,28 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 			placeholder: redirectUri,
 		});
 		let code: string | undefined;
-		let state = verifier;
+		let responseState: string = state;
 		if (result.type === "callback") {
 			code = result.value;
 		} else {
 			const parsed = parseAuthorizationInput(result.input);
-			if (parsed.state && parsed.state !== verifier) throw new Error("OAuth state mismatch");
+			if (parsed.state && parsed.state !== state) throw new Error("OAuth state mismatch");
 			code = parsed.code;
-			state = parsed.state ?? verifier;
+			responseState = parsed.state ?? state;
 		}
 
 		if (!code) throw new Error("Missing authorization code");
 		interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
-		return await exchangeAuthorizationCode(code, state, verifier, redirectUri, interaction.signal);
+		return await exchangeAuthorizationCode(code, responseState, verifier, redirectUri, interaction.signal);
 	} finally {
 		callback?.close();
 	}
 }
 
 async function loginAnthropicCopyCode(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+	interaction.signal.throwIfAborted();
 	const { verifier, challenge } = await generatePKCE();
+	const state = crypto.randomUUID();
 	const authParams = new URLSearchParams({
 		code: "true",
 		client_id: CLIENT_ID,
@@ -207,7 +254,7 @@ async function loginAnthropicCopyCode(interaction: ProviderAuthInteraction): Pro
 		scope: SCOPES,
 		code_challenge: challenge,
 		code_challenge_method: "S256",
-		state: verifier,
+		state,
 	});
 	interaction.notify({
 		type: "auth_url",
@@ -222,12 +269,12 @@ async function loginAnthropicCopyCode(interaction: ProviderAuthInteraction): Pro
 		signal: interaction.signal,
 	});
 	const parsed = parseAuthorizationInput(input);
-	if (parsed.state && parsed.state !== verifier) throw new Error("OAuth state mismatch");
+	if (parsed.state && parsed.state !== state) throw new Error("OAuth state mismatch");
 	if (!parsed.code) throw new Error("Missing authorization code");
 	interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
 	return await exchangeAuthorizationCode(
 		parsed.code,
-		parsed.state ?? verifier,
+		parsed.state ?? state,
 		verifier,
 		COPY_CODE_REDIRECT_URI,
 		interaction.signal,
@@ -253,26 +300,8 @@ async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal):
 		throw new Error(`Anthropic token refresh request failed. url=${TOKEN_URL}; details=${formatErrorDetails(error)}`);
 	}
 
-	let data: { access_token: string; refresh_token: string; expires_in: number; scope?: string };
-	try {
-		data = JSON.parse(responseBody) as {
-			access_token: string;
-			refresh_token: string;
-			expires_in: number;
-			scope?: string;
-		};
-	} catch (error) {
-		throw new Error(
-			`Anthropic token refresh returned invalid JSON. url=${TOKEN_URL}; body=${responseBody}; details=${formatErrorDetails(error)}`,
-		);
-	}
-
-	return {
-		type: "oauth",
-		refresh: data.refresh_token,
-		access: data.access_token,
-		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
-	};
+	// Refresh token rotation is optional; an omitted token means the old one remains valid.
+	return parseOAuthCredential(responseBody, "Token refresh", refreshToken);
 }
 
 export const anthropicOAuth: OAuthAuth = {
