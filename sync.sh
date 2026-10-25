@@ -117,7 +117,7 @@ tag_tips() {
 	echo "tagged current tips under pre-sync/$stamp/"
 }
 
-rebuild_next() {
+refuse_stray() {
 	local stray
 	stray="$(stray_on_next)"
 	if [[ "$stray" -gt 0 ]]; then
@@ -125,6 +125,11 @@ rebuild_next() {
 		git log --no-merges --format='  %h %s' next ^main "${branches[@]/#/^}" >&2
 		exit 1
 	fi
+}
+
+# Caller must run refuse_stray first, before any rebase: after the branches move, the old next
+# legitimately contains commits that are no longer on any branch tip.
+rebuild_next() {
 	git checkout -q -B next "${branches[0]}"
 	for b in "${branches[@]:1}"; do
 		git merge --no-ff --no-edit -m "Merge branch '$b' into next" "$b" >/dev/null
@@ -188,12 +193,7 @@ case "$mode" in
 		if [[ -z "$(missing_from_next)" && "$(stray_on_next)" -eq 0 ]]; then
 			echo "next $(short next) already contains every branch tip; nothing to rebuild"
 		else
-			stray="$(stray_on_next)"
-			if [[ "$stray" -gt 0 ]]; then
-				echo "next has $stray commit(s) that are on no branch; cherry-pick them onto the owning branch, then re-run:" >&2
-				git log --no-merges --format='  %h %s' next ^main "${branches[@]/#/^}" >&2
-				exit 1
-			fi
+			refuse_stray
 			tag_tips next
 			rebuild_next
 		fi
@@ -213,6 +213,7 @@ case "$mode" in
 			echo "main is already at $upstream_rev ($(short main)) and next $(short next) is current; nothing to do"
 			exit 0
 		fi
+		refuse_stray
 		tag_tips main next "${branches[@]}"
 		git checkout -q main
 		git merge --ff-only "$upstream_rev"
