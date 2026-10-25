@@ -115,6 +115,7 @@ export async function startOAuthCallbackServer<T>(
 		})();
 	});
 
+	signal?.addEventListener("abort", onAbort, { once: true });
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
 		server.listen(options.port, options.host, () => {
@@ -122,6 +123,10 @@ export async function startOAuthCallbackServer<T>(
 			resolve();
 		});
 	});
+	if (signal?.aborted) {
+		server.close();
+		throw new Error("Login cancelled");
+	}
 	const address = server.address();
 	if (!address || typeof address === "string") {
 		server.close();
@@ -129,7 +134,6 @@ export async function startOAuthCallbackServer<T>(
 	}
 
 	server.on("error", (error) => finish({ error }));
-	signal?.addEventListener("abort", onAbort, { once: true });
 	if (options.timeoutMs !== undefined) {
 		timer = setTimeout(() => finish({ error: new Error(`${providerName} sign-in timed out`) }), options.timeoutMs);
 	}
@@ -160,7 +164,7 @@ export async function waitForCallbackOrManualInput<T>(
 	const manualAbort = new AbortController();
 	let manualError: Error | undefined;
 	const manual = interaction
-		.prompt({ type: "manual_code", ...prompt, signal: manualAbort.signal })
+		.prompt({ type: "manual_code", ...prompt, signal: AbortSignal.any([manualAbort.signal, interaction.signal]) })
 		.then((input) => {
 			callback?.cancel();
 			return input;
