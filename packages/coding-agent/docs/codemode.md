@@ -51,6 +51,8 @@ The `codemode` description lists tools with their TypeScript declarations, group
 
 While `codemode` is active, `codemode.mode` in [settings](settings.md#tools) decides how the other tools are presented. With `on` (default) declared tools stay declared, and their descriptions say how to call them from scripts. With `only` they are hidden from the model and listed in the `codemode` description instead, so the model calls them through scripts. Tool declarations in the `codemode` description, `describeTool()`, and `ALL_TOOLS` carry the tools' prompt guidelines, since the system prompt rules only cover declared tools.
 
+`/codemode on` or `/codemode only` switches the mode for the current session without changing settings, `/codemode reset` returns to the setting, and `/codemode` shows the current mode. `only` also activates the `codemode` tool if it is off. Each switch changes the tool declarations the model sees, so the next request misses the prompt cache once.
+
 ## Store values
 
 `store(key, value)` keeps a JSON value under a string key for later `codemode` calls; storing `undefined` deletes the key. `load(key)` returns the value, or `undefined`. Writes are kept only when the script succeeds: each successful script that stores values appends a `codemode-store` custom entry to the session, so resumed sessions keep the values and each branch sees only the values written on its path.
