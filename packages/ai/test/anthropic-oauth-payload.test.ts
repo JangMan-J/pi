@@ -6,8 +6,9 @@ import { buildBillingHeader, shapeOAuthPayload } from "../src/api/anthropic-oaut
 import { CLAUDE_CODE_VERSION_ENV } from "../src/api/anthropic-oauth/version.ts";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import { createModels } from "../src/models.ts";
+import { ANTHROPIC_MODELS } from "../src/providers/anthropic.models.ts";
 import { anthropicProvider } from "../src/providers/anthropic.ts";
-import type { Model } from "../src/types.ts";
+import type { AssistantMessage, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 beforeEach(() => vi.stubEnv(CLAUDE_CODE_VERSION_ENV, undefined));
@@ -75,6 +76,14 @@ function billing(payload: MessageCreateParamsStreaming): string | undefined {
 		? payload.system.find((block) => block.text.startsWith("x-anthropic-billing-header:"))?.text
 		: undefined;
 }
+function withoutBilling(payload: MessageCreateParamsStreaming): MessageCreateParamsStreaming {
+	return {
+		...payload,
+		system: Array.isArray(payload.system)
+			? payload.system.filter((block) => !block.text.startsWith("x-anthropic-billing-header:"))
+			: payload.system,
+	};
+}
 
 describe("native Anthropic OAuth shaping", () => {
 	it.each([
@@ -126,6 +135,26 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(wire.headers[0]!.get("authorization")).toBe(`Bearer ${apiKey}`);
 	});
 
+	it("preserves extension fields added before OAuth shaping", async () => {
+		const wire = capture();
+		const result = await stream(model, context, {
+			apiKey,
+			env: pin,
+			fetch: wire.fetch,
+			onPayload: async (payload) => {
+				await Promise.resolve();
+				return {
+					...(payload as MessageCreateParamsStreaming),
+					service_tier: "auto",
+					x_extension_marker: "preserved",
+				};
+			},
+		}).result();
+		expect(result.stopReason).toBe("stop");
+		expect(wire.payloads[0]).toMatchObject({ service_tier: "auto", x_extension_marker: "preserved" });
+		expect(billing(wire.payloads[0]!)).toBeDefined();
+	});
+
 	it("runs natively through Models with stored subscription credentials", async () => {
 		const credentials = new InMemoryCredentialStore();
 		await credentials.modify("anthropic", async () => ({
@@ -142,6 +171,55 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(billing(wire.payloads[0]!)).toBeDefined();
 	});
 
+	it("preserves generated managed-effort markers on every flagged catalog model", async () => {
+		const managedModels = Object.values(ANTHROPIC_MODELS).filter(
+			(candidate) => candidate.compat?.supportsMidConvoEffort === true,
+		);
+		expect(managedModels.length).toBeGreaterThan(0);
+		for (const managedModel of managedModels) {
+			const previous: AssistantMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "First answer" }],
+				api: managedModel.api,
+				provider: managedModel.provider,
+				model: managedModel.id,
+				providerThinkingLevel: "medium",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 2,
+			};
+			const wire = capture();
+			const result = await streamSimple(
+				managedModel,
+				normalizeContext({
+					systemPrompt: "Custom prompt",
+					messages: [
+						{ role: "user", content: "First question", timestamp: 1 },
+						previous,
+						{ role: "user", content: "Second question", timestamp: 3 },
+					],
+				}),
+				{ apiKey, env: pin, fetch: wire.fetch, reasoning: "low" },
+			).result();
+			expect(result.stopReason, managedModel.id).toBe("stop");
+			expect(billing(wire.payloads[0]!), managedModel.id).toBeDefined();
+			expect(
+				wire.payloads[0]!.messages.filter((message) => message.role === "system" && message.output_config),
+				managedModel.id,
+			).toEqual([
+				{ role: "system", content: [], output_config: { effort: "medium" } },
+				{ role: "system", content: [], output_config: { effort: "low" } },
+			]);
+		}
+	});
+
 	it("shapes in-place hook mutations and preserves custom user-agent precedence", async () => {
 		const wire = capture();
 		await stream(model, context, {
@@ -156,6 +234,156 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(wire.headers[0]!.get("user-agent")).toBe("caller");
 		expect(wire.payloads[0]!.system).toContainEqual({ type: "text", text: "Custom prompt" });
 	});
+
+	it("restores streaming after an in-place payload hook disables it", async () => {
+		const wire = capture();
+		const result = await stream(model, context, {
+			apiKey,
+			env: pin,
+			fetch: wire.fetch,
+			onPayload: (payload) => {
+				(payload as { stream: boolean }).stream = false;
+			},
+		}).result();
+		expect(result.stopReason).toBe("stop");
+		expect(wire.payloads[0]!.stream).toBe(true);
+	});
+
+	it("cancels the response body when the response hook throws", async () => {
+		const cancel = vi.fn();
+		const body = new ReadableStream<Uint8Array>({ cancel });
+		const result = await stream(model, context, {
+			apiKey,
+			env: pin,
+			fetch: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+			onResponse: () => {
+				throw new Error("response hook failed");
+			},
+		}).result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("response hook failed");
+		expect(cancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not cancel the body after normal completion", async () => {
+		const response = success();
+		const cancel = vi.spyOn(response.body!, "cancel");
+		const result = await stream(model, context, { apiKey, env: pin, fetch: async () => response }).result();
+		expect(result.stopReason).toBe("stop");
+		expect(cancel).not.toHaveBeenCalled();
+	});
+
+	it("cancels the body and preserves the error when a provider event hook throws", async () => {
+		const response = success();
+		const cancel = vi.spyOn(response.body!, "cancel");
+		const result = await stream(model, context, {
+			apiKey,
+			env: pin,
+			fetch: async () => response,
+			onProviderStreamEvent: () => {
+				throw new Error("provider event failed");
+			},
+		}).result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("provider event failed");
+		expect(cancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("preserves the original hook error when body cancellation rejects", async () => {
+		const cancel = vi.fn().mockRejectedValue(new Error("cancel failed"));
+		const body = new ReadableStream<Uint8Array>({ cancel });
+		const result = await stream(model, context, {
+			apiKey,
+			env: pin,
+			fetch: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+			onResponse: () => {
+				throw new Error("response hook failed");
+			},
+		}).result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("response hook failed");
+		expect(cancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("preserves identity and cache blocks on an ordinary OAuth request", async () => {
+		const wire = capture();
+		await stream(model, context, { apiKey, env: pin, fetch: wire.fetch }).result();
+		const system = wire.payloads[0]!.system;
+		expect(Array.isArray(system)).toBe(true);
+		if (!Array.isArray(system)) return;
+		expect(system[0]).toEqual({ type: "text", text: billing(wire.payloads[0]!) });
+		expect(system[1]).toMatchObject({
+			type: "text",
+			text: "You are Claude Code, Anthropic's official CLI for Claude.",
+			cache_control: { type: "ephemeral" },
+		});
+		expect(system[2]).toMatchObject({ type: "text", cache_control: { type: "ephemeral" } });
+		expect(system.filter((block) => block.cache_control !== undefined)).toHaveLength(2);
+	});
+
+	it("applies forced tool choice compatibility without OAuth prompt or billing shaping", async () => {
+		const wire = capture();
+		const result = await stream(
+			{ ...model, id: "claude-opus-5-5", reasoning: true, compat: { forceAdaptiveThinking: true } },
+			context,
+			{ apiKey: "sk-ant-api-synthetic", thinkingEnabled: true, toolChoice: "any", fetch: wire.fetch },
+		).result();
+		expect(result.stopReason).toBe("stop");
+		expect(wire.payloads[0]!.tool_choice).toEqual({ type: "auto" });
+		expect(billing(wire.payloads[0]!)).toBeUndefined();
+		expect(JSON.stringify(wire.payloads[0]!.system)).toContain("Pi documentation");
+	});
+
+	it("normalizes a named Claude Code tool in tool_choice and the tool list", async () => {
+		const wire = capture();
+		const result = await stream(
+			{ ...model, id: "claude-opus-5", reasoning: true, compat: { forceAdaptiveThinking: true } },
+			normalizeContext({
+				systemPrompt: "Use the read tool.",
+				messages: [{ role: "user", content: "Read the file", timestamp: 1 }],
+				tools: [
+					{
+						name: "read",
+						description: "Read a file",
+						parameters: { type: "object", properties: {}, required: [] },
+					},
+				],
+			}),
+			{
+				apiKey,
+				thinkingEnabled: true,
+				toolChoice: { type: "tool", name: "read" },
+				fetch: wire.fetch,
+			},
+		).result();
+		expect(result.stopReason).toBe("stop");
+		expect(wire.payloads[0]!.tools?.[0]).toMatchObject({ name: "Read" });
+		expect(wire.payloads[0]!.tool_choice).toEqual({ type: "tool", name: "Read" });
+	});
+
+	it.each(["any", "none"] as const)(
+		"preserves OAuth tool_choice type %s without requiring a tool name",
+		async (type) => {
+			const wire = capture();
+			const result = await stream(
+				{ ...model, id: "claude-opus-5", reasoning: true, compat: { forceAdaptiveThinking: true } },
+				normalizeContext({
+					systemPrompt: "Use tools when useful.",
+					messages: [{ role: "user", content: "Hi", timestamp: 1 }],
+					tools: [
+						{
+							name: "read",
+							description: "Read a file",
+							parameters: { type: "object", properties: {}, required: [] },
+						},
+					],
+				}),
+				{ apiKey, thinkingEnabled: true, toolChoice: type, fetch: wire.fetch },
+			).result();
+			expect(result.stopReason).toBe("stop");
+			expect(wire.payloads[0]!.tool_choice).toEqual({ type });
+		},
+	);
 
 	it.each(["key", "headers", "copilot", "client"])("does not shape %s requests", async (kind) => {
 		const wire = capture();
@@ -261,61 +489,124 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(await buildBillingHeader("", "2.1.280")).toBeUndefined();
 	});
 
-	it("injects frontier completion/JSON tool rules into shaped prompts and downgrades forced tool_choice on Opus 5.5 and Fable 5", async () => {
-		const opusParams: MessageCreateParamsStreaming = {
-			model: "claude-opus-5-5",
-			stream: true,
-			max_tokens: 10,
-			system: prompt,
-			tool_choice: { type: "any", disable_parallel_tool_use: true },
-			messages: [{ role: "user", content: "Plan, then build" }],
-		};
-		const shapedOpus = await shapeOAuthPayload(opusParams, "2.1.293");
-		expect(shapedOpus.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
-		const systemText = JSON.stringify(shapedOpus.system);
+	it("injects frontier completion and JSON tool rules into shaped prompts", async () => {
+		const shaped = await shapeOAuthPayload(
+			{
+				model: "claude-opus-5-5",
+				stream: true,
+				max_tokens: 10,
+				system: prompt,
+				messages: [{ role: "user", content: "Plan, then build" }],
+			},
+			"2.1.310",
+		);
+		const systemText = JSON.stringify(shaped.system);
 		expect(systemText).toContain("order of operations within the turn, not a stopping point");
 		expect(systemText).toContain("never serialize XML parameter tags inside JSON arguments");
+	});
 
-		const fableParams: MessageCreateParamsStreaming = {
-			...opusParams,
-			model: "claude-fable-5-1",
-			tool_choice: { type: "tool", name: "read" },
-		};
-		const shapedFable = await shapeOAuthPayload(fableParams, "2.1.293");
-		expect(shapedFable.tool_choice).toEqual({ type: "auto" });
+	it.each([
+		"claude-opus-5-5",
+		"claude-sonnet-5-5",
+		"claude-fable-5-1",
+		"claude-mythos-5-1",
+		"claude-opus-5.5",
+		"anthropic/claude-sonnet-5.5",
+		"~anthropic/claude-fable-5.1-20260101",
+		"claude-mythos-5.1-20260101",
+		"claude-opus.5.5",
+		"claude-sonnet.5.5",
+	])("downgrades forced tool_choice on %s, which rejects it with adaptive thinking", async (modelId) => {
+		const shaped = await shapeOAuthPayload(
+			{
+				model: modelId,
+				stream: true,
+				max_tokens: 10,
+				thinking: { type: "adaptive" },
+				tool_choice: { type: "any", disable_parallel_tool_use: true },
+				messages: [{ role: "user", content: "Hi" }],
+			},
+			"2.1.310",
+		);
+		expect(shaped.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
+	});
 
-		const sonnetParams: MessageCreateParamsStreaming = {
-			...opusParams,
-			model: "claude-sonnet-5-5",
-			tool_choice: { type: "tool", name: "read" },
-		};
-		const shapedSonnet = await shapeOAuthPayload(sonnetParams, "2.1.293");
-		expect(shapedSonnet.tool_choice).toEqual({ type: "tool", name: "read" });
+	it.each(["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5"])(
+		"preserves forced tool_choice on %s with adaptive thinking",
+		async (modelId) => {
+			const shaped = await shapeOAuthPayload(
+				{
+					model: modelId,
+					stream: true,
+					max_tokens: 10,
+					thinking: { type: "adaptive" },
+					tool_choice: { type: "tool", name: "read" },
+					messages: [{ role: "user", content: "Hi" }],
+				},
+				"2.1.310",
+			);
+			expect(shaped.tool_choice).toEqual({ type: "tool", name: "read" });
+		},
+	);
+
+	it.each(["any", "tool"] as const)("downgrades tool_choice type %s with manual extended thinking", async (type) => {
+		const shaped = await shapeOAuthPayload(
+			{
+				model: "claude-sonnet-4-5",
+				stream: true,
+				max_tokens: 2048,
+				thinking: { type: "enabled", budget_tokens: 1024 },
+				tool_choice: type === "tool" ? { type, name: "read" } : { type },
+				messages: [{ role: "user", content: "Hi" }],
+			},
+			"2.1.310",
+		);
+		expect(shaped.tool_choice).toEqual({ type: "auto" });
 	});
 });
 
 describe("native Claude Code version recovery", () => {
-	it("retries one named floor, updates billing and UA together, then remembers it", async () => {
+	it("tracks the bundled version, learned floor, equal/lower floors, and repeated rejection in order", async () => {
+		const initial = capture();
+		await stream(model, context, { apiKey, fetch: initial.fetch }).result();
+		expect(initial.headers[0]!.get("user-agent")).toBe("claude-cli/2.1.310");
+		expect(billing(initial.payloads[0]!)).toBe(
+			"x-anthropic-billing-header: cc_version=2.1.310.077; cc_entrypoint=sdk-cli; cch=3639e;",
+		);
+
 		const wire = capture([() => rejection("2.1.900"), success]);
 		const onPayload = vi.fn();
 		const onResponse = vi.fn();
 		const result = await stream(model, context, { apiKey, fetch: wire.fetch, onPayload, onResponse }).result();
 		expect(result.stopReason).toBe("stop");
 		expect(wire.payloads).toHaveLength(2);
-		expect(billing(wire.payloads[1]!)).toContain("cc_version=2.1.900.");
+		expect(billing(wire.payloads[1]!)).toBe(
+			"x-anthropic-billing-header: cc_version=2.1.900.b15; cc_entrypoint=sdk-cli; cch=3639e;",
+		);
+		expect(wire.payloads[1]!.system).toHaveLength((wire.payloads[0]!.system as unknown[]).length);
+		expect(withoutBilling(wire.payloads[1]!)).toEqual(withoutBilling(wire.payloads[0]!));
 		expect(wire.headers[1]!.get("user-agent")).toBe("claude-cli/2.1.900");
+		expect(wire.headers[1]!.get("x-claude-code-session-id")).toBe(wire.headers[0]!.get("x-claude-code-session-id"));
 		expect(onPayload).toHaveBeenCalledTimes(1);
 		expect(onResponse).toHaveBeenCalledTimes(1);
 		const next = capture();
 		await stream(model, context, { apiKey, fetch: next.fetch }).result();
 		expect(billing(next.payloads[0]!)).toContain("cc_version=2.1.900.");
-	});
-	it("stops after one recovery even with an ordinary retry budget", async () => {
-		const wire = capture([() => rejection("2.1.901"), () => rejection("2.1.902")]);
-		const result = await stream(model, context, { apiKey, fetch: wire.fetch, maxRetries: 3 }).result();
-		expect(wire.payloads).toHaveLength(2);
-		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain(CLAUDE_CODE_VERSION_ENV);
+
+		for (const required of ["2.1.900", "2.1.899"]) {
+			const rejected = capture([() => rejection(required), success]);
+			const rejectedResult = await stream(model, context, { apiKey, fetch: rejected.fetch }).result();
+			expect(rejectedResult.stopReason).toBe("error");
+			expect(rejected.payloads).toHaveLength(1);
+			expect(billing(rejected.payloads[0]!)).toContain("cc_version=2.1.900.");
+			expect(rejected.headers[0]!.get("user-agent")).toBe("claude-cli/2.1.900");
+		}
+
+		const repeated = capture([() => rejection("2.1.901"), () => rejection("2.1.902")]);
+		const repeatedResult = await stream(model, context, { apiKey, fetch: repeated.fetch, maxRetries: 3 }).result();
+		expect(repeated.payloads).toHaveLength(2);
+		expect(repeatedResult.stopReason).toBe("error");
+		expect(repeatedResult.errorMessage).toContain(CLAUDE_CODE_VERSION_ENV);
 	});
 	it.each(["pin", "no-floor", "unrelated", "non-400"])("does not recover %s", async (kind) => {
 		const wire = capture([
