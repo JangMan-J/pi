@@ -11,6 +11,7 @@ export function compatibleAnthropicToolChoice(
 	const choice = params.tool_choice;
 	if (!choice || (choice.type !== "any" && choice.type !== "tool")) return choice;
 	const modelId = params.model.toLowerCase().replace(/^~?anthropic\//, "");
+	if (!modelId.startsWith("claude-")) return choice;
 	const unsupported =
 		params.thinking?.type === "enabled" || ADAPTIVE_FORCED_TOOL_CHOICE_UNSUPPORTED_MODEL.test(modelId);
 	if (!unsupported) return choice;
