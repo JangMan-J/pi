@@ -669,3 +669,48 @@ describe("Meta conversation structure", () => {
 		expect(input[at + 2]).toMatchObject({ role: "user" });
 	});
 });
+
+describe("Meta catalog names", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+	});
+
+	async function refreshWith(rows: Array<{ id: string; name: string }>) {
+		const provider = metaProvider();
+		vi.stubEnv("PI_META_CATALOG_REFRESH_INTERVAL_MS", "0");
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			Response.json({
+				data: rows.map(({ id, name }) => ({ id, metadata: { "muse-code": { tool_call: true, name } } })),
+			}),
+		);
+		await provider.refreshModels!({
+			allowNetwork: true,
+			credential: { type: "api_key", key: "test" },
+			stored: { models: provider.getModels(), checkedAt: Date.now() },
+			signal: new AbortController().signal,
+			publish: async (pub) => {
+				pub.update?.();
+				return true;
+			},
+		});
+		return provider.getModels();
+	}
+
+	it("ignores an id-shaped catalog name, including another model's id", async () => {
+		// Live catalog 2026-10-25: muse-wonder-full-1.0-contributor was named muse-wonder-1.0-contributor.
+		const models = await refreshWith([
+			{ id: "muse-wonder-1.0-contributor", name: "muse-wonder-1.0-contributor" },
+			{ id: "muse-wonder-full-1.0-contributor", name: "muse-wonder-1.0-contributor" },
+		]);
+		const name = (id: string) => models.find((model) => model.id === id)?.name;
+		expect(name("muse-wonder-1.0-contributor")).toBe("Muse Wonder Contributor");
+		expect(name("muse-wonder-full-1.0-contributor")).toBe("Muse Wonder Full Contributor");
+		expect(new Set(models.map((model) => model.name)).size).toBe(models.length);
+	});
+
+	it("uses a real display name from the catalog", async () => {
+		const models = await refreshWith([{ id: "muse-wonder-1.0", name: "Muse Wonder 1.0 (Preview)" }]);
+		expect(models.find((model) => model.id === "muse-wonder-1.0")?.name).toBe("Muse Wonder 1.0 (Preview)");
+	});
+});
