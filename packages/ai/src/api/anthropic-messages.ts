@@ -17,7 +17,7 @@ import {
 	ANTHROPIC_SERVICE_ACCOUNT_ID_ENV,
 	ANTHROPIC_WORKSPACE_ID_ENV,
 } from "../env-api-keys.ts";
-import { calculateCost } from "../models.ts";
+import { calculateCost, clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -57,6 +57,7 @@ import {
 	type TranscriptContext,
 } from "../utils/transcript.ts";
 import { createAnthropicMessagesRequest } from "./anthropic-oauth/request-shaping.ts";
+import { compatibleAnthropicToolChoice } from "./anthropic-tool-choice.ts";
 import {
 	getJsonSchemaToolParameters,
 	resolveJsonSchemaStrictSampling,
@@ -599,6 +600,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		let response: Response | undefined;
 
 		try {
 			let client: Anthropic;
@@ -645,7 +647,6 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				maxRetries: 0,
 			};
 			let disablePreferredStrictTools = false;
-			let response: Response;
 			for (;;) {
 				options?.signal?.throwIfAborted();
 				const built = buildParams(model, normalizedContext, isOAuth, options, disablePreferredStrictTools);
@@ -653,8 +654,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				let params = built.params;
 				const nextParams = await options?.onPayload?.(params, model);
 				if (nextParams !== undefined) {
-					params = { ...(nextParams as MessageCreateParamsStreaming), stream: true };
+					params = nextParams as MessageCreateParamsStreaming;
 				}
+				params = { ...params, stream: true };
 				try {
 					response = await retryProviderRequest(
 						await createAnthropicMessagesRequest(client, params, requestOptions, isOAuth, model.headers, options),
@@ -918,6 +920,13 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
+			if (response?.body) {
+				try {
+					await response.body.cancel();
+				} catch {
+					// Preserve the error that caused request processing to exit.
+				}
+			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
@@ -937,10 +946,11 @@ function mapThinkingLevelToEffort(
 	model: Model<"anthropic-messages">,
 	level: SimpleStreamOptions["reasoning"],
 ): AnthropicEffort {
-	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
+	const clampedLevel = level ? clampThinkingLevel(model, level) : level;
+	const mapped = clampedLevel ? model.thinkingLevelMap?.[clampedLevel] : undefined;
 	if (typeof mapped === "string") return mapped as AnthropicEffort;
 
-	switch (level) {
+	switch (clampedLevel) {
 		case "minimal":
 		case "low":
 			return "low";
@@ -1145,7 +1155,7 @@ function getBetaFeatures(
 		features.push(INTERLEAVED_THINKING_BETA);
 	}
 	if (shouldUseServerSideFallbackBeta(model)) features.push(SERVER_SIDE_FALLBACK_BETA);
-	if (model.compat?.supportsMidConvoEffort === true) {
+	if (model.compat?.supportsMidConvoEffort === true && model.compat.forceAdaptiveThinking !== false) {
 		features.push(MID_CONVERSATION_OUTPUT_CONFIG_BETA, THINKING_BINDING_CONTROLS_BETA);
 	}
 	if (nativeToolChanges) features.push(INLINE_TOOLS_BETA);
@@ -1200,7 +1210,10 @@ function buildParams(
 	const thinkingDisabled =
 		model.reasoning && options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null;
 	// Effort cannot change between messages while thinking is disabled, so "off" sends no effort markers.
-	const effortMessages = model.compat?.supportsMidConvoEffort === true && !thinkingDisabled;
+	const effortMessages =
+		model.compat?.supportsMidConvoEffort === true &&
+		model.compat.forceAdaptiveThinking !== false &&
+		!thinkingDisabled;
 	const converted = convertMessages(
 		conversationMessages,
 		isOAuthToken,
@@ -1247,12 +1260,7 @@ function buildParams(
 	}
 
 	// Temperature is incompatible with extended thinking and unsupported on Claude Opus 4.7+.
-	if (
-		options?.temperature !== undefined &&
-		!options?.thinkingEnabled &&
-		model.compat?.supportsMidConvoEffort !== true &&
-		compat.supportsTemperature
-	) {
+	if (options?.temperature !== undefined && (!model.reasoning || thinkingDisabled) && compat.supportsTemperature) {
 		params.temperature = options.temperature;
 	}
 
@@ -1316,10 +1324,17 @@ function buildParams(
 	if (options?.toolChoice) {
 		if (typeof options.toolChoice === "string") {
 			params.tool_choice = { type: options.toolChoice };
+		} else if (options.toolChoice.type === "tool") {
+			params.tool_choice = {
+				...options.toolChoice,
+				name: isOAuthToken ? toClaudeCodeName(options.toolChoice.name) : options.toolChoice.name,
+			};
 		} else {
 			params.tool_choice = options.toolChoice;
 		}
 	}
+	const compatibleToolChoice = compatibleAnthropicToolChoice(params);
+	if (compatibleToolChoice !== undefined) params.tool_choice = compatibleToolChoice;
 
 	const allowedFallbackModels = model.compat?.allowedFallbackModels;
 	if (allowedFallbackModels && allowedFallbackModels.length > 0) {
