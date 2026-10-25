@@ -3,7 +3,7 @@
 import type { ProviderEnv } from "../../types.ts";
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
 
-const BUNDLED_VERSION = "2.1.293";
+const BUNDLED_VERSION = "2.1.310";
 export const CLAUDE_CODE_VERSION_ENV = "PI_ANTHROPIC_AUTH_CLAUDE_CODE_VERSION";
 const VERSION = /^\d+\.\d+\.\d+$/;
 let learnedFloor = BUNDLED_VERSION;
