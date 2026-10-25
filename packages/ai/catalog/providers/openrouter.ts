@@ -8,7 +8,7 @@ const BASE_URL = "https://openrouter.ai/api/v1";
 // OpenRouter rejects `configuration_update` system messages on Opus 5 ("Mid-conversation
 // reasoning effort (configuration_update) is not supported on anthropic/claude-opus-5-20260723")
 // while accepting them on Fable 5.1.
-const MID_CONVO_EFFORT_UNSUPPORTED_MODEL_IDS = new Set(["anthropic/claude-opus-5"]);
+const MID_CONVO_EFFORT_UNSUPPORTED_MODEL_IDS = new Set(["claude-opus-5"]);
 
 /** Keep selected model metadata stable until upstream settles. */
 function correctUpstream(model: ChatModel): ChatModel {
@@ -84,7 +84,9 @@ export default defineProvider({
 		if (
 			model.api === "anthropic-messages" &&
 			supportsClaudeMidConvoEffort(model.id) &&
-			!MID_CONVO_EFFORT_UNSUPPORTED_MODEL_IDS.has(model.id)
+			!MID_CONVO_EFFORT_UNSUPPORTED_MODEL_IDS.has(
+				model.id.toLowerCase().replace(/^~?anthropic\//, "").replace(/-\d{8}$/, ""),
+			)
 		) {
 			enableClaudeMidConvoEffort(model as Model<"anthropic-messages">);
 		}
