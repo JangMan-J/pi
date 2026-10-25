@@ -22,16 +22,23 @@ export function supportsClaudeMidConvoEffort(modelId: string): boolean {
 
 /** Models that accept system messages and tool changes after the conversation starts. */
 export function supportsClaudeMidConvoChanges(modelId: string): boolean {
+	const id = stripPrefix(modelId);
 	return (
-		/^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/.test(modelId) ||
-		/^claude-(?:sonnet|haiku)-5[.-]5(?:-\d{8})?$/.test(modelId) ||
-		/^claude-(?:fable|mythos)-5(?:[.-][12])?(?:-\d{8})?$/.test(modelId)
+		/^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/.test(id) ||
+		/^claude-(?:sonnet|haiku)-5[.-]5(?:-\d{8})?$/.test(id) ||
+		/^claude-(?:fable|mythos)-5(?:[.-][12])?(?:-\d{8})?$/.test(id)
 	);
 }
 
 /** Enable per-message effort changes. */
 export function enableClaudeMidConvoEffort(model: Model<"anthropic-messages">): void {
 	mergeCompat(model, { supportsMidConvoEffort: true });
+}
+
+/** Whether Anthropic documents this Claude model as always thinking. */
+export function isClaudeAlwaysThinkingModel(modelId: string): boolean {
+	const id = stripPrefix(modelId).replace(/-\d{8}$/, "");
+	return /^claude-(?:(?:opus|sonnet)[.-]5[.-]5|(?:fable|mythos)[.-]5(?:[.-][12])?)$/.test(id);
 }
 
 function idIncludesAny(modelId: string, fragments: readonly string[]): boolean {
@@ -75,6 +82,8 @@ const TEMPERATURE_UNSUPPORTED = [
 	"sonnet.5",
 	"haiku-5-5",
 	"haiku-5.5",
+	"fable-5",
+	"mythos-5",
 ];
 const MAX_EFFORT_ONLY = ["opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6"];
 const XHIGH_AND_MAX_EFFORT = [
@@ -90,6 +99,11 @@ const XHIGH_AND_MAX_EFFORT = [
 	"haiku.5",
 ];
 
+/** Whether this Claude model uses adaptive thinking. */
+export function isClaudeAdaptiveThinkingModel(modelId: string): boolean {
+	return isClaudeLatestAlias(modelId) || idIncludesAny(modelId, ADAPTIVE_THINKING);
+}
+
 /**
  * Adaptive thinking effort levels (per Anthropic adaptive thinking docs):
  * "max" is available on all adaptive-thinking Claude models; "xhigh" only on
@@ -98,11 +112,15 @@ const XHIGH_AND_MAX_EFFORT = [
 export function applyClaudeFamilyRules(model: ChatModel, ctx: ProviderContext): void {
 	if (idIncludesAny(model.id, MAX_EFFORT_ONLY)) mergeThinking(model, { max: "max" });
 	if (idIncludesAny(model.id, XHIGH_AND_MAX_EFFORT)) mergeThinking(model, { xhigh: "xhigh", max: "max" });
-	if (model.id.includes("fable-5")) mergeThinking(model, { xhigh: "xhigh", max: "max" });
-	if (cannotTurnThinkingOff(model, ctx)) mergeThinking(model, { off: null });
+	if (model.id.includes("fable-5") || model.id.includes("mythos-5")) {
+		mergeThinking(model, { off: null, xhigh: "xhigh", max: "max" });
+	}
+	if (cannotTurnThinkingOff(model, ctx) || isClaudeAlwaysThinkingModel(model.id)) {
+		mergeThinking(model, { off: null });
+	}
 	if (model.api !== "anthropic-messages") return;
 	const messagesModel = model as Model<"anthropic-messages">;
-	if (isClaudeLatestAlias(model.id) || idIncludesAny(model.id, ADAPTIVE_THINKING)) {
+	if (isClaudeAdaptiveThinkingModel(model.id)) {
 		mergeCompat(messagesModel, { forceAdaptiveThinking: true });
 	}
 	if (idIncludesAny(model.id.toLowerCase(), TEMPERATURE_UNSUPPORTED)) {

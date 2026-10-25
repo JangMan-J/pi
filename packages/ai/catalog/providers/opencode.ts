@@ -148,9 +148,12 @@ export function finalizeOpencodeModel(model: ChatModel): void {
 	}
 	if (model.api === "anthropic-messages") {
 		const messagesModel = model as Model<"anthropic-messages">;
-		// OpenCode Zen forwards mid-conversation system messages but rejects
+		// OpenCode Zen and Go forward mid-conversation system messages but reject
 		// `tool_addition`/`tool_removal` blocks, so tool changes stay top-level.
-		if (model.provider === "opencode" && supportsClaudeMidConvoChanges(model.id)) {
+		if (
+			(model.provider === "opencode" || model.provider === "opencode-go") &&
+			supportsClaudeMidConvoChanges(model.id)
+		) {
 			mergeCompat(messagesModel, { supportsMidConvoSystemMessages: true });
 		}
 		// Zen and Go forward per-message effort and `thinking.block_binding`. Without
