@@ -158,6 +158,13 @@ describe.sequential("OAuth callback server", () => {
 		await expect(start<string>({ signal: alreadyAborted.signal })).rejects.toThrow("Login cancelled");
 	});
 
+	it("observes an abort while the callback listener is starting", async () => {
+		const controller = new AbortController();
+		const pending = start<string>({ signal: controller.signal });
+		controller.abort();
+		await expect(pending).rejects.toThrow("Login cancelled");
+	});
+
 	it("fails instead of picking another port when the requested port is taken", async () => {
 		const blocker: Server = createServer();
 		await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
@@ -232,6 +239,17 @@ describe.sequential("waitForCallbackOrManualInput", () => {
 			},
 		);
 		expect(result).toEqual({ type: "manual", input: "pasted" });
+	});
+
+	it("aborts a manual-only prompt with the interaction signal", async () => {
+		const controller = new AbortController();
+		const result = waitForCallbackOrManualInput(interaction(pendingPrompt(), controller.signal), undefined, {
+			message: "paste",
+			placeholder: "http://localhost/callback",
+		});
+		controller.abort();
+		const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("prompt still pending")), 50));
+		await expect(Promise.race([result, timeout])).rejects.toThrow("prompt aborted");
 	});
 
 	it("propagates manual prompt failures", async () => {
