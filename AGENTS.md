@@ -13,9 +13,10 @@ Read this before changing anything. Upstream's own rules in the repo root `AGENT
 | `feat/native-meta` | `providers/meta.ts`, the Meta branches in `api/openai-responses.ts`, the Meta section of `scripts/generate-models.ts`, `test/meta-oauth.test.ts` |
 | `feat/native-openai` | `api/openai-codex-responses.ts`, the OpenAI/Codex sections of `scripts/generate-models.ts`, the OpenAI context and mid-convo tests, the `end_turn` continuation in `packages/agent/src/agent-loop.ts` |
 | `fix/coding-agent` | `providers/generic-endpoint.ts`, `providers/openrouter*.ts`, `providers/README.md`, `packages/coding-agent/src/core/model-runtime.ts`, `model-config.ts`, the stationarity example, the `/codemode` command in `extensions/codemode/index.ts`, their tests |
+| `fix/other-providers` | catch-all for providers no other branch owns (for example Kimi Coding): their `providers/*.ts`, their sections of `scripts/generate-models.ts`, their tests. A provider that grows enough fork changes moves to its own branch |
 | `fork-sync` | this directory (`.fork/`), `install-next.sh`, `install-tests.sh` |
 
-`scripts/generate-models.ts` is touched by three branches. Edit only your provider's section, on that provider's branch. A change that spans two providers is two commits on two branches.
+`scripts/generate-models.ts` is touched by several branches. Edit only your provider's section, on that provider's branch. A change that spans two providers is two commits on two branches.
 
 ## Order of work
 
