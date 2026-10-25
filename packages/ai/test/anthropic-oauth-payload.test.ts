@@ -334,6 +334,18 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(JSON.stringify(wire.payloads[0]!.system)).toContain("Pi documentation");
 	});
 
+	it("preserves forced tool choice for non-Claude models over the Anthropic protocol", async () => {
+		const wire = capture();
+		const result = await stream({ ...model, id: "minimax-m2", reasoning: true }, context, {
+			apiKey: "sk-ant-api-synthetic",
+			thinkingEnabled: true,
+			toolChoice: "any",
+			fetch: wire.fetch,
+		}).result();
+		expect(result.stopReason).toBe("stop");
+		expect(wire.payloads[0]!.tool_choice).toEqual({ type: "any" });
+	});
+
 	it("normalizes a named Claude Code tool in tool_choice and the tool list", async () => {
 		const wire = capture();
 		const result = await stream(
