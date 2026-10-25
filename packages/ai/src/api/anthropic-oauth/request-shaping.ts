@@ -24,11 +24,13 @@
  */
 import type Anthropic from "@anthropic-ai/sdk";
 import type {
+	BetaCacheControlEphemeral,
 	BetaContentBlockParam,
 	BetaMessageParam,
 	MessageCreateParamsStreaming,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
 import type { ProviderEnv, ProviderHeaders } from "../../types.ts";
+import { compatibleAnthropicToolChoice } from "../anthropic-tool-choice.ts";
 import { claudeCodeSessionId } from "./session-id.ts";
 import { shapeSystemPrompt, shapeSystemUpdateText } from "./system-prompt-shaping.ts";
 import { recoverClaudeCodeVersion, resolveClaudeCodeVersion } from "./version.ts";
@@ -49,9 +51,29 @@ export async function buildBillingHeader(text: string, version: string): Promise
 	return `${BILLING_MARKER} cc_version=${version}.${suffix}; cc_entrypoint=sdk-cli; cch=${cch};`;
 }
 
-function isForcedToolChoiceUnsupportedModel(modelId: string): boolean {
-	const lower = modelId.toLowerCase();
-	return lower.startsWith("claude-opus-5") || lower.startsWith("claude-fable-") || lower.startsWith("claude-mythos-");
+function restoreDroppedCacheControl(messages: BetaMessageParam[], cacheControl: BetaCacheControlEphemeral): void {
+	for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
+		const message = messages[messageIndex]!;
+		if (message.role !== "user" && message.role !== "system") continue;
+		if (typeof message.content === "string") {
+			message.content = [{ type: "text", text: message.content, cache_control: cacheControl }];
+			return;
+		}
+		for (let blockIndex = message.content.length - 1; blockIndex >= 0; blockIndex--) {
+			const block = message.content[blockIndex]!;
+			if (
+				block.type !== "text" &&
+				block.type !== "image" &&
+				block.type !== "tool_result" &&
+				block.type !== "tool_addition" &&
+				block.type !== "tool_removal"
+			) {
+				continue;
+			}
+			if (block.cache_control === undefined) block.cache_control = cacheControl;
+			return;
+		}
+	}
 }
 
 /** Called only for OAuth, after caller payload hooks. Safe to call again on recovery. */
@@ -59,16 +81,22 @@ export async function shapeOAuthPayload(
 	params: MessageCreateParamsStreaming,
 	version: string,
 ): Promise<MessageCreateParamsStreaming> {
+	let droppedCacheControl: BetaCacheControlEphemeral | null | undefined;
 	const messages = params.messages.flatMap((message): BetaMessageParam[] => {
 		if (message.role !== "system" || !Array.isArray(message.content)) return [message];
 		const content = message.content.flatMap<BetaContentBlockParam>((block) => {
 			if (block.type !== "text") return [block];
 			const text = shapeSystemUpdateText(block.text);
-			return text === undefined ? [] : [{ ...block, text }];
+			if (text === undefined) {
+				droppedCacheControl ??= block.cache_control;
+				return [];
+			}
+			return [{ ...block, text }];
 		});
 		// Empty system messages can still carry per-message reasoning effort.
 		return content.length || message.output_config !== undefined ? [{ ...message, content }] : [];
 	});
+	if (droppedCacheControl) restoreDroppedCacheControl(messages, droppedCacheControl);
 	const firstUser = messages.find((message) => message.role === "user");
 	const firstText =
 		typeof firstUser?.content === "string"
@@ -82,17 +110,7 @@ export async function shapeOAuthPayload(
 		.filter((block) => !block.text.startsWith(BILLING_MARKER))
 		.map((block) => ({ ...block, text: shapeSystemPrompt(block.text) }));
 	if (billing) system.unshift({ type: "text", text: billing });
-	const toolChoice =
-		isForcedToolChoiceUnsupportedModel(params.model) &&
-		params.tool_choice &&
-		(params.tool_choice.type === "any" || params.tool_choice.type === "tool")
-			? {
-					type: "auto" as const,
-					...(params.tool_choice.disable_parallel_tool_use !== undefined
-						? { disable_parallel_tool_use: params.tool_choice.disable_parallel_tool_use }
-						: {}),
-				}
-			: params.tool_choice;
+	const toolChoice = compatibleAnthropicToolChoice(params);
 	return {
 		...params,
 		messages,
