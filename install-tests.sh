@@ -1,39 +1,42 @@
 #!/usr/bin/env bash
-# Prepare a fork checkout for testing and run the checks.
+# Set up a development checkout of the fork (clone it if missing) and run the checks.
+# It does not install `pi`; install-next.sh installs tested releases separately.
 #
 #   install-tests.sh            build the pi-env daemon, set up the .fork worktree and agent pointers, run the focused checks
 #   install-tests.sh --all      same setup, then `npm run check` and the full `./test.sh` (several minutes)
 #   install-tests.sh --no-run   setup only
 #
 # Options:
-#   --dir DIR    checkout directory   PI_DIR   default ~/pi
+#   --dir DIR    checkout directory   PI_DIR    default ~/pi
+#   --repo URL   fork to clone        PI_REPO   default https://github.com/JangMan-J/pi.git
 #
-# Needs cargo for packages/env (install with https://rustup.rs). If the checkout is missing, this
-# runs install-next.sh from the same directory as this script.
+# Needs cargo for packages/env (install with https://rustup.rs).
 set -euo pipefail
 
 dir="${PI_DIR:-$HOME/pi}"
+repo="${PI_REPO:-https://github.com/JangMan-J/pi.git}"
 mode="focused"
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--dir) dir="$2"; shift 2 ;;
+		--repo) repo="$2"; shift 2 ;;
 		--all) mode="all"; shift ;;
 		--no-run) mode="none"; shift ;;
-		-h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+		-h|--help) sed -n '2,13p' "$0"; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'install-tests: %s\n' "$*" >&2; exit 1; }
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ! -d "$dir/.git" ]]; then
-	[[ -x "$here/install-next.sh" ]] || die "$dir is not a checkout and $here/install-next.sh is missing"
-	PI_DIR="$dir" "$here/install-next.sh"
+	say "Cloning $repo (next) into $dir"
+	git clone --branch next "$repo" "$dir"
 fi
 cd "$dir"
+git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/earendil-works/pi.git
 
 if [[ ! -d node_modules ]]; then
 	say "Installing dependencies (npm ci --ignore-scripts)"

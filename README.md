@@ -15,18 +15,25 @@ echo .fork >> .git/info/exclude
 
 ## Install scripts
 
-`install-next.sh` clones or updates `~/pi` to `origin/next`, runs `npm ci --ignore-scripts`, installs the
-pre-commit hook, and `npm run build:offline`, and links `~/.local/bin/pi` to the build (`--refresh-models` builds with a
-model-data refresh; `PI_DIR`, `PI_BRANCH`, `PI_BIN_DIR` override the defaults). `install-tests.sh`
-builds the pi-env daemon, sets up this worktree at `.fork/`, and runs `check.sh focused`
-(`--all` for the full suite, `--no-run` for setup only). On a fresh machine:
+`install-next.sh` installs `pi` from `next` as a tested release; it needs no checkout. It fetches the
+current `origin/next` commit into `~/.local/share/pi-fork/releases/<commit>/`, installs dependencies,
+generates the model data, builds, and runs `check.sh focused` from `fork-sync`. Only when the checks pass
+does it switch the `current` link to the new release, so `~/.local/bin/pi` (which links through
+`current`) changes in one step and running sessions keep their files. A failed build is kept for
+inspection and `pi` stays as it was. The previous release stays for `install-next.sh --rollback`; older
+ones are deleted. `--reinstall` rebuilds the current commit; `PI_INSTALL_ROOT`, `PI_REPO`, `PI_BRANCH`,
+`PI_BIN_DIR` override the defaults. On a fresh machine:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/JangMan-J/pi/fork-sync/install-next.sh
-curl -fsSLO https://raw.githubusercontent.com/JangMan-J/pi/fork-sync/install-tests.sh
-chmod +x install-next.sh install-tests.sh
-./install-next.sh && ./install-tests.sh
+chmod +x install-next.sh
+./install-next.sh
 ```
+
+`install-tests.sh` sets up a development checkout for changing the fork: it clones `~/pi` if missing
+(`PI_DIR` overrides), installs dependencies and the pre-commit hook, builds, builds the pi-env daemon,
+sets up this worktree at `.fork/`, aligns the branches with origin, and runs `check.sh focused`
+(`--all` for the full suite, `--no-run` for setup only). It does not install `pi`.
 
 ## One-click sync (GitHub Actions)
 
@@ -48,7 +55,7 @@ Start every session with `.fork/sync.sh --status`.
 ## Files
 
 - `AGENTS.md`: the fork workflow for agents.
-- `install-next.sh`, `install-tests.sh`: see above.
+- `install-next.sh`: install tested releases of `next`; `install-tests.sh`: set up a development checkout. See above.
 - `branches`: the feature branches merged into `next`, in merge order.
 - `sync.sh`: `--status` reports main, every branch and next; `--align` resets them to origin when safe; `--rebuild-only` regenerates `next` from the
   current tips; the full mode tags tips, fast-forwards `main`, rebases every branch, rebuilds `next`, runs the

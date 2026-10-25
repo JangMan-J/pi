@@ -1,38 +1,39 @@
 #!/usr/bin/env bash
-# Clone or update the fork's `next` branch, build it, and point `pi` at the build.
+# Install the fork's `next` branch as a tested release and point `pi` at it.
 #
-#   install-next.sh                  clone (or update) ~/pi, hydrate model data if missing, build, link ~/.local/bin/pi
-#   install-next.sh --refresh-models run `npm run build` instead, which refreshes model data over the network first
-#   install-next.sh --force          allow replacing a local `next` that has commits origin does not have
+#   install-next.sh              build the current origin/next commit in its own release folder, run the
+#                                focused checks, then switch `pi` to it; a failed build never replaces pi
+#   install-next.sh --rollback   switch `pi` back to the previous release
+#   install-next.sh --reinstall  rebuild the current origin/next commit even if it is installed
 #
 # Options (flags override the environment):
-#   --dir DIR        checkout directory            PI_DIR      default ~/pi
-#   --repo URL       fork to clone                 PI_REPO     default https://github.com/JangMan-J/pi.git
-#   --branch NAME    branch to install             PI_BRANCH   default next
-#   --bin-dir DIR    where the `pi` symlink goes   PI_BIN_DIR  default ~/.local/bin
+#   --root DIR       releases live here            PI_INSTALL_ROOT  default ~/.local/share/pi-fork
+#   --repo URL       fork to clone                 PI_REPO          default https://github.com/JangMan-J/pi.git
+#   --branch NAME    branch to install             PI_BRANCH        default next
+#   --bin-dir DIR    where the `pi` symlink goes   PI_BIN_DIR       default ~/.local/bin
 #
-# `next` is force-pushed by .fork/sync.sh, so the update path resets the local branch to origin
-# instead of pulling. It refuses to do that on a dirty tree, or over local-only commits without --force.
+# Layout: releases/<commit>/ holds one commit (shallow), built, with fork-sync's check.sh in .fork/.
+# `current` and `previous` are symlinks to releases, and `pi` links through `current`, so a switch is
+# one rename and running sessions keep their files. A release whose checks fail stays unmarked for
+# inspection and never becomes current. After a switch, releases other than current and previous
+# are deleted. To change the fork, set up a development checkout with install-tests.sh instead.
 set -euo pipefail
 
-dir="${PI_DIR:-$HOME/pi}"
+root="${PI_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/pi-fork}"
 repo="${PI_REPO:-https://github.com/JangMan-J/pi.git}"
 branch="${PI_BRANCH:-next}"
 bin_dir="${PI_BIN_DIR:-$HOME/.local/bin}"
-upstream_url="https://github.com/earendil-works/pi.git"
-build_script="build:offline"
-force=0
+mode="install"
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-		--dir) dir="$2"; shift 2 ;;
+		--root) root="$2"; shift 2 ;;
 		--repo) repo="$2"; shift 2 ;;
 		--branch) branch="$2"; shift 2 ;;
 		--bin-dir) bin_dir="$2"; shift 2 ;;
-		--refresh-models) build_script="build"; shift ;;
-		--offline) build_script="build:offline"; shift ;;
-		--force) force=1; shift ;;
-		-h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+		--rollback) mode="rollback"; shift ;;
+		--reinstall) mode="reinstall"; shift ;;
+		-h|--help) sed -n '2,19p' "$0"; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
@@ -46,60 +47,90 @@ done
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 [[ "$node_major" -ge 22 ]] || die "Node 22.19 or newer is required (found $(node --version))"
 
-if [[ ! -d "$dir/.git" ]]; then
-	say "Cloning $repo ($branch) into $dir"
-	git clone --branch "$branch" "$repo" "$dir"
-else
-	say "Updating $dir to origin/$branch"
-	origin_url="$(git -C "$dir" remote get-url origin 2>/dev/null || true)"
-	[[ "$origin_url" == "$repo" ]] || echo "note: origin is $origin_url, not $repo" >&2
-	[[ -z "$(git -C "$dir" status --porcelain)" ]] || die "$dir has uncommitted changes; commit, stash, or discard them first"
-	git -C "$dir" fetch --prune origin
-	if git -C "$dir" rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
-		ahead="$(git -C "$dir" rev-list --count "origin/$branch..$branch")"
-		if [[ "$ahead" -gt 0 && $force -eq 0 ]]; then
-			die "local $branch has $ahead commit(s) origin lacks; push them or re-run with --force"
-		fi
+mkdir -p "$root/releases"
+root="$(cd "$root" && pwd -P)"
+cli_path="packages/coding-agent/dist/cli.js"
+
+target_of() { readlink "$root/$1" 2>/dev/null || true; }
+# Point `current` or `previous` at a release with one rename, so readers never see it missing.
+point() {
+	ln -sfn "$2" "$root/.$1.tmp"
+	mv -T "$root/.$1.tmp" "$root/$1"
+}
+link_pi() {
+	mkdir -p "$bin_dir"
+	ln -sfn "$root/current/$cli_path" "$bin_dir/pi"
+	case ":$PATH:" in
+		*":$bin_dir:"*) ;;
+		*) echo "note: $bin_dir is not on PATH" >&2 ;;
+	esac
+	printf '\npi %s at %s (%s)\n' "$(node "$root/current/$cli_path" --version)" \
+		"$(basename "$(target_of current)" | cut -c1-9)" "$bin_dir/pi"
+}
+
+if [[ "$mode" == "rollback" ]]; then
+	current="$(target_of current)"
+	previous="$(target_of previous)"
+	[[ -n "$previous" && -f "$previous/.installed" ]] || die "there is no previous release to roll back to"
+	point current "$previous"
+	point previous "$current"
+	say "Rolled back to $(basename "$previous")"
+	link_pi
+	exit 0
+fi
+
+say "Resolving $branch on $repo"
+commit="$(git ls-remote --exit-code "$repo" "refs/heads/$branch" | cut -f1)" || die "cannot resolve $branch on $repo"
+release="$root/releases/$commit"
+
+if [[ "$mode" == "install" && -f "$release/.installed" && "$(target_of current)" == "$release" ]]; then
+	say "${commit:0:9} is already the current release"
+	link_pi
+	exit 0
+fi
+
+if [[ "$mode" == "reinstall" || ! -f "$release/.installed" ]]; then
+	if [[ "$(target_of current)" == "$release" ]]; then
+		die "cannot rebuild ${commit:0:9} while it is the current release; running sessions use it"
 	fi
-	git -C "$dir" checkout -q -B "$branch" "origin/$branch"
+	rm -rf "$release"
+	say "Fetching $branch at ${commit:0:9} into $release"
+	git init -q "$release"
+	git -C "$release" remote add origin "$repo"
+	git -C "$release" fetch -q --depth 1 origin "$commit"
+	git -C "$release" checkout -q --detach FETCH_HEAD
+	# check.sh lives on fork-sync and finds the checkout as the parent of its own directory.
+	git -C "$release" fetch -q --depth 1 origin fork-sync
+	mkdir -p "$release/.fork"
+	git -C "$release" show FETCH_HEAD:check.sh > "$release/.fork/check.sh"
+	chmod +x "$release/.fork/check.sh"
+
+	cd "$release"
+	say "Installing dependencies (npm ci --ignore-scripts)"
+	npm ci --ignore-scripts
+	# packages/ai/src/providers/data/ is gitignored; a new release always generates it.
+	say "Hydrating model data (npm run hydrate:model-data, needs network)"
+	npm run hydrate:model-data
+	say "Building (npm run build:offline)"
+	npm run build:offline
+	[[ -f "$release/$cli_path" ]] || die "build finished but $release/$cli_path is missing"
+	say "Running focused checks"
+	.fork/check.sh focused || die "focused checks failed; pi is unchanged and the failed build stays at $release"
+	touch "$release/.installed"
+	cd "$root"
 fi
 
-if ! git -C "$dir" remote get-url upstream >/dev/null 2>&1; then
-	git -C "$dir" remote add upstream "$upstream_url"
+current="$(target_of current)"
+point current "$release"
+if [[ -n "$current" && "$current" != "$release" ]]; then
+	point previous "$current"
 fi
+say "Switched to ${commit:0:9}"
+link_pi
 
-cd "$dir"
-say "Installing dependencies (npm ci --ignore-scripts)"
-npm ci --ignore-scripts
-# --ignore-scripts also skips upstream's "prepare": "husky", which installs the pre-commit hook (npm run check).
-npx --no-install husky >/dev/null
-
-if [[ "$build_script" == "build:offline" ]]; then
-	# packages/ai/src/providers/data/ is gitignored and generated by scripts/generate-models.ts.
-	# Hydrate when it is missing, or when the generator scripts changed since the last hydration
-	# (its staleness check only hashes the data files, so a generator change alone would go unnoticed).
-	# The stamp is the tree of packages/ai/scripts, so modules the generator imports count too.
-	stamp="$(git rev-parse --git-dir)/pi-model-data-generator"
-	generator="$(git rev-parse HEAD:packages/ai/scripts)"
-	if ! npm --prefix packages/ai run check:model-data >/dev/null 2>&1 || [[ "$(cat "$stamp" 2>/dev/null)" != "$generator" ]]; then
-		say "Hydrating model data (npm run hydrate:model-data, needs network)"
-		npm run hydrate:model-data
-		echo "$generator" > "$stamp"
-	fi
-fi
-
-say "Building (npm run $build_script)"
-npm run "$build_script"
-
-cli="$dir/packages/coding-agent/dist/cli.js"
-[[ -f "$cli" ]] || die "build finished but $cli is missing"
-mkdir -p "$bin_dir"
-ln -sfn "$cli" "$bin_dir/pi"
-say "Linked $bin_dir/pi -> $cli"
-
-case ":$PATH:" in
-	*":$bin_dir:"*) ;;
-	*) echo "note: $bin_dir is not on PATH" >&2 ;;
-esac
-
-printf '\npi %s at %s (%s)\n' "$(node "$cli" --version)" "$(git rev-parse --short HEAD)" "$branch"
+keep_current="$(target_of current)"
+keep_previous="$(target_of previous)"
+for dir in "$root"/releases/*/; do
+	dir="${dir%/}"
+	[[ "$dir" == "$keep_current" || "$dir" == "$keep_previous" ]] || { rm -rf "$dir"; echo "removed old release $(basename "$dir")"; }
+done
