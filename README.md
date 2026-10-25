@@ -13,8 +13,24 @@ git worktree add .fork fork-tooling
 echo .fork >> .git/info/exclude
 ```
 
+## Install scripts
+
+`install-next.sh` clones or updates `~/pi` to `origin/next`, runs `npm ci --ignore-scripts` and
+`npm run build:offline`, and links `~/.local/bin/pi` to the build (`--refresh-models` builds with a
+model-data refresh; `PI_DIR`, `PI_BRANCH`, `PI_BIN_DIR` override the defaults). `install-tests.sh`
+builds the pi-env daemon, sets up this worktree at `.fork/`, and runs `check.sh focused`
+(`--all` for the full suite, `--no-run` for setup only). On a fresh machine:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/JangMan-J/pi/fork-tooling/install-next.sh
+curl -fsSLO https://raw.githubusercontent.com/JangMan-J/pi/fork-tooling/install-tests.sh
+chmod +x install-next.sh install-tests.sh
+./install-next.sh && ./install-tests.sh
+```
+
 ## Files
 
+- `install-next.sh`, `install-tests.sh`: see above.
 - `branches`: the feature branches merged into `next`, in merge order.
 - `sync.sh`: tag the current tips, fast-forward `main` to upstream, rebase every branch, rebuild
   `next`, run the focused checks, optionally push with `--force-with-lease`.
