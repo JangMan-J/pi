@@ -495,7 +495,7 @@ const XAI_RESPONSES_COMPAT: OpenAIResponsesCompat = {
 };
 const META_RESPONSES_COMPAT: OpenAIResponsesCompat = {
 	supportsLongCacheRetention: false,
-	supportsStrictMode: true,
+	supportsStrictMode: false,
 	supportsMidConvoSystemMessages: true,
 	supportsToolSearch: true,
 };
