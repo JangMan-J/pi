@@ -180,7 +180,7 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 			maxTokens: 128000,
 			compat: {
 				supportsLongCacheRetention: false,
-				supportsStrictMode: true,
+				supportsStrictMode: false,
 				supportsMidConvoSystemMessages: true,
 				supportsToolSearch: true,
 			},
@@ -274,7 +274,7 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 			maxTokens: 128000,
 			compat: {
 				supportsLongCacheRetention: false,
-				supportsStrictMode: true,
+				supportsStrictMode: false,
 				supportsMidConvoSystemMessages: true,
 				supportsToolSearch: true,
 			},
@@ -381,8 +381,15 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 			tool_choice: "auto",
 			reasoning: { effort: "high", summary: "auto" },
 			include: ["reasoning.encrypted_content"],
-			tools: [expect.objectContaining({ name: "ping", strict: true })],
+			tools: [
+				expect.objectContaining({
+					name: "ping",
+					parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+				}),
+			],
 		});
+		// Meta's strict flag only validates, so tools go without it and with their schema unrewritten.
+		expect((capturedPayload?.tools as Array<Record<string, unknown>>)[0]).not.toHaveProperty("strict");
 		expect(capturedPayload?.prompt_cache_retention).toBeUndefined();
 
 		const inputItems = capturedPayload?.input as Array<Record<string, unknown>>;
