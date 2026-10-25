@@ -58,6 +58,10 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      - name: Hydrate model data
+        # packages/ai/src/providers/data/ is gitignored and imported by the model tables the tests load.
+        run: npm run hydrate:model-data
+
       - name: Sync
         run: |
           if [ "${{ inputs.push }}" = "true" ]; then
