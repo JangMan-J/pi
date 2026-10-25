@@ -24,7 +24,7 @@ Read this before changing anything. Upstream's own rules in the repo root `AGENT
 2. **Pick the owning branch** from the table and switch to it: `git checkout <branch>`. If you are on `next` or `main`, do not commit there.
 3. **Bring the branch up to date**: `git fetch origin && git rebase origin/<branch>` (or `git reset --hard origin/<branch>` if you have no local commits on it).
 4. **Make the change with its test.** Every wire change gets a payload-shape test in the branch's test file that pins the bytes. Where server behavior decides, run a live probe and record the sanitized result in the commit message. Run `.fork/check.sh focused`.
-5. **Commit on the branch.** Commits are signed automatically (`commit.gpgsign=true`); the pre-commit hook runs `npm run check`. Use the upstream commit style, for example `fix(ai): …`.
+5. **Commit on the branch.** Commits are signed when the global git config sets `commit.gpgsign=true` and `user.signingkey` to a key GitHub knows (Jang's is `9B79F5EBD9E8D2E5`); `install-tests.sh` warns when signing is off. The pre-commit hook runs `npm run check`. `install-tests.sh` installs it with husky, because `npm ci --ignore-scripts` skips upstream's `prepare` step; if `git config core.hooksPath` prints nothing, run `npx husky` once. Use the upstream commit style, for example `fix(ai): …`.
 6. **Rebuild `next`**: `.fork/sync.sh --rebuild-only`. It tags the old `next`, rebuilds it from the current tips, and runs the focused checks. Nothing is fetched or rebased.
 7. **Push**: `.fork/sync.sh --rebuild-only --push`, or `git push --force-with-lease origin <branch> next`. `next` is always force-pushed because it is regenerated; the branches only when they were rebased.
 

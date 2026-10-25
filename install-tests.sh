@@ -70,6 +70,12 @@ fi
 grep -qx '.fork' .git/info/exclude 2>/dev/null || echo '.fork' >> .git/info/exclude
 chmod +x .fork/sync.sh .fork/check.sh
 
+say "Installing the pre-commit hook and checking commit signing"
+# npm ci --ignore-scripts skips upstream's "prepare": "husky", which installs the hook that runs npm run check.
+npx --no-install husky
+[[ "$(git config --get commit.gpgsign)" == true ]] ||
+	echo "warning: commit.gpgsign is not true, so fork commits will be unsigned (see .fork/AGENTS.md, step 5)"
+
 say "Creating or aligning local main, feature branches and next from origin"
 .fork/sync.sh --align
 
