@@ -9,8 +9,21 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && git rev-parse --show-toplevel)"
 cd "$repo"
 
+# The standalone-process tests spawn plain node on source files, which resolve workspace packages
+# through their package.json exports (dist/). Build any such dependency of pi-ai that is not built yet.
+ensure_ai_deps_built() {
+	local pkg dir
+	for pkg in $(node -e 'const d=require("./packages/ai/package.json");console.log(Object.keys({...d.dependencies,...d.peerDependencies}).filter(k=>k.startsWith("@earendil-works/")).join(" "))'); do
+		dir="$(readlink -f "node_modules/$pkg")"
+		[[ -d "$dir" && ! -d "$dir/dist" ]] || continue
+		echo "building $pkg (dist missing)"
+		(cd "$dir" && npm run build >/dev/null)
+	done
+}
+
 case "${1:-focused}" in
 	focused)
+		ensure_ai_deps_built
 		(
 			cd packages/ai
 			npx vitest run \
