@@ -40,7 +40,7 @@ Start every session with `.fork/sync.sh --status`.
 - `AGENTS.md`: the fork workflow for agents.
 - `install-next.sh`, `install-tests.sh`: see above.
 - `branches`: the feature branches merged into `next`, in merge order.
-- `sync.sh`: `--status` reports main, every branch and next; `--rebuild-only` regenerates `next` from the
+- `sync.sh`: `--status` reports main, every branch and next; `--align` resets them to origin when safe; `--rebuild-only` regenerates `next` from the
   current tips; the full mode tags tips, fast-forwards `main`, rebases every branch, rebuilds `next`, runs the
   focused checks and optionally pushes with `--force-with-lease`. It refuses to rebuild over commits made on `next`.
 - `check.sh`: `focused` runs the provider payload tests the fork owns; `all` runs `npm run check`

@@ -19,7 +19,7 @@ Read this before changing anything. Upstream's own rules in the repo root `AGENT
 
 ## Order of work
 
-1. **Check state.** `.fork/sync.sh --status`. It tells you which branch you are on, whether each branch is rebased on `main`, and whether `next` is current, stale, or carries stray commits. Fix a dirty tree before anything else.
+1. **Check state.** `.fork/sync.sh --status`. On a machine that has fallen behind (branches shown behind origin, `next` stale), run `.fork/sync.sh --align` first; it resets `main`, the branches and `next` to origin, but only where the local tip is already on an origin branch or tag, so nothing is lost. It tells you which branch you are on, whether each branch is rebased on `main`, and whether `next` is current, stale, or carries stray commits. Fix a dirty tree before anything else.
 2. **Pick the owning branch** from the table and switch to it: `git checkout <branch>`. If you are on `next` or `main`, do not commit there.
 3. **Bring the branch up to date**: `git fetch origin && git rebase origin/<branch>` (or `git reset --hard origin/<branch>` if you have no local commits on it).
 4. **Make the change with its test.** Every wire change gets a payload-shape test in the branch's test file that pins the bytes. Where server behavior decides, run a live probe and record the sanitized result in the commit message. Run `.fork/check.sh focused`.

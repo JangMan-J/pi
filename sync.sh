@@ -2,6 +2,7 @@
 # Keep this fork's integration branch `next` consistent with `main` and the branches in `branches`.
 #
 #   .fork/sync.sh --status             show where main, every branch and next stand; exit 1 if next is stale
+#   .fork/sync.sh --align              reset main, the branches and next to origin when nothing local would be lost
 #   .fork/sync.sh --rebuild-only       rebuild next from the current branch tips (no fetch, no rebase)
 #   .fork/sync.sh                      fetch upstream, fast-forward main, rebase every branch, rebuild next
 #   .fork/sync.sh --upstream-rev REV   like the full sync but fast-forward main to REV instead of upstream/main
@@ -28,6 +29,7 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--status) mode="status"; shift ;;
 		--rebuild-only) mode="rebuild"; shift ;;
+		--align) mode="align"; shift ;;
 		--upstream-rev) upstream_rev="$2"; shift 2 ;;
 		--offline|--no-fetch) fetch=0; shift ;;
 		--no-check) check=0; shift ;;
@@ -121,6 +123,39 @@ rebuild_next() {
 	echo "next -> $(short next)"
 }
 
+align_refs() {
+	local rc=0 ref local_sha wt
+	git fetch -q --prune origin
+	git fetch -q origin '+refs/tags/*:refs/tags/*' 2>/dev/null || true
+	for ref in main "${branches[@]}" next; do
+		if ! git rev-parse -q --verify "refs/remotes/origin/$ref" >/dev/null; then
+			echo "  $ref: no origin/$ref, skipped"; continue
+		fi
+		if ! git rev-parse -q --verify "refs/heads/$ref" >/dev/null; then
+			git branch -q --track "$ref" "origin/$ref"; echo "  $ref: created at $(short "origin/$ref")"; continue
+		fi
+		local_sha="$(git rev-parse "$ref")"
+		if [[ "$local_sha" == "$(git rev-parse "origin/$ref")" ]]; then echo "  $ref: already at origin"; continue; fi
+		# Safe only when the local tip is reachable from something origin has: its branch, another branch, or a tag.
+		if ! git merge-base --is-ancestor "$local_sha" "origin/$ref" \
+			&& [[ -z "$(git for-each-ref --contains "$local_sha" refs/remotes/origin refs/tags)" ]]; then
+			echo "  $ref: local $(short "$ref") is on no origin branch or tag; push or tag it first, skipped" >&2
+			rc=1; continue
+		fi
+		wt="$(git worktree list --porcelain | awk -v b="refs/heads/$ref" '$1=="worktree"{w=$2} $1=="branch"&&$2==b{print w}')"
+		if [[ -n "$wt" && "$wt" != "$repo" ]]; then
+			if [[ -n "$(git -C "$wt" status --porcelain)" ]]; then echo "  $ref: checked out with changes at $wt, skipped" >&2; rc=1; continue; fi
+			git -C "$wt" reset -q --hard "origin/$ref"
+		elif [[ "$wt" == "$repo" ]]; then
+			git reset -q --hard "origin/$ref"
+		else
+			git branch -q -f "$ref" "origin/$ref"
+		fi
+		echo "  $ref: $(short "$local_sha") -> $(short "origin/$ref")"
+	done
+	return $rc
+}
+
 push_all() {
 	git push --force-with-lease origin main next "${branches[@]}"
 	git push origin "refs/tags/pre-sync/$stamp/*"
@@ -130,6 +165,10 @@ push_all() {
 case "$mode" in
 	status)
 		status
+		;;
+	align)
+		require_clean
+		align_refs
 		;;
 	rebuild)
 		require_clean
