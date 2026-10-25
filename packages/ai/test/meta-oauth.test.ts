@@ -1,6 +1,10 @@
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
+import {
+	META_REASONING_ONLY_PLACEHOLDER,
+	repairMetaConversationStructure,
+	stream as streamOpenAIResponses,
+} from "../src/api/openai-responses.ts";
 import { metaOAuth } from "../src/auth/oauth/meta.ts";
 import type { ProviderAuthInteraction } from "../src/auth/types.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
@@ -515,4 +519,146 @@ describe("Meta audit regressions", () => {
 			});
 		},
 	);
+});
+
+describe("Meta conversation structure", () => {
+	afterEach(() => vi.restoreAllMocks());
+	const zeroUsage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const reasoning = (id: string) => ({ type: "reasoning", id, summary: [], encrypted_content: "enc" });
+	const assistantText = (text: string, phase?: string) => ({
+		type: "message",
+		role: "assistant",
+		content: [{ type: "output_text", text, annotations: [] }],
+		status: "completed",
+		id: `msg_${text.length}`,
+		...(phase ? { phase } : {}),
+	});
+	const call = { type: "function_call", call_id: "call_1", name: "codemode", arguments: '{"code":"1"}' };
+	const user = { role: "user", content: [{ type: "input_text", text: "next" }] };
+	type Input = Parameters<typeof repairMetaConversationStructure>[0];
+
+	async function payloadFor(messages: Parameters<typeof normalizeContext>[0]["messages"]) {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(
+				'data: {"type":"response.completed","response":{"id":"done","status":"completed","output":[]}}\n\n',
+			),
+		);
+		let payload: { input: Array<Record<string, unknown>> } | undefined;
+		await streamOpenAIResponses(
+			metaProvider().getModels()[0],
+			normalizeContext({
+				messages,
+				tools: [
+					{ name: "codemode", description: "Run JavaScript", parameters: Type.Object({ code: Type.String() }) },
+				],
+			}),
+			{
+				apiKey: "test",
+				onPayload: (value) => {
+					payload = value as typeof payload;
+				},
+			},
+		).result();
+		return payload!.input;
+	}
+
+	it("tags phase-less text before a call as commentary, through reasoning and other text", () => {
+		const input = [user, assistantText("Checking."), reasoning("rs_1"), assistantText("Running it."), call] as Input;
+		repairMetaConversationStructure(input);
+		expect(input.map((item) => (item as { phase?: string }).phase)).toEqual([
+			undefined,
+			"commentary",
+			undefined,
+			"commentary",
+			undefined,
+		]);
+	});
+
+	it("leaves final text and existing phases alone", () => {
+		const input = [assistantText("Done."), user, assistantText("Same model.", "final_answer"), call] as Input;
+		repairMetaConversationStructure(input);
+		expect((input[0] as { phase?: string }).phase).toBeUndefined();
+		expect((input[2] as { phase?: string }).phase).toBe("final_answer");
+	});
+
+	it("closes a reasoning-only turn with a minimal assistant message before the next user message", () => {
+		const input = [user, reasoning("rs_1"), reasoning("rs_2"), user] as Input;
+		repairMetaConversationStructure(input);
+		expect(input.map((item) => (item as { type?: string; role?: string }).type ?? "user")).toEqual([
+			"user",
+			"reasoning",
+			"reasoning",
+			"message",
+			"user",
+		]);
+		expect(input[3]).toMatchObject({
+			role: "assistant",
+			phase: "final_answer",
+			content: [{ type: "output_text", text: META_REASONING_ONLY_PLACEHOLDER }],
+		});
+	});
+
+	it("does not touch reasoning already followed by text or a call", () => {
+		const input = [reasoning("rs_1"), assistantText("Hi."), user, reasoning("rs_2"), call] as Input;
+		repairMetaConversationStructure(input);
+		expect(input).toHaveLength(5);
+	});
+
+	it("tags text from another model's codemode turn after a switch to Meta", async () => {
+		const input = await payloadFor([
+			{ role: "user", content: "Read the file.", timestamp: 1 },
+			{
+				role: "assistant",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-5-5",
+				content: [
+					{ type: "text", text: "Let me run that." },
+					{ type: "toolCall", id: "toolu_1", name: "codemode", arguments: { code: "text(1)" } },
+				],
+				usage: zeroUsage,
+				stopReason: "toolUse",
+				timestamp: 2,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "toolu_1",
+				toolName: "codemode",
+				content: [{ type: "text", text: "1" }],
+				isError: false,
+				timestamp: 3,
+			},
+		]);
+		const text = input.find((item) => item.type === "message" && item.role === "assistant");
+		expect(text).toMatchObject({ phase: "commentary" });
+		expect(input.findIndex((item) => item.type === "function_call")).toBeGreaterThan(input.indexOf(text!));
+	});
+
+	it("closes a same-model turn that hit the output limit during reasoning", async () => {
+		const model = metaProvider().getModels()[0];
+		const input = await payloadFor([
+			{ role: "user", content: "Think hard.", timestamp: 1 },
+			{
+				role: "assistant",
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				content: [{ type: "thinking", thinking: "", thinkingSignature: JSON.stringify(reasoning("rs_1")) }],
+				usage: zeroUsage,
+				stopReason: "length",
+				timestamp: 2,
+			},
+			{ role: "user", content: "Continue.", timestamp: 3 },
+		]);
+		const at = input.findIndex((item) => item.type === "reasoning");
+		expect(input[at + 1]).toMatchObject({ role: "assistant", content: [{ text: META_REASONING_ONLY_PLACEHOLDER }] });
+		expect(input[at + 2]).toMatchObject({ role: "user" });
+	});
 });
