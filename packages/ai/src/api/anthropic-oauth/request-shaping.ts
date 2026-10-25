@@ -1,3 +1,11 @@
+import type Anthropic from "@anthropic-ai/sdk";
+import type {
+	BetaCacheControlEphemeral,
+	BetaContentBlockParam,
+	BetaMessageParam,
+	MessageCreateParamsStreaming,
+} from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
+import type { ProviderEnv, ProviderHeaders } from "../../types.ts";
 /*!
  * Adapted from @gotgenes/pi-anthropic-auth 3.4.2.
  * MIT License
@@ -22,14 +30,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-import type Anthropic from "@anthropic-ai/sdk";
-import type {
-	BetaCacheControlEphemeral,
-	BetaContentBlockParam,
-	BetaMessageParam,
-	MessageCreateParamsStreaming,
-} from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
-import type { ProviderEnv, ProviderHeaders } from "../../types.ts";
 import { compatibleAnthropicToolChoice } from "../anthropic-tool-choice.ts";
 import { claudeCodeSessionId } from "./session-id.ts";
 import { shapeSystemPrompt, shapeSystemUpdateText } from "./system-prompt-shaping.ts";
