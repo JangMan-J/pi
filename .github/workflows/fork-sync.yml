@@ -1,0 +1,72 @@
+# One-click fork sync: fast-forward main from upstream, rebase every branch in .fork/branches,
+# rebuild next, run the focused checks, push. Actions tab -> "Sync fork and rebuild next" -> Run workflow.
+# Lives on the default branch (fork-sync) so main stays a pure mirror of earendil-works/pi.
+name: Sync fork and rebuild next
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Push main, the branches, next and the pre-sync tags (uncheck for a dry run)
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout next with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: next
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Identity and signing key
+        env:
+          GPG_KEY: ${{ secrets.FORK_SYNC_GPG_KEY }}
+        run: |
+          printf '%s\n' "$GPG_KEY" | gpg --batch --quiet --import
+          fpr="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')"
+          git config user.name "JangMan-J (fork-sync)"
+          git config user.email "278475828+JangMan-J@users.noreply.github.com"
+          git config user.signingkey "$fpr"
+          git config commit.gpgsign true
+          git config tag.gpgsign true
+          echo "signing with $fpr"
+
+      - name: Mount .fork tooling and create local branches
+        run: |
+          git remote add upstream https://github.com/earendil-works/pi.git
+          git branch --track fork-sync origin/fork-sync
+          git worktree add .fork fork-sync
+          echo .fork >> .git/info/exclude
+          .fork/sync.sh --align
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Sync
+        run: |
+          if [ "${{ inputs.push }}" = "true" ]; then
+            .fork/sync.sh --push
+          else
+            echo "dry run: no push"
+            .fork/sync.sh
+          fi
+
+      - name: Status
+        if: always()
+        run: .fork/sync.sh --status || true

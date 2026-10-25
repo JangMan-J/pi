@@ -61,11 +61,11 @@ if [[ -d .fork && ! -e .fork/.git ]]; then
 	echo "moved untracked .fork to $aside"
 fi
 if [[ -d .fork/.git || -f .fork/.git ]]; then
-	git -C .fork pull -q --ff-only origin fork-tooling
+	git -C .fork pull -q --ff-only origin fork-sync
 else
-	git fetch -q origin fork-tooling
-	git branch -q --track fork-tooling origin/fork-tooling 2>/dev/null || true
-	git worktree add -q .fork fork-tooling
+	git fetch -q origin fork-sync
+	git branch -q --track fork-sync origin/fork-sync 2>/dev/null || true
+	git worktree add -q .fork fork-sync
 fi
 grep -qx '.fork' .git/info/exclude 2>/dev/null || echo '.fork' >> .git/info/exclude
 chmod +x .fork/sync.sh .fork/check.sh

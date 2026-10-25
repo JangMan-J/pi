@@ -202,11 +202,18 @@ case "$mode" in
 		;;
 	full)
 		require_clean
-		tag_tips main next "${branches[@]}"
+		for ref in main "${branches[@]}" next; do
+			git rev-parse -q --verify "refs/heads/$ref" >/dev/null || { echo "missing local branch $ref; run .fork/sync.sh --align first" >&2; exit 1; }
+		done
 		if [[ $fetch -eq 1 ]]; then
 			git fetch --prune upstream
 			git fetch --prune origin
 		fi
+		if [[ "$(git rev-parse main)" == "$(git rev-parse "$upstream_rev^{commit}")" && -z "$(missing_from_next)" && "$(stray_on_next)" -eq 0 ]]; then
+			echo "main is already at $upstream_rev ($(short main)) and next $(short next) is current; nothing to do"
+			exit 0
+		fi
+		tag_tips main next "${branches[@]}"
 		git checkout -q main
 		git merge --ff-only "$upstream_rev"
 		echo "main -> $(short main)"

@@ -1,6 +1,6 @@
 # Fork tooling for JangMan-J/pi
 
-This branch (`fork-tooling`) holds the scripts that keep the fork's integration branch `next`
+This branch (`fork-sync`) holds the scripts that keep the fork's integration branch `next`
 in sync with `earendil-works/pi`. It lives on its own branch so it survives re-clones; the
 earlier copy was untracked and was lost with its working directory on 2026-10-24.
 
@@ -8,8 +8,8 @@ earlier copy was untracked and was lost with its working directory on 2026-10-24
 
 ```sh
 git remote add upstream https://github.com/earendil-works/pi.git
-git fetch origin fork-tooling
-git worktree add .fork fork-tooling
+git fetch origin fork-sync
+git worktree add .fork fork-sync
 echo .fork >> .git/info/exclude
 ```
 
@@ -22,11 +22,21 @@ builds the pi-env daemon, sets up this worktree at `.fork/`, and runs `check.sh 
 (`--all` for the full suite, `--no-run` for setup only). On a fresh machine:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/JangMan-J/pi/fork-tooling/install-next.sh
-curl -fsSLO https://raw.githubusercontent.com/JangMan-J/pi/fork-tooling/install-tests.sh
+curl -fsSLO https://raw.githubusercontent.com/JangMan-J/pi/fork-sync/install-next.sh
+curl -fsSLO https://raw.githubusercontent.com/JangMan-J/pi/fork-sync/install-tests.sh
 chmod +x install-next.sh install-tests.sh
 ./install-next.sh && ./install-tests.sh
 ```
+
+## One-click sync (GitHub Actions)
+
+`.github/workflows/fork-sync.yml` runs the full `sync.sh` on demand: Actions tab, "Sync fork and rebuild
+next", Run workflow (or `gh workflow run fork-sync.yml -R JangMan-J/pi --ref fork-sync`). Untick "push" for a
+dry run. It fast-forwards `main` from upstream, rebases every branch, rebuilds `next`, runs the focused checks
+and pushes with `--force-with-lease`. Commits and tags are signed by the `fork-sync bot` key (repo secret
+`FORK_SYNC_GPG_KEY`; its public half is on the JangMan-J account, so they show as Verified). On a rebase
+conflict it fails without pushing; resolve locally and run `.fork/sync.sh --offline --push`. This branch is the
+repository default so the workflow can be dispatched; `main` stays a pure mirror.
 
 ## Agents
 
