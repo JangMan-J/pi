@@ -49,6 +49,13 @@ command -v cargo >/dev/null 2>&1 || die "cargo is required for packages/env test
 (cd packages/env && npm run build:daemon)
 
 say "Setting up .fork tooling worktree"
+if [[ -d .fork && ! -e .fork/.git ]]; then
+	# An older, untracked copy of the tooling. Keep it, but out of the way.
+	aside=".fork.old-$(date -u +%Y%m%dT%H%M%SZ)"
+	mv .fork "$aside"
+	grep -qx "$aside" .git/info/exclude 2>/dev/null || echo "$aside" >> .git/info/exclude
+	echo "moved untracked .fork to $aside"
+fi
 if [[ -d .fork/.git || -f .fork/.git ]]; then
 	git -C .fork pull -q --ff-only origin fork-tooling
 else
