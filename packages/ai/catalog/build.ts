@@ -11,7 +11,11 @@ import type {
 } from "../src/types.ts";
 import type { ApiCompatDefaults, ChatModel, ProviderContext, ProviderDefinition } from "./define.ts";
 import { mergeThinking } from "./define.ts";
-import { applyClaudeFamilyRules } from "./families/anthropic.ts";
+import {
+	applyClaudeFamilyRules,
+	isClaudeAdaptiveThinkingModel,
+	isClaudeAlwaysThinkingModel,
+} from "./families/anthropic.ts";
 import { applyDeepSeekCompatRules, applyDeepSeekFamilyRules } from "./families/deepseek.ts";
 import { applyOpenAiFamilyRules } from "./families/openai.ts";
 import { getEffortThinkingLevelMap } from "./reasoning.ts";
@@ -51,7 +55,10 @@ function applyCompatDefaults(model: ChatModel, defaults: ApiCompatDefaults | und
 /** Whether the model's API sends models.dev effort values to the host as-is. */
 function sendsNativeEffort(model: ChatModel): boolean {
 	if (model.api === "anthropic-messages") {
-		return (model as Model<"anthropic-messages">).compat?.forceAdaptiveThinking === true;
+		return (
+			(model as Model<"anthropic-messages">).compat?.forceAdaptiveThinking === true ||
+			isClaudeAdaptiveThinkingModel(model.id)
+		);
 	}
 	if (
 		model.api === "openai-responses" ||
@@ -68,7 +75,11 @@ function sendsNativeEffort(model: ChatModel): boolean {
 function applyModelsDevEffort(model: ChatModel, source: ModelsDevModel | undefined): void {
 	if (!source?.reasoningOptions || !sendsNativeEffort(model)) return;
 	const map = getEffortThinkingLevelMap(source.reasoningOptions);
-	if (map) mergeThinking(model, map);
+	if (!map) return;
+	if (map.off === null && isClaudeAdaptiveThinkingModel(model.id) && !isClaudeAlwaysThinkingModel(model.id)) {
+		delete map.off;
+	}
+	mergeThinking(model, map);
 }
 
 function applyImageResizeDefaults(model: AnyModel): void {
