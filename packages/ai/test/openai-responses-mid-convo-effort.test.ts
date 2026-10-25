@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import {
+	type OpenAICodexResponsesOptions,
+	stream as streamOpenAICodexResponses,
+} from "../src/api/openai-codex-responses.ts";
 import { type OpenAIResponsesOptions, stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
 import type { AssistantMessage, Message, Model, ToolResultMessage } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
@@ -29,10 +33,35 @@ function openAIModel(compat: Model<"openai-responses">["compat"] = { supportsMid
 		thinkingLevelMap,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 272000,
+		contextWindow: 500000,
 		maxTokens: 128000,
 		compat,
 	} satisfies Model<"openai-responses">;
+}
+
+function codexModel(compat: Model<"openai-codex-responses">["compat"] = { supportsMidConvoEffort: true }) {
+	return {
+		id: "gpt-6.1-sol",
+		name: "GPT-6.1 Sol",
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://chatgpt.com/backend-api",
+		reasoning: true,
+		thinkingLevelMap: { ...thinkingLevelMap, off: null },
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 500000,
+		maxTokens: 128000,
+		compat,
+	} satisfies Model<"openai-codex-responses">;
+}
+
+function mockCodexToken(): string {
+	const payload = Buffer.from(
+		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }),
+		"utf8",
+	).toString("base64");
+	return `aaa.${payload}.bbb`;
 }
 
 const user = (text: string): Message => ({ role: "user", content: text, timestamp: 0 });
@@ -83,6 +112,33 @@ async function runOpenAI(
 		apiKey: options.apiKey ?? "sk-test",
 		reasoningEffort,
 		fetch: fetchMock as typeof globalThis.fetch,
+	}).result();
+	if (!payload) throw new Error("Request payload was not captured");
+	expect(message.stopReason).not.toBe("error");
+	return { payload, message };
+}
+
+async function runCodex(
+	messages: Message[],
+	reasoningEffort: OpenAICodexResponsesOptions["reasoningEffort"],
+	options: { model?: Model<"openai-codex-responses">; withToolCall?: boolean } = {},
+): Promise<{ payload: Payload; message: AssistantMessage }> {
+	let payload: Payload | undefined;
+	const fetchMock = async (): Promise<Response> => {
+		const body = responseEvents("resp_1", options.withToolCall ?? false)
+			.map((event) => `data: ${JSON.stringify(event)}\n\n`)
+			.join("");
+		return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+	};
+	const message = await streamOpenAICodexResponses(options.model ?? codexModel(), normalizeContext({ messages }), {
+		apiKey: mockCodexToken(),
+		reasoningEffort,
+		transport: "sse",
+		fetch: fetchMock as typeof globalThis.fetch,
+		onPayload: (req) => {
+			payload = req as Payload;
+			return undefined;
+		},
 	}).result();
 	if (!payload) throw new Error("Request payload was not captured");
 	expect(message.stopReason).not.toBe("error");
@@ -200,5 +256,111 @@ describe("OpenAI Responses configuration_update", () => {
 		expect(payload.reasoning?.effort).toBe(effort);
 		expect(payload.input.some((item) => item.type === "configuration_update")).toBe(false);
 		expect(message.providerThinkingLevel).toBeUndefined();
+	});
+
+	it("keeps reasoning.effort constant and appends configuration_update items on OpenAI Codex", async () => {
+		const history: Message[] = [user("one")];
+		const first = await runCodex(history, "xhigh");
+		history.push(first.message, user("two"));
+		const second = await runCodex(history, "low");
+
+		expect(first.payload.reasoning?.effort).toBe("medium");
+		expect(second.payload.reasoning?.effort).toBe("medium");
+		expect(second.payload.input.slice(0, first.payload.input.length)).toEqual(first.payload.input);
+		expect(second.payload.input.filter((item) => item.type === "configuration_update")).toEqual([
+			update("xhigh"),
+			update("low"),
+		]);
+		expect([first.message.providerThinkingLevel, second.message.providerThinkingLevel]).toEqual(["xhigh", "low"]);
+	});
+
+	it("preserves WebSocket previous_response_id delta continuation when effort changes on OpenAI Codex", async () => {
+		const sentFrames: Array<{
+			input: Array<Record<string, unknown>>;
+			previous_response_id?: string;
+			reasoning?: { effort?: string };
+		}> = [];
+		let turn = 0;
+
+		class MockWebSocket {
+			static OPEN = 1;
+			static CLOSED = 3;
+			readyState = MockWebSocket.OPEN;
+			private listeners = new Map<string, Set<(event: unknown) => void>>();
+
+			constructor() {
+				queueMicrotask(() => this.dispatch("open", {}));
+			}
+
+			addEventListener(type: string, listener: (event: unknown) => void): void {
+				let set = this.listeners.get(type);
+				if (!set) {
+					set = new Set();
+					this.listeners.set(type, set);
+				}
+				set.add(listener);
+			}
+
+			removeEventListener(type: string, listener: (event: unknown) => void): void {
+				this.listeners.get(type)?.delete(listener);
+			}
+
+			send(data: string): void {
+				sentFrames.push(JSON.parse(data));
+				const responseId = `resp_${++turn}`;
+				queueMicrotask(() => {
+					for (const event of responseEvents(responseId, false)) {
+						this.dispatch("message", { data: JSON.stringify(event) });
+					}
+				});
+			}
+
+			close(): void {
+				this.readyState = MockWebSocket.CLOSED;
+			}
+
+			private dispatch(type: string, event: unknown): void {
+				for (const listener of this.listeners.get(type) ?? []) {
+					listener(event);
+				}
+			}
+		}
+
+		const originalWebSocket = globalThis.WebSocket;
+		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+		try {
+			const model = codexModel();
+			const sessionId = "codex-ws-mid-convo-effort";
+			const history: Message[] = [user("one")];
+			const first = await streamOpenAICodexResponses(model, normalizeContext({ messages: history }), {
+				apiKey: mockCodexToken(),
+				reasoningEffort: "xhigh",
+				sessionId,
+				transport: "websocket-cached",
+			}).result();
+			history.push(first, user("two"));
+			await streamOpenAICodexResponses(model, normalizeContext({ messages: history }), {
+				apiKey: mockCodexToken(),
+				reasoningEffort: "low",
+				sessionId,
+				transport: "websocket-cached",
+			}).result();
+
+			expect(sentFrames).toHaveLength(2);
+			expect(sentFrames[0]?.previous_response_id).toBeUndefined();
+			expect(sentFrames[0]?.reasoning?.effort).toBe("medium");
+			expect(sentFrames[0]?.input).toEqual([
+				{ role: "user", content: [{ type: "input_text", text: "one" }] },
+				update("xhigh"),
+			]);
+			expect(sentFrames[1]?.previous_response_id).toBe("resp_1");
+			expect(sentFrames[1]?.reasoning?.effort).toBe("medium");
+			expect(sentFrames[1]?.input).toEqual([
+				{ role: "user", content: [{ type: "input_text", text: "two" }] },
+				update("low"),
+			]);
+		} finally {
+			globalThis.WebSocket = originalWebSocket;
+		}
 	});
 });
