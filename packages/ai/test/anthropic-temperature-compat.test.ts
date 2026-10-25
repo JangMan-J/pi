@@ -95,6 +95,29 @@ describe("Anthropic temperature compatibility", () => {
 		expect(payload.temperature).toBe(0);
 	});
 
+	it.each(["claude-fable-5", "claude-fable-5-1"] as const)(
+		"omits temperature while %s keeps adaptive thinking active",
+		async (modelId) => {
+			const payload = await capturePayload(getModel("anthropic", modelId), { temperature: 0 });
+
+			expect(payload.temperature).toBeUndefined();
+		},
+	);
+
+	it("keeps temperature for Claude Sonnet 5 when thinking is disabled", async () => {
+		const payload = await capturePayload(getModel("anthropic", "claude-sonnet-5"), { temperature: 0 });
+
+		expect(payload.temperature).toBe(0);
+	});
+
+	it("omits temperature for a custom model that cannot disable thinking", async () => {
+		const model = makeCustomModel();
+		model.thinkingLevelMap = { off: null };
+		const payload = await capturePayload(model, { temperature: 0 });
+
+		expect(payload.temperature).toBeUndefined();
+	});
+
 	it("omits temperature for custom models with supportsTemperature disabled", async () => {
 		const payload = await capturePayload(makeCustomModel({ supportsTemperature: false }), { temperature: 0 });
 

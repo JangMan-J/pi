@@ -157,9 +157,12 @@ export function finalizeOpencodeModel(model: ChatModel): void {
 	}
 	if (model.api === "anthropic-messages") {
 		const messagesModel = model as Model<"anthropic-messages">;
-		// OpenCode Zen forwards mid-conversation system messages but rejects
+		// OpenCode Zen and Go forward mid-conversation system messages but reject
 		// `tool_addition`/`tool_removal` blocks, so tool changes stay top-level.
-		if (model.provider === "opencode" && supportsClaudeMidConvoSystemMessages(model.id)) {
+		if (
+			(model.provider === "opencode" || model.provider === "opencode-go") &&
+			supportsClaudeMidConvoSystemMessages(model.id)
+		) {
 			mergeCompat(messagesModel, { supportsMidConvoSystemMessages: true });
 		}
 		// OpenCode Qwen 3.8 Flash emits and accepts thinking blocks with empty signatures.
