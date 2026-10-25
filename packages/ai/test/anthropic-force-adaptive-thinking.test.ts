@@ -5,6 +5,8 @@ import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
 interface AnthropicThinkingPayload {
 	thinking?: { type: string; budget_tokens?: number; display?: string };
 	output_config?: { effort?: string };
+	messages?: Array<{ role?: string; output_config?: unknown }>;
+	betas?: string[];
 }
 
 class PayloadCaptured extends Error {
@@ -98,6 +100,32 @@ describe("Anthropic forceAdaptiveThinking compat override", () => {
 
 		expect(payload.thinking?.type).toBe("enabled");
 		expect(payload.output_config).toBeUndefined();
+	});
+
+	it("honors adaptive opt-out even when the model supports managed effort", async () => {
+		const model: Model<"anthropic-messages"> = {
+			...getModel("anthropic", "claude-fable-5-1"),
+			compat: { forceAdaptiveThinking: false, supportsMidConvoEffort: true },
+		};
+		const payload = await capturePayload(model, { reasoning: "low" });
+
+		expect(payload.thinking).toEqual({ type: "enabled", budget_tokens: 2048, display: "summarized" });
+		expect(payload.output_config).toBeUndefined();
+		expect(payload.messages?.filter((message) => message.output_config !== undefined)).toEqual([]);
+		expect(payload.betas ?? []).not.toContain("mid-conversation-output-config-2026-07-01");
+	});
+
+	it.each([
+		["medium", { medium: null }, "high"],
+		["high", { high: null, xhigh: "xhigh" }, "xhigh"],
+	] as const)("clamps %s effort to a supported level", async (reasoning, thinkingLevelMap, effort) => {
+		const model: Model<"anthropic-messages"> = {
+			...makeCustomModel({ forceAdaptiveThinking: true }),
+			thinkingLevelMap,
+		};
+		const payload = await capturePayload(model, { reasoning });
+
+		expect(payload.output_config).toEqual({ effort });
 	});
 
 	it("preserves thinking.type=disabled when reasoning is off regardless of override", async () => {
