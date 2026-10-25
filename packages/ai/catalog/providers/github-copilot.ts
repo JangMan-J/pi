@@ -46,7 +46,7 @@ const THINKING_LEVEL_OVERRIDES: Record<string, ThinkingLevelMap> = {
 
 /** Claude 4.x and 5.x use Messages; GPT, Grok, OSWE, and MAI-Code are only served on /responses. */
 function copilotApi(modelId: string): Api {
-	if (/^claude-(haiku|sonnet|opus|fable)-[45]([.-]|$)/.test(modelId)) return "anthropic-messages";
+	if (/^claude-(haiku|sonnet|opus|fable|mythos)-[45]([.-]|$)/.test(modelId)) return "anthropic-messages";
 	if (/^(gpt-|grok-|oswe|mai-)/.test(modelId)) return "openai-responses";
 	return "openai-completions";
 }
