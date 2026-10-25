@@ -122,6 +122,15 @@ function resolveCatalogUrl(baseUrl: string | undefined): string {
 	return `${origin}/muse-code/models`;
 }
 
+/**
+ * Meta's catalog `name` is usually the model id, and on 2026-10-25 it labelled
+ * muse-wonder-full-1.0-contributor with another model's id (muse-wonder-1.0-contributor). Only a
+ * name that reads like a display name (spaces or capitals) replaces the baseline name.
+ */
+function isMetaDisplayName(name: unknown): name is string {
+	return typeof name === "string" && name.trim() !== "" && (/\s/.test(name.trim()) || /[A-Z]/.test(name));
+}
+
 function humanizeMetaModelId(id: string): string {
 	return id
 		.split("-")
@@ -298,7 +307,7 @@ export function metaProvider(): Provider<"openai-responses"> {
 				discovered.push({
 					type: "chat",
 					id,
-					name: mc.name && mc.name !== id ? mc.name : (base?.name ?? humanizeMetaModelId(id)),
+					name: isMetaDisplayName(mc.name) ? mc.name : (base?.name ?? humanizeMetaModelId(id)),
 					api: "openai-responses",
 					provider: "meta",
 					baseUrl,
