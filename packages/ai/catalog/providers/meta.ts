@@ -4,7 +4,7 @@ import { addMissing, defineProvider, modelsDevModels } from "../define.ts";
 const BASE_URL = "https://api.meta.ai/v1";
 const META_RESPONSES_COMPAT: OpenAIResponsesCompat = {
 	supportsLongCacheRetention: false,
-	supportsStrictMode: true,
+	supportsStrictMode: false,
 	supportsMidConvoSystemMessages: true,
 	supportsToolSearch: true,
 };
