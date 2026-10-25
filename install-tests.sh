@@ -70,6 +70,9 @@ fi
 grep -qx '.fork' .git/info/exclude 2>/dev/null || echo '.fork' >> .git/info/exclude
 chmod +x .fork/sync.sh .fork/check.sh
 
+say "Creating or aligning local main, feature branches and next from origin"
+.fork/sync.sh --align
+
 say "Pointing agents at .fork/AGENTS.md"
 # Claude Code reads CLAUDE.local.md from the repo root; keep it out of git.
 cat > CLAUDE.local.md <<'MD'

@@ -60,13 +60,21 @@ missing_from_next() {
 }
 
 status() {
-	local rc=0 current
+	local rc=0 current missing_local=()
 	current="$(git branch --show-current || echo '(detached)')"
 	echo "fork status ($repo)"
+	for ref in main "${branches[@]}" next; do
+		git rev-parse -q --verify "refs/heads/$ref" >/dev/null || missing_local+=("$ref")
+	done
+	if [[ ${#missing_local[@]} -gt 0 ]]; then
+		echo "  missing local branches: ${missing_local[*]}"
+		echo "  run .fork/sync.sh --align to create them from origin, then re-run --status"
+		return 1
+	fi
 	if git rev-parse -q --verify upstream/main >/dev/null; then
 		printf '  %-30s %s  upstream/main has %s commit(s) main lacks\n' main "$(short main)" "$(count main..upstream/main)"
 	else
-		printf '  %-30s %s  (no upstream remote fetched)\n' main "$(short main)"
+		printf '  %-30s %s  (upstream not fetched; git fetch upstream)\n' main "$(short main)"
 	fi
 	for b in "${branches[@]}"; do
 		local rel="no origin ref"
@@ -84,7 +92,7 @@ status() {
 	if [[ -n "$missing" ]]; then verdict="STALE: missing $(echo "$missing" | tr '\n' ' ')"; rc=1; fi
 	if [[ "$stray" -gt 0 ]]; then verdict="$verdict; STRAY: $stray commit(s) on next belong on a branch"; rc=1; fi
 	printf '  %-30s %s  %s\n' next "$(short next)" "$verdict"
-	if [[ -n "$(git status --porcelain)" ]]; then echo "  working tree: DIRTY"; else echo "  working tree: clean"; fi
+	if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then echo "  working tree: DIRTY (tracked changes)"; else echo "  working tree: clean"; fi
 	case "$current" in
 		next|main) echo "  you are on $current: do not commit here, switch to the owning branch (see .fork/AGENTS.md)" ;;
 		*) echo "  you are on $current" ;;
@@ -93,8 +101,9 @@ status() {
 }
 
 require_clean() {
-	if [[ -n "$(git status --porcelain)" ]]; then
-		echo "working tree is not clean; commit or stash first" >&2
+	# Untracked files (such as .fork/ before it is excluded, or CLAUDE.local.md) do not block branch operations.
+	if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+		echo "working tree has uncommitted changes to tracked files; commit or stash first" >&2
 		exit 1
 	fi
 }
@@ -126,6 +135,7 @@ rebuild_next() {
 align_refs() {
 	local rc=0 ref local_sha wt
 	git fetch -q --prune origin
+	git remote get-url upstream >/dev/null 2>&1 && { git fetch -q --prune upstream || true; }
 	git fetch -q origin '+refs/tags/*:refs/tags/*' 2>/dev/null || true
 	for ref in main "${branches[@]}" next; do
 		if ! git rev-parse -q --verify "refs/remotes/origin/$ref" >/dev/null; then
@@ -172,6 +182,9 @@ case "$mode" in
 		;;
 	rebuild)
 		require_clean
+		for ref in main "${branches[@]}"; do
+			git rev-parse -q --verify "refs/heads/$ref" >/dev/null || { echo "missing local branch $ref; run .fork/sync.sh --align first" >&2; exit 1; }
+		done
 		if [[ -z "$(missing_from_next)" && "$(stray_on_next)" -eq 0 ]]; then
 			echo "next $(short next) already contains every branch tip; nothing to rebuild"
 		else
