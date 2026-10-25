@@ -1,3 +1,4 @@
+import { kimiCodingModelName } from "../../scripts/native-providers.ts";
 import type { Model, ModelCost } from "../../src/types.ts";
 import { defineProvider, modelsDevModels } from "../define.ts";
 import { KIMI_K3_COST, KIMI_K3_OPENAI_COMPAT, KIMI_OPENAI_COMPAT } from "../families/kimi.ts";
@@ -34,6 +35,7 @@ export default defineProvider({
 					isK3Style && source.reasoningOptions ? getEffortThinkingLevelMap(source.reasoningOptions) : undefined;
 				return {
 					...model,
+					name: kimiCodingModelName(model.id, source.name),
 					compat: {
 						...(isK3Style ? KIMI_K3_OPENAI_COMPAT : KIMI_OPENAI_COMPAT),
 						// All models accept system text after the conversation starts.
