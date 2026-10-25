@@ -18,7 +18,8 @@ echo .fork >> .git/info/exclude
 `install-next.sh` installs `pi` from `next` as a tested release; it needs no checkout. It fetches the
 current `origin/next` commit into `~/.local/share/pi-fork/releases/<commit>/`, installs dependencies,
 generates the model data, builds, and runs `check.sh focused` from `fork-sync`. Only when the checks pass
-does it switch the `current` link to the new release, so `~/.local/bin/pi` (which links through
+does it prune the dev dependencies (about 250 MB per release instead of 700 MB) and switch the `current`
+link to the new release, so `~/.local/bin/pi` (which links through
 `current`) changes in one step and running sessions keep their files. A failed build is kept for
 inspection and `pi` stays as it was. The previous release stays for `install-next.sh --rollback`; older
 ones are deleted. `--reinstall` rebuilds the current commit; `PI_INSTALL_ROOT`, `PI_REPO`, `PI_BRANCH`,

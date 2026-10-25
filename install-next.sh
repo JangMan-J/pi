@@ -12,7 +12,8 @@
 #   --branch NAME    branch to install             PI_BRANCH        default next
 #   --bin-dir DIR    where the `pi` symlink goes   PI_BIN_DIR       default ~/.local/bin
 #
-# Layout: releases/<commit>/ holds one commit (shallow), built, with fork-sync's check.sh in .fork/.
+# Layout: releases/<commit>/ holds one commit (shallow), built, with fork-sync's check.sh in .fork/;
+# once the checks pass, dev dependencies are pruned (about 250 MB per release instead of 700 MB).
 # `current` and `previous` are symlinks to releases, and `pi` links through `current`, so a switch is
 # one rename and running sessions keep their files. A release whose checks fail stays unmarked for
 # inspection and never becomes current. After a switch, releases other than current and previous
@@ -33,7 +34,7 @@ while [[ $# -gt 0 ]]; do
 		--bin-dir) bin_dir="$2"; shift 2 ;;
 		--rollback) mode="rollback"; shift ;;
 		--reinstall) mode="reinstall"; shift ;;
-		-h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+		-h|--help) sed -n '2,20p' "$0"; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
@@ -116,6 +117,12 @@ if [[ "$mode" == "reinstall" || ! -f "$release/.installed" ]]; then
 	[[ -f "$release/$cli_path" ]] || die "build finished but $release/$cli_path is missing"
 	say "Running focused checks"
 	.fork/check.sh focused || die "focused checks failed; pi is unchanged and the failed build stays at $release"
+	# Build and test tooling is about two thirds of the release; pi needs only production dependencies
+	# (upstream's check:runtime-deps guarantees every runtime import is one).
+	say "Removing build and test tooling (npm prune --omit=dev)"
+	npm prune --omit=dev --ignore-scripts
+	node "$release/$cli_path" --version >/dev/null ||
+		die "pi does not start after pruning; pi is unchanged and the build stays at $release"
 	touch "$release/.installed"
 	cd "$root"
 fi
