@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
 import { type AiGatewayPricing, getAiGatewayCost } from "./ai-gateway-pricing.ts";
 import { buildOpenRouterCatalog, type OpenRouterCatalog, type OpenRouterModelListItem } from "./openrouter-catalog.ts";
+import { kimiCodingModelName, withXaiUnlistedModels } from "./native-providers.ts";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
 	CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
@@ -1805,7 +1806,7 @@ function createKimiCodingModels(kimiModels: Record<string, ModelsDevModel>): Mod
 
 		models.push({
 			id: modelId,
-			name: m.name || modelId,
+			name: kimiCodingModelName(modelId, m.name),
 			api: "openai-completions",
 			provider: "kimi-coding",
 			baseUrl: "https://api.kimi.com/coding/v1",
@@ -2083,7 +2084,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 		// Process xAi models
 		if (data.xai?.models) {
-			for (const [modelId, model] of Object.entries(data.xai.models)) {
+			for (const [modelId, model] of Object.entries(withXaiUnlistedModels(data.xai.models))) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
