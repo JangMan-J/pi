@@ -49,6 +49,8 @@ describe.sequential("Anthropic OAuth", () => {
 			expect(body.grant_type).toBe("authorization_code");
 			expect(body.code).toBe("manual-code");
 			expect(body.redirect_uri).toBe("http://localhost:53692/callback");
+			expect(body.state).toBe(new URL(authUrl).searchParams.get("state"));
+			expect(body.code_verifier).not.toBe(body.state);
 			return jsonResponse({
 				access_token: "access-token",
 				refresh_token: "refresh-token",
@@ -90,6 +92,7 @@ describe.sequential("Anthropic OAuth", () => {
 			expect(body.grant_type).toBe("authorization_code");
 			expect(body.code).toBe("copied-code");
 			expect(body.state).toBe(new URL(authUrl).searchParams.get("state"));
+			expect(body.code_verifier).not.toBe(body.state);
 			expect(body.redirect_uri).toBe("https://platform.claude.com/oauth/code/callback");
 			return jsonResponse({
 				access_token: "access-token",
@@ -172,6 +175,29 @@ describe.sequential("Anthropic OAuth", () => {
 		expect(credentials.access).toBe("new-access-token");
 		expect(credentials.refresh).toBe("new-refresh-token");
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("keeps the previous refresh token when the refresh response omits rotation", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => jsonResponse({ access_token: "new-access-token", expires_in: 3600 })),
+		);
+
+		const before = Date.now();
+		const credentials = await anthropicOAuth.refresh(
+			{ type: "oauth", access: "old-access-token", refresh: "refresh-token", expires: 0 },
+			neverAbortedSignal,
+		);
+		const after = Date.now();
+
+		expect(credentials).toEqual({
+			type: "oauth",
+			access: "new-access-token",
+			refresh: "refresh-token",
+			expires: expect.any(Number),
+		});
+		expect(credentials.expires).toBeGreaterThanOrEqual(before + 3_300_000);
+		expect(credentials.expires).toBeLessThanOrEqual(after + 3_300_000);
 	});
 
 	it("anthropicOAuth.login resolves through the manual_code prompt and aborts it after settling", async () => {
