@@ -11,8 +11,8 @@ Read this before changing anything. Upstream's own rules in the repo root `AGENT
 | `feat/native-anthropic-oauth` | `packages/ai/src/api/anthropic-oauth/`, the hook in `anthropic-messages.ts`, `test/anthropic-oauth-payload.test.ts` |
 | `feat/native-antigravity` | `packages/ai/src/api/antigravity/`, `antigravity-api.ts`, `antigravity-images.ts`, `providers/antigravity.ts`, `auth/oauth/antigravity.ts`, additions to `google-shared.ts`, `test/antigravity-*.test.ts` |
 | `feat/native-meta` | `providers/meta.ts`, the Meta branches in `api/openai-responses.ts`, the Meta section of `scripts/generate-models.ts`, `test/meta-oauth.test.ts` |
-| `feat/native-openai` | `api/openai-codex-responses.ts`, the OpenAI/Codex sections of `scripts/generate-models.ts`, the OpenAI context and mid-convo tests |
-| `fix/coding-agent` | `providers/generic-endpoint.ts`, `providers/openrouter*.ts`, `providers/README.md`, `packages/coding-agent/src/core/model-runtime.ts`, `model-config.ts`, the stationarity example, their tests |
+| `feat/native-openai` | `api/openai-codex-responses.ts`, the OpenAI/Codex sections of `scripts/generate-models.ts`, the OpenAI context and mid-convo tests, the `end_turn` continuation in `packages/agent/src/agent-loop.ts` |
+| `fix/coding-agent` | `providers/generic-endpoint.ts`, `providers/openrouter*.ts`, `providers/README.md`, `packages/coding-agent/src/core/model-runtime.ts`, `model-config.ts`, the stationarity example, the `/codemode` command in `extensions/codemode/index.ts`, their tests |
 | `fork-sync` | this directory (`.fork/`), `install-next.sh`, `install-tests.sh` |
 
 `scripts/generate-models.ts` is touched by three branches. Edit only your provider's section, on that provider's branch. A change that spans two providers is two commits on two branches.
