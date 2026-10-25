@@ -1,33 +1,38 @@
 #!/usr/bin/env bash
-# Rebuild this fork's integration branch `next` from `main` plus the branches listed in `branches`.
+# Keep this fork's integration branch `next` consistent with `main` and the branches in `branches`.
 #
-#   .fork/sync.sh                      fetch upstream, fast-forward main, rebase, rebuild next, run focused checks
-#   .fork/sync.sh --upstream-rev REV   use REV (a fetched commit or tag) instead of upstream/main
-#   .fork/sync.sh --offline            do not fetch; equivalent to --upstream-rev upstream/main as already fetched
-#   .fork/sync.sh --no-check           skip .fork/check.sh
-#   .fork/sync.sh --push               after a successful rebuild, push main, next, the branches and the
-#                                      pre-sync tags with --force-with-lease
+#   .fork/sync.sh --status             show where main, every branch and next stand; exit 1 if next is stale
+#   .fork/sync.sh --rebuild-only       rebuild next from the current branch tips (no fetch, no rebase)
+#   .fork/sync.sh                      fetch upstream, fast-forward main, rebase every branch, rebuild next
+#   .fork/sync.sh --upstream-rev REV   like the full sync but fast-forward main to REV instead of upstream/main
+#   .fork/sync.sh --offline            full sync without fetching
+#   .fork/sync.sh --no-check           skip .fork/check.sh focused after the rebuild
+#   .fork/sync.sh --push               push main, next, the branches and the pre-sync tags with --force-with-lease
 #
 # Layout: `next` starts at the first branch in `branches` and merges each following branch with
-# --no-ff, in file order. Every branch is rebased onto main first. Signed pre-sync tags record the
-# tips before anything moves. The script refuses to run on a dirty working tree.
+# --no-ff, in file order. Nothing is ever committed directly on `next`; the rebuild refuses if it
+# finds such commits (cherry-pick them onto the owning branch first). Signed pre-sync tags record
+# every tip before anything moves. The script refuses to run on a dirty working tree.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && git rev-parse --show-toplevel)"
 cd "$repo"
 
+mode="full"
 upstream_rev="upstream/main"
 fetch=1
 check=1
 push=0
 while [[ $# -gt 0 ]]; do
 	case "$1" in
+		--status) mode="status"; shift ;;
+		--rebuild-only) mode="rebuild"; shift ;;
 		--upstream-rev) upstream_rev="$2"; shift 2 ;;
 		--offline|--no-fetch) fetch=0; shift ;;
 		--no-check) check=0; shift ;;
 		--push) push=1; shift ;;
-		-h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+		-h|--help) sed -n '2,16p' "$0"; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
@@ -35,48 +40,134 @@ done
 mapfile -t branches < <(grep -vE '^\s*(#|$)' "$here/branches")
 [[ ${#branches[@]} -ge 1 ]] || { echo "no branches listed in $here/branches" >&2; exit 2; }
 
-if [[ -n "$(git status --porcelain)" ]]; then
-	echo "working tree is not clean; commit or stash first" >&2
-	exit 1
-fi
+short() { git rev-parse --short "$1"; }
+count() { git rev-list --count "$@"; }
+is_ancestor() { git merge-base --is-ancestor "$1" "$2"; }
 
-stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-for ref in main next "${branches[@]}"; do
-	git rev-parse -q --verify "refs/heads/$ref" >/dev/null || { echo "missing local branch $ref" >&2; exit 1; }
-	git tag -m "state before sync $stamp" "pre-sync/$stamp/${ref//\//-}" "$ref"
-done
-echo "tagged current tips under pre-sync/$stamp/"
+stray_on_next() {
+	local excludes=(^main)
+	for b in "${branches[@]}"; do excludes+=("^$b"); done
+	count --no-merges next "${excludes[@]}"
+}
 
-if [[ $fetch -eq 1 ]]; then
-	git fetch --prune upstream
-	git fetch --prune origin
-fi
+missing_from_next() {
+	local missing=()
+	for b in "${branches[@]}"; do is_ancestor "$b" next || missing+=("$b"); done
+	is_ancestor main next || missing+=("main")
+	printf '%s\n' "${missing[@]:-}"
+}
 
-git checkout -q main
-git merge --ff-only "$upstream_rev"
-echo "main -> $(git rev-parse --short HEAD)"
+status() {
+	local rc=0 current
+	current="$(git branch --show-current || echo '(detached)')"
+	echo "fork status ($repo)"
+	if git rev-parse -q --verify upstream/main >/dev/null; then
+		printf '  %-30s %s  upstream/main has %s commit(s) main lacks\n' main "$(short main)" "$(count main..upstream/main)"
+	else
+		printf '  %-30s %s  (no upstream remote fetched)\n' main "$(short main)"
+	fi
+	for b in "${branches[@]}"; do
+		local rel="no origin ref"
+		if git rev-parse -q --verify "origin/$b" >/dev/null; then
+			rel="ahead $(count "origin/$b..$b") behind $(count "$b..origin/$b") vs origin"
+		fi
+		local based="on main"
+		is_ancestor main "$b" || { based="NOT rebased onto main"; rc=1; }
+		printf '  %-30s %s  %s; %s\n' "$b" "$(short "$b")" "$rel" "$based"
+	done
+	local stray missing
+	stray="$(stray_on_next)"
+	missing="$(missing_from_next)"
+	local verdict="current"
+	if [[ -n "$missing" ]]; then verdict="STALE: missing $(echo "$missing" | tr '\n' ' ')"; rc=1; fi
+	if [[ "$stray" -gt 0 ]]; then verdict="$verdict; STRAY: $stray commit(s) on next belong on a branch"; rc=1; fi
+	printf '  %-30s %s  %s\n' next "$(short next)" "$verdict"
+	if [[ -n "$(git status --porcelain)" ]]; then echo "  working tree: DIRTY"; else echo "  working tree: clean"; fi
+	case "$current" in
+		next|main) echo "  you are on $current: do not commit here, switch to the owning branch (see .fork/AGENTS.md)" ;;
+		*) echo "  you are on $current" ;;
+	esac
+	return $rc
+}
 
-for b in "${branches[@]}"; do
-	git checkout -q "$b"
-	if ! git rebase -q main; then
-		echo "rebase of $b onto main failed; resolve in the rebase, then re-run with --offline" >&2
+require_clean() {
+	if [[ -n "$(git status --porcelain)" ]]; then
+		echo "working tree is not clean; commit or stash first" >&2
 		exit 1
 	fi
-	echo "  $b -> $(git rev-parse --short HEAD) ($(git rev-list --count main..HEAD) commits)"
-done
+}
 
-git checkout -q -B next "${branches[0]}"
-for b in "${branches[@]:1}"; do
-	git merge --no-ff --no-edit -m "Merge branch '$b' into next" "$b" >/dev/null
-done
-echo "next -> $(git rev-parse --short HEAD)"
+tag_tips() {
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	for ref in "$@"; do
+		git rev-parse -q --verify "refs/heads/$ref" >/dev/null || { echo "missing local branch $ref" >&2; exit 1; }
+		git tag -m "state before sync $stamp" "pre-sync/$stamp/${ref//\//-}" "$ref"
+	done
+	echo "tagged current tips under pre-sync/$stamp/"
+}
 
-if [[ $check -eq 1 ]]; then
-	"$here/check.sh" focused
-fi
+rebuild_next() {
+	local stray
+	stray="$(stray_on_next)"
+	if [[ "$stray" -gt 0 ]]; then
+		echo "next has $stray commit(s) that are on no branch; cherry-pick them onto the owning branch, then re-run:" >&2
+		git log --no-merges --format='  %h %s' next ^main "${branches[@]/#/^}" >&2
+		exit 1
+	fi
+	git checkout -q -B next "${branches[0]}"
+	for b in "${branches[@]:1}"; do
+		git merge --no-ff --no-edit -m "Merge branch '$b' into next" "$b" >/dev/null
+	done
+	echo "next -> $(short next)"
+}
 
-if [[ $push -eq 1 ]]; then
+push_all() {
 	git push --force-with-lease origin main next "${branches[@]}"
 	git push origin "refs/tags/pre-sync/$stamp/*"
 	echo "pushed main, next, ${#branches[@]} branches and pre-sync/$stamp tags"
-fi
+}
+
+case "$mode" in
+	status)
+		status
+		;;
+	rebuild)
+		require_clean
+		if [[ -z "$(missing_from_next)" && "$(stray_on_next)" -eq 0 ]]; then
+			echo "next $(short next) already contains every branch tip; nothing to rebuild"
+		else
+			stray="$(stray_on_next)"
+			if [[ "$stray" -gt 0 ]]; then
+				echo "next has $stray commit(s) that are on no branch; cherry-pick them onto the owning branch, then re-run:" >&2
+				git log --no-merges --format='  %h %s' next ^main "${branches[@]/#/^}" >&2
+				exit 1
+			fi
+			tag_tips next
+			rebuild_next
+		fi
+		[[ $check -eq 0 ]] || "$here/check.sh" focused
+		[[ $push -eq 0 ]] || { stamp="${stamp:-$(date -u +%Y%m%dT%H%M%SZ)}"; git push --force-with-lease origin next "${branches[@]}"; echo "pushed next and ${#branches[@]} branches"; }
+		;;
+	full)
+		require_clean
+		tag_tips main next "${branches[@]}"
+		if [[ $fetch -eq 1 ]]; then
+			git fetch --prune upstream
+			git fetch --prune origin
+		fi
+		git checkout -q main
+		git merge --ff-only "$upstream_rev"
+		echo "main -> $(short main)"
+		for b in "${branches[@]}"; do
+			git checkout -q "$b"
+			if ! git rebase -q main; then
+				echo "rebase of $b onto main failed; resolve it, 'git rebase --continue', then re-run with --offline" >&2
+				exit 1
+			fi
+			echo "  $b -> $(short "$b") ($(count main..HEAD) commits)"
+		done
+		rebuild_next
+		[[ $check -eq 0 ]] || "$here/check.sh" focused
+		[[ $push -eq 0 ]] || push_all
+		;;
+esac

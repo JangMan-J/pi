@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepare a fork checkout for testing and run the checks.
 #
-#   install-tests.sh            build the pi-env daemon, set up the .fork tooling worktree, run the focused checks
+#   install-tests.sh            build the pi-env daemon, set up the .fork worktree and agent pointers, run the focused checks
 #   install-tests.sh --all      same setup, then `npm run check` and the full `./test.sh` (several minutes)
 #   install-tests.sh --no-run   setup only
 #
@@ -58,6 +58,28 @@ else
 fi
 grep -qx '.fork' .git/info/exclude 2>/dev/null || echo '.fork' >> .git/info/exclude
 chmod +x .fork/sync.sh .fork/check.sh
+
+say "Pointing agents at .fork/AGENTS.md"
+# Claude Code reads CLAUDE.local.md from the repo root; keep it out of git.
+cat > CLAUDE.local.md <<'MD'
+# Fork workflow
+This checkout is the JangMan-J/pi fork. Before changing or committing anything, read `.fork/AGENTS.md`
+(branch ownership and the order of operations) and run `.fork/sync.sh --status`. Never commit on `main` or `next`.
+MD
+grep -qx 'CLAUDE.local.md' .git/info/exclude 2>/dev/null || echo 'CLAUDE.local.md' >> .git/info/exclude
+# pi reads ~/.pi/agent/AGENTS.md in every directory; add one guarded pointer block.
+pi_agents="${PI_AGENT_DIR:-$HOME/.pi/agent}/AGENTS.md"
+if [[ -d "$(dirname "$pi_agents")" ]] && ! grep -q 'fork-workflow:JangMan-J/pi' "$pi_agents" 2>/dev/null; then
+	cat >> "$pi_agents" <<MD
+
+<!-- fork-workflow:JangMan-J/pi -->
+## JangMan-J/pi fork checkouts
+When the working directory is a checkout of JangMan-J/pi (it has a \`.fork/\` directory), read \`.fork/AGENTS.md\`
+before changing anything and run \`.fork/sync.sh --status\` first. Commit only on the owning branch, never on \`main\` or \`next\`.
+<!-- /fork-workflow -->
+MD
+	echo "added pointer block to $pi_agents"
+fi
 
 case "$mode" in
 	focused) say "Running focused checks"; .fork/check.sh focused ;;

@@ -1,0 +1,43 @@
+# Working on the JangMan-J/pi fork
+
+Read this before changing anything. Upstream's own rules in the repo root `AGENTS.md` still apply; this file adds the fork's branch discipline. If `.fork/` is missing, run `install-tests.sh --no-run` first.
+
+## Layout
+
+`main` mirrors `earendil-works/pi` and is never edited. Each fork change lives on exactly one owning branch. `next` is generated: the first branch in `.fork/branches` plus a `--no-ff` merge of each following branch, in file order. Nobody commits on `next`; `.fork/sync.sh` refuses to rebuild while such commits exist.
+
+| Branch | Owns |
+| --- | --- |
+| `feat/native-anthropic-oauth` | `packages/ai/src/api/anthropic-oauth/`, the hook in `anthropic-messages.ts`, `test/anthropic-oauth-payload.test.ts` |
+| `feat/native-antigravity` | `packages/ai/src/api/antigravity/`, `antigravity-api.ts`, `antigravity-images.ts`, `providers/antigravity.ts`, `auth/oauth/antigravity.ts`, additions to `google-shared.ts`, `test/antigravity-*.test.ts` |
+| `feat/native-meta` | `providers/meta.ts`, the Meta branches in `api/openai-responses.ts`, the Meta section of `scripts/generate-models.ts`, `test/meta-oauth.test.ts` |
+| `feat/native-openai` | `api/openai-codex-responses.ts`, the OpenAI/Codex sections of `scripts/generate-models.ts`, the OpenAI context and mid-convo tests |
+| `fix/coding-agent` | `providers/generic-endpoint.ts`, `providers/openrouter*.ts`, `providers/README.md`, `packages/coding-agent/src/core/model-runtime.ts`, `model-config.ts`, the stationarity example, their tests |
+| `fork-tooling` | this directory (`.fork/`), `install-next.sh`, `install-tests.sh` |
+
+`scripts/generate-models.ts` is touched by three branches. Edit only your provider's section, on that provider's branch. A change that spans two providers is two commits on two branches.
+
+## Order of work
+
+1. **Check state.** `.fork/sync.sh --status`. It tells you which branch you are on, whether each branch is rebased on `main`, and whether `next` is current, stale, or carries stray commits. Fix a dirty tree before anything else.
+2. **Pick the owning branch** from the table and switch to it: `git checkout <branch>`. If you are on `next` or `main`, do not commit there.
+3. **Bring the branch up to date**: `git fetch origin && git rebase origin/<branch>` (or `git reset --hard origin/<branch>` if you have no local commits on it).
+4. **Make the change with its test.** Every wire change gets a payload-shape test in the branch's test file that pins the bytes. Where server behavior decides, run a live probe and record the sanitized result in the commit message. Run `.fork/check.sh focused`.
+5. **Commit on the branch.** Commits are signed automatically (`commit.gpgsign=true`); the pre-commit hook runs `npm run check`. Use the upstream commit style, for example `fix(ai): …`.
+6. **Rebuild `next`**: `.fork/sync.sh --rebuild-only`. It tags the old `next`, rebuilds it from the current tips, and runs the focused checks. Nothing is fetched or rebased.
+7. **Push**: `.fork/sync.sh --rebuild-only --push`, or `git push --force-with-lease origin <branch> next`. `next` is always force-pushed because it is regenerated; the branches only when they were rebased.
+
+To pull in new upstream commits, run `.fork/sync.sh` (full mode) instead of step 6. Order inside it is fixed: tag tips, fetch, fast-forward `main`, rebase every branch onto `main` in file order, rebuild `next`, check, optionally push. If a rebase stops on a conflict, resolve it, `git rebase --continue`, and re-run `.fork/sync.sh --offline`.
+
+## Recovery
+
+- Committed on `next` by mistake: `git checkout <owning branch> && git cherry-pick <sha>`, then `.fork/sync.sh --rebuild-only`.
+- Need a previous state: every run leaves signed `pre-sync/<stamp>/<ref>` tags; the audit left `backup/*` tags. `git tag -l 'pre-sync/*'`.
+- Branch not based on `main` after a manual change: `git rebase main <branch>`, then rebuild.
+
+## Do not
+
+- Commit on `main` or `next`.
+- Edit `main`'s upstream files from a branch unless the change is the branch's purpose.
+- Rewrite `next` by hand; always use `sync.sh`.
+- Skip the payload test or the probe; "it reads right" closes nothing.
