@@ -551,9 +551,31 @@ function supportsDirectReasoningEffort(model: Model<Api>): boolean {
 
 function applyModelsDevReasoningOptionMetadata(model: Model<Api>): void {
 	const reasoningOptions = modelsDevReasoningOptions.get(getModelKey(model));
-	if (!reasoningOptions || !supportsDirectReasoningEffort(model)) return;
+	// Adaptive compatibility is applied after models.dev metadata, so check the model ID here too.
+	if (
+		!reasoningOptions ||
+		!(supportsDirectReasoningEffort(model) ||
+			(model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)))
+	)
+		return;
 	const thinkingLevelMap = getEffortThinkingLevelMap(reasoningOptions);
-	if (thinkingLevelMap) mergeThinkingLevelMap(model, thinkingLevelMap);
+	if (!thinkingLevelMap) return;
+	// An effort-only models.dev entry does not prove that off is unsupported.
+	// Keep null only for models Anthropic documents as always thinking.
+	if (
+		model.api === "anthropic-messages" &&
+		/^claude-/.test(model.id.toLowerCase().replace(/^~?anthropic\//, "")) &&
+		thinkingLevelMap.off === null &&
+		!isAnthropicAlwaysThinkingModel(model.id)
+	) {
+		delete thinkingLevelMap.off;
+	}
+	mergeThinkingLevelMap(model, thinkingLevelMap);
+}
+
+function isAnthropicAlwaysThinkingModel(modelId: string): boolean {
+	const id = modelId.toLowerCase().replace(/^~?anthropic\//, "").replace(/-\d{8}$/, "");
+	return /^claude-(?:(?:opus|sonnet)[.-]5[.-]5|(?:fable|mythos)[.-]5(?:[.-]1)?)$/.test(id);
 }
 
 function getTogetherCompat(modelId: string, reasoning: boolean): OpenAICompletionsCompat {
@@ -598,7 +620,7 @@ const VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS = new Set(["anthropic", "ope
 // OpenRouter rejects `configuration_update` system messages on Opus 5 ("Mid-conversation
 // reasoning effort (configuration_update) is not supported on anthropic/claude-opus-5-20260723")
 // while accepting them on Fable 5.1, so gate that model there.
-const MID_CONVO_EFFORT_UNSUPPORTED_ANTHROPIC_MODELS = new Set(["openrouter:anthropic/claude-opus-5"]);
+const MID_CONVO_EFFORT_UNSUPPORTED_ANTHROPIC_MODELS = new Set(["openrouter:claude-opus-5"]);
 
 function supportsAnthropicMidConvoEffort(modelId: string): boolean {
 	const id = modelId.toLowerCase().replace(/^~?anthropic\//, "");
@@ -624,6 +646,7 @@ function supportsAnthropicDisabledThinkingWithMidConvoEffort(modelId: string): b
 }
 
 function supportsAnthropicMidConvoSystemMessages(modelId: string): boolean {
+	modelId = modelId.toLowerCase().replace(/^~?anthropic\//, "");
 	return (
 		/^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/.test(modelId) ||
 		/^claude-(?:sonnet|haiku)-5[.-]5(?:-\d{8})?$/.test(modelId) ||
@@ -652,6 +675,7 @@ function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
 	);
 }
 
+// Fable/Mythos always use thinking; the Messages runtime excludes temperature with thinking.
 function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 	const id = modelId.toLowerCase();
 	return (
@@ -664,7 +688,9 @@ function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 		id.includes("sonnet-5-5") ||
 		id.includes("sonnet-5.5") ||
 		id.includes("haiku-5-5") ||
-		id.includes("haiku-5.5")
+		id.includes("haiku-5.5") ||
+		id.includes("fable-5") ||
+		id.includes("mythos-5")
 	);
 }
 
@@ -1139,8 +1165,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh", max: "max" });
 	}
-	if (model.id.includes("fable-5")) {
+	if (model.id.includes("fable-5") || model.id.includes("mythos-5")) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
+	}
+	if (isAnthropicAlwaysThinkingModel(model.id)) {
+		mergeThinkingLevelMap(model, { off: null });
 	}
 	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { forceAdaptiveThinking: true });
@@ -1249,7 +1278,9 @@ function getAnthropicMessagesCompat(provider: string, modelId: string): Anthropi
 	if (
 		VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS.has(provider) &&
 		supportsAnthropicMidConvoEffort(modelId) &&
-		!MID_CONVO_EFFORT_UNSUPPORTED_ANTHROPIC_MODELS.has(`${provider}:${modelId}`)
+		!MID_CONVO_EFFORT_UNSUPPORTED_ANTHROPIC_MODELS.has(
+			`${provider}:${modelId.toLowerCase().replace(/^~?anthropic\//, "").replace(/-\d{8}$/, "")}`,
+		)
 	) {
 		compat.supportsMidConvoEffort = true;
 	}
@@ -1257,9 +1288,12 @@ function getAnthropicMessagesCompat(provider: string, modelId: string): Anthropi
 		compat.supportsMidConvoSystemMessages = true;
 		compat.supportsMidConvoToolChanges = true;
 	}
-	// OpenCode Zen and GitHub Copilot forward mid-conversation system messages but reject
+	// OpenCode Zen/Go and GitHub Copilot forward mid-conversation system messages but reject
 	// `tool_addition`/`tool_removal` blocks, so tool changes stay top-level there.
-	if ((provider === "opencode" || provider === "github-copilot") && supportsAnthropicMidConvoSystemMessages(modelId)) {
+	if (
+		(provider === "opencode" || provider === "opencode-go" || provider === "github-copilot") &&
+		supportsAnthropicMidConvoSystemMessages(modelId)
+	) {
 		compat.supportsMidConvoSystemMessages = true;
 	}
 	if (EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS.has(`${provider}:${modelId}`)) {
@@ -2343,7 +2377,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				if (m.status === "deprecated") continue;
 
 				// Claude 4.x and 5.x models route to Anthropic Messages API
-				const isCopilotClaude = /^claude-(haiku|sonnet|opus|fable)-[45]([.\-]|$)/.test(modelId);
+				const isCopilotClaude = /^claude-(haiku|sonnet|opus|fable|mythos)-[45]([.\-]|$)/.test(modelId);
 				// GPT, Grok, OSWE, and MAI-Code models are only served through
 				// the Copilot /responses endpoint.
 				const needsResponsesApi =
