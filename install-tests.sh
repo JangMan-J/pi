@@ -40,6 +40,10 @@ if [[ ! -d node_modules ]]; then
 	npm ci --ignore-scripts
 fi
 if [[ ! -f packages/coding-agent/dist/cli.js || ! -d packages/ai/dist ]]; then
+	if ! npm --prefix packages/ai run check:model-data >/dev/null 2>&1; then
+		say "Hydrating model data (npm run hydrate:model-data, needs network)"
+		npm run hydrate:model-data
+	fi
 	say "Building packages (npm run build:offline)"
 	npm run build:offline
 fi

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Clone or update the fork's `next` branch, build it, and point `pi` at the build.
 #
-#   install-next.sh                  clone (or update) ~/pi, build from the committed model data, link ~/.local/bin/pi
+#   install-next.sh                  clone (or update) ~/pi, hydrate model data if missing, build, link ~/.local/bin/pi
 #   install-next.sh --refresh-models run `npm run build` instead, which refreshes model data over the network first
 #   install-next.sh --force          allow replacing a local `next` that has commits origin does not have
 #
@@ -71,6 +71,14 @@ fi
 cd "$dir"
 say "Installing dependencies (npm ci --ignore-scripts)"
 npm ci --ignore-scripts
+
+if [[ "$build_script" == "build:offline" ]]; then
+	# packages/ai/src/providers/data/ is gitignored; a fresh clone has to fetch it once.
+	if ! npm --prefix packages/ai run check:model-data >/dev/null 2>&1; then
+		say "Hydrating model data (npm run hydrate:model-data, needs network)"
+		npm run hydrate:model-data
+	fi
+fi
 
 say "Building (npm run $build_script)"
 npm run "$build_script"
