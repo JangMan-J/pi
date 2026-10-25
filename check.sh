@@ -40,11 +40,12 @@ case "${1:-focused}" in
 				test/openrouter-user-models.test.ts \
 				test/openai-responses-mid-convo-effort.test.ts \
 				test/openai-codex-stream.test.ts \
-				test/provider-audit-model-generation.test.ts
+				test/provider-audit-model-generation.test.ts \
+				test/native-providers-catalog.test.ts
 		)
 		(
 			cd packages/coding-agent
-			npx vitest run test/suite/stationarity-extension.test.ts
+			npx vitest run test/suite/stationarity-extension.test.ts test/remote-catalog-names.test.ts
 		)
 		;;
 	all)
