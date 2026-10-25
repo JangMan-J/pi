@@ -18,13 +18,17 @@ export const META_DEFAULT_HEADERS: Readonly<Record<string, string>> = {
 
 export const META_RESPONSES_COMPAT: OpenAIResponsesCompat = {
 	supportsLongCacheRetention: false,
-	supportsStrictMode: true,
+	// Meta's `strict` only validates the schema; it does not constrain generated arguments
+	// (dev.meta.ai/docs/tool-calling, "strict"). Sending it would rewrite schemas for no guarantee.
+	supportsStrictMode: false,
 	supportsMidConvoSystemMessages: true,
 	supportsToolSearch: true,
 };
 
 const DEFAULT_META_INPUT_LIMITS: NonNullable<Model<"openai-responses">["inputLimits"]> = {
 	images: {
+		// More than 50 images in one request returns HTTP 400 (dev.meta.ai/docs/image-understanding).
+		maxPerRequest: 50,
 		resize: {
 			maxWidth: 2000,
 			maxHeight: 2000,
