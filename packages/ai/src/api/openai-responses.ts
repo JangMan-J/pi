@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
+import type { ResponseCreateParamsStreaming, ResponseInput } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
@@ -346,6 +346,60 @@ function createClient(
 	});
 }
 
+type InputItem = ResponseInput[number];
+const isAssistantMessage = (
+	item: InputItem | undefined,
+): item is Extract<InputItem, { type?: "message" }> & {
+	role: "assistant";
+	phase?: string | null;
+} => item?.type === "message" && (item as { role?: string }).role === "assistant";
+const isCallItem = (item: InputItem | undefined): boolean =>
+	item?.type === "function_call" || item?.type === "custom_tool_call" || item?.type === "tool_search_call";
+
+/** Text a reasoning-only turn is closed with, as Meta prescribes. */
+export const META_REASONING_ONLY_PLACEHOLDER = "(no reply)";
+
+/**
+ * Keeps replayed history in the shape Meta's Responses protocol documents
+ * (dev.meta.ai/docs/protocols/responses#message-phase and #conversation-structure):
+ * - Intermediate assistant text before a function call carries phase "commentary". The model tags
+ *   its own pre-call text that way and Meta says dropping the phase can degrade quality; text from
+ *   another model's turn (a mid-session switch) arrives with no phase, which Meta reads as a final
+ *   answer.
+ * - A reasoning item is followed by an assistant message or call before the next user, system or
+ *   developer message. After a turn that hit the output limit during reasoning, Meta prescribes a
+ *   minimal assistant message, which keeps the encrypted reasoning in the replay.
+ * Meta documents both violations as HTTP 400. Live probe 2026-10-25 on muse-spark-1.3 and
+ * muse-wonder-1.0: neither is enforced today (both shapes, and an explicit final_answer before a
+ * call, returned 200), so this is protocol alignment rather than an error fix.
+ * Mutates `input` in place. Exported for unit tests.
+ */
+export function repairMetaConversationStructure(input: ResponseInput): void {
+	for (let i = 0; i < input.length; i++) {
+		const item = input[i];
+		if (isAssistantMessage(item) && item.phase == null) {
+			let j = i + 1;
+			while (input[j]?.type === "reasoning" || isAssistantMessage(input[j])) j++;
+			if (isCallItem(input[j])) item.phase = "commentary";
+		} else if (item?.type === "reasoning") {
+			let j = i + 1;
+			while (input[j]?.type === "reasoning") j++;
+			const next = input[j];
+			if (j < input.length && !isAssistantMessage(next) && !isCallItem(next)) {
+				input.splice(j, 0, {
+					type: "message",
+					role: "assistant",
+					content: [{ type: "output_text", text: META_REASONING_ONLY_PLACEHOLDER, annotations: [] }],
+					status: "completed",
+					id: `msg_pi_meta_${j}`,
+					phase: "final_answer",
+				} as InputItem);
+			}
+			i = j - 1;
+		}
+	}
+}
+
 function buildParams(
 	model: Model<"openai-responses">,
 	context: TranscriptContext,
@@ -366,6 +420,7 @@ function buildParams(
 		},
 		configurationUpdateEffort,
 	});
+	if (isMetaModel(model)) repairMetaConversationStructure(messages);
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 	// Sign in with ChatGPT rejects these request fields.
