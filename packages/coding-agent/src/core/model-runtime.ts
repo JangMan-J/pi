@@ -232,7 +232,7 @@ export class ModelRuntime implements Models {
 			if (provider.id === "openrouter") {
 				return withPersonalizedCatalog(
 					provider,
-					personalizeOpenRouterCatalog,
+					async (catalog, context) => (await personalizeOpenRouterCatalog(catalog, context)).models,
 					options.catalogBaseUrl,
 					builtinModelDataGeneratedAt,
 				);
@@ -283,6 +283,7 @@ export class ModelRuntime implements Models {
 				}),
 			);
 		}
+		builtinProviderCatalog.addGenericEndpointProviders(this.builtins, this.config);
 	}
 
 	private providerIds(): Set<string> {
@@ -441,6 +442,11 @@ export class ModelRuntime implements Models {
 
 	getProviders(): readonly Provider[] {
 		return this.models.getProviders();
+	}
+
+	/** The models.json this runtime reads, or undefined when configured without one. */
+	getModelsPath(): string | undefined {
+		return this.modelsPath;
 	}
 
 	getProvider(providerId: string): Provider | undefined {
