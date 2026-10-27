@@ -2988,7 +2988,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-terra"]),
-			contextWindow: OPENAI_EXTENDED_CONTEXT_WINDOW,
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
 		{
@@ -3207,10 +3207,10 @@ async function generateModels() {
 	// NOTE: These are not fetched from models.dev; we keep a small, explicit list to avoid aliases.
 	// Only list models the Codex backend accepts for ChatGPT accounts. GPT-5.5 and GPT-5.3 Codex Spark are rejected
 	// with "not supported when using Codex with a ChatGPT account".
-	// Authenticated Codex /models on 2026-10-24 confirms 272k defaults, except 500k for gpt-6.1-sol.
+	// Authenticated Codex /models on 2026-10-24 confirms 272k defaults, except 500k for GPT-6.1.
 	const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 	const CODEX_DEFAULT_CONTEXT = 272000;
-	const CODEX_GPT61_SOL_CONTEXT = 500000;
+	const CODEX_GPT_61_CONTEXT = 500000;
 	const CODEX_MAX_TOKENS = 128000;
 	const codexModels: Model<"openai-codex-responses">[] = [
 		{
@@ -3222,7 +3222,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-sol"]),
-			contextWindow: CODEX_GPT61_SOL_CONTEXT,
+			contextWindow: CODEX_GPT_61_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -3234,7 +3234,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-terra"]),
-			contextWindow: CODEX_EXTENDED_CONTEXT,
+			contextWindow: CODEX_GPT_61_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
