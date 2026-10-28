@@ -498,6 +498,12 @@ const XAI_BUILTIN_EXCLUDED_MODEL_IDS = new Set([
 const XAI_RESPONSES_COMPAT: OpenAIResponsesCompat = {
 	supportsLongCacheRetention: false,
 };
+const META_RESPONSES_COMPAT: OpenAIResponsesCompat = {
+	supportsLongCacheRetention: false,
+	supportsStrictMode: false,
+	supportsMidConvoSystemMessages: true,
+	supportsToolSearch: true,
+};
 
 const OPENCODE_OPENAI_COMPLETIONS_LONG_CACHE_RETENTION_UNSUPPORTED_MODELS = new Set([
 	"opencode:deepseek-v4-flash",
@@ -2155,13 +2161,62 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					api: "openai-responses",
 					provider: "meta",
 					baseUrl: "https://api.meta.ai/v1",
+					compat: { ...META_RESPONSES_COMPAT },
 					reasoning: m.reasoning === true,
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: getModelsDevCost(m.cost),
-					contextWindow: m.limit?.context || 4096,
-					maxTokens: m.limit?.output || 4096,
+					contextWindow: m.limit?.context || 1007997,
+					maxTokens: m.limit?.output || 128000,
 				});
 				recordModelsDevReasoningOptions("meta", modelId, m);
+			}
+		}
+		const metaFullEffortMap = {
+			off: null,
+			minimal: "minimal" as const,
+			low: "low" as const,
+			medium: "medium" as const,
+			high: "high" as const,
+			xhigh: "xhigh" as const,
+			max: "max" as const,
+		};
+		for (const m of models) {
+			if (m.provider === "meta" && m.id === "muse-spark-1.3-contributor") {
+				m.thinkingLevelMap = { ...metaFullEffortMap };
+			}
+		}
+		for (const extra of [
+			{
+				id: "muse-wonder-1.0-contributor",
+				name: "Muse Wonder Contributor",
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
+			},
+			{
+				id: "muse-wonder-full-1.0",
+				name: "Muse Wonder Full",
+				cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 0 },
+			},
+			{
+				id: "muse-wonder-full-1.0-contributor",
+				name: "Muse Wonder Full Contributor",
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
+			},
+		]) {
+			if (!models.some((m) => m.provider === "meta" && m.id === extra.id)) {
+				models.push({
+					id: extra.id,
+					name: extra.name,
+					api: "openai-responses",
+					provider: "meta",
+					baseUrl: "https://api.meta.ai/v1",
+					compat: { ...META_RESPONSES_COMPAT },
+					reasoning: true,
+					thinkingLevelMap: { ...metaFullEffortMap },
+					input: ["text", "image"],
+					cost: extra.cost,
+					contextWindow: 1007997,
+					maxTokens: 128000,
+				});
 			}
 		}
 
