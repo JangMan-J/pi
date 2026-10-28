@@ -23,6 +23,7 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 | `protected-paths.ts` | Blocks writes to protected paths (.env, .git/, node_modules/) |
 | `confirm-destructive.ts` | Confirms before destructive session actions (clear, switch, fork) |
 | `dirty-repo-guard.ts` | Prevents session changes with uncommitted git changes |
+| `stationarity.ts` | Steers the agent out of a loop of identical tool calls with one persisted user message (after 4 identical reads or 8 identical other calls) |
 | `sandbox/` | OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config |
 | `gondolin/` | Route built-in tools and `!` commands into a Gondolin micro-VM |
 
