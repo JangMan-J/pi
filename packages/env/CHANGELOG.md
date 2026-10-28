@@ -6,6 +6,10 @@
 
 - `RemoteWatcher` follows Durable's `FileWatcher`: `close(context)` is `stop(context)`, and its changes are tagged (`{ kind: "paths", paths }`, `{ kind: "overflow" }`, `{ kind: "failed", error }`). The daemon's `watch` protocol is unchanged. Migration: `await watcher.close(ctx)` becomes `await watcher.stop(ctx)`; test `change.kind` instead of `"overflow" in change` or `"error" in change`.
 
+### Fixed
+
+- `loginShell` starts the daemon when the account's shell is not POSIX, such as fish, instead of failing with exit code 127; the variable that names the daemon to the login shell is removed before commands run.
+
 ## [1.4.0] - 2026-10-21
 
 ## [1.3.0] - 2026-10-15
