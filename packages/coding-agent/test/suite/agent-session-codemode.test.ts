@@ -27,7 +27,7 @@ import {
 	type CodemodeToolDetails,
 	createCodemodeTool,
 } from "../../src/extensions/codemode/tool.ts";
-import { createHarness, getToolResult, type Harness, type HarnessOptions } from "./harness.ts";
+import { createHarness, createTestUiContext, getToolResult, type Harness, type HarnessOptions } from "./harness.ts";
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -225,6 +225,63 @@ describe("AgentSession codemode tool", () => {
 			'entries tool\n\nCodemode: `tools.entries(args)` resolves to a value; `await describeTool("entries")` shows its type.',
 		);
 		expect(description("count")).toBe("count tool\n\nCodemode: `tools.count(args)` resolves to `number`.");
+	});
+
+	it("switches presentation for the session with /codemode", async () => {
+		const harness = await setup();
+		const notifications: string[] = [];
+		await harness.session.bindExtensions({
+			uiContext: createTestUiContext({ notify: (message) => notifications.push(message) }),
+		});
+		const requestTools: string[][] = [];
+		const record = (context: TranscriptContext) => {
+			requestTools.push(getCurrentTools(context.messages).map((tool) => tool.name));
+			return fauxAssistantMessage("ok");
+		};
+		harness.session.setActiveToolsByName(["read", "echo", "codemode"]);
+
+		await harness.session.prompt("/codemode");
+		expect(notifications.at(-1)).toBe("codemode mode: on (codemode.mode setting)");
+
+		await harness.session.prompt("/codemode only");
+		expect(notifications.at(-1)).toContain("codemode mode: only (this session)");
+		expect(notifications.at(-1)).toContain("one prompt-cache miss");
+		harness.setResponses([record]);
+		await harness.session.prompt("after only");
+		expect(requestTools.at(-1)).toContain("codemode");
+		expect(requestTools.at(-1)).not.toContain("read");
+		expect(requestTools.at(-1)).not.toContain("echo");
+		// The setting is untouched: the override lives only in this session.
+		expect(harness.settingsManager.getSettings().codemode?.mode).not.toBe("only");
+
+		await harness.session.prompt("/codemode on");
+		harness.setResponses([record]);
+		await harness.session.prompt("after on");
+		expect(requestTools.at(-1)).toEqual(expect.arrayContaining(["read", "echo", "codemode"]));
+
+		await harness.session.prompt("/codemode reset");
+		expect(notifications.at(-1)).toContain("(codemode.mode setting)");
+
+		await harness.session.prompt("/codemode sideways");
+		expect(notifications.at(-1)).toContain('Unknown argument "sideways"');
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("activates the codemode tool when /codemode only needs it", async () => {
+		const harness = await setup();
+		await harness.session.bindExtensions({ uiContext: createTestUiContext() });
+		harness.session.setActiveToolsByName(["read", "echo"]);
+		await harness.session.prompt("/codemode only");
+		expect(harness.session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "echo", "codemode"]));
+		const requestTools: string[][] = [];
+		harness.setResponses([
+			(context: TranscriptContext) => {
+				requestTools.push(getCurrentTools(context.messages).map((tool) => tool.name));
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		await harness.session.prompt("go");
+		expect(requestTools[0]).toEqual(["codemode"]);
 	});
 
 	// #10343
