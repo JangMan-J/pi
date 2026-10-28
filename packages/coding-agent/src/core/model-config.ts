@@ -1,6 +1,8 @@
 /** Immutable, credential-blind models.json snapshot. */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { ProviderCompatSchema } from "@earendil-works/pi-ai/providers/compat-schema";
 import {
 	ModelCostSchema,
@@ -153,6 +155,31 @@ function deepFreeze<T>(value: T): T {
 	if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
 	for (const child of Object.values(value)) deepFreeze(child);
 	return Object.freeze(value);
+}
+
+/**
+ * Add a provider entry to a models.json, creating the file when missing. Throws when the id is
+ * already defined there. Comments in the file are not preserved.
+ */
+export function addModelsJsonProvider(modelsJsonPath: string, providerId: string, provider: ModelsJsonProvider): void {
+	const path = normalizePath(modelsJsonPath);
+	const text = existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+	const parsed: unknown = text === undefined ? {} : JSON.parse(stripJsonComments(stripBom(text)));
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error(`${path}: expected a JSON object`);
+	}
+	const root = parsed as Record<string, unknown>;
+	const providers = root.providers ?? {};
+	if (typeof providers !== "object" || providers === null || Array.isArray(providers)) {
+		throw new Error(`${path}: expected "providers" to be an object`);
+	}
+	const target = providers as Record<string, unknown>;
+	if (target[providerId] !== undefined) throw new Error(`${path}: provider "${providerId}" already exists`);
+	target[providerId] = provider;
+	root.providers = target;
+	const indent = (text && /^([ \t]+)\S/m.exec(text)?.[1]) || "  ";
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(root, null, indent)}\n`);
 }
 
 /** One immutable load of models.json. */

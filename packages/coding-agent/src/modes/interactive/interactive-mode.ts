@@ -17,6 +17,7 @@ import {
 	type Model,
 	type Usage,
 } from "@earendil-works/pi-ai/compat";
+import type { GenericEndpointApi } from "@earendil-works/pi-ai/providers/generic-endpoint";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -97,6 +98,7 @@ import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/htt
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import type { McpHttpServerConfig } from "../../core/mcp-servers.ts";
 import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
+import { addModelsJsonProvider } from "../../core/model-config.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -370,6 +372,34 @@ type LoginProviderCompletionOption = {
 	authTypes: AuthSelectorProvider["authType"][];
 	subscription?: boolean;
 };
+
+/** Dialog id of the top-level `/login` "add a custom endpoint" option; never a real provider id. */
+const ADD_ENDPOINT_OPTION_ID = "+endpoint";
+const ADD_ENDPOINT_OPTION_NAME = "Add a custom endpoint…";
+
+/** Protocols a custom endpoint can speak; each has `GET …/models` discovery in pi-ai's generic endpoint provider. */
+const CUSTOM_ENDPOINT_APIS: readonly { id: GenericEndpointApi; label: string; placeholder: string }[] = [
+	{ id: "openai-completions", label: "OpenAI Chat Completions", placeholder: "http://localhost:8000/v1" },
+	{ id: "openai-responses", label: "OpenAI Responses", placeholder: "https://host.example/v1" },
+	{ id: "anthropic-messages", label: "Anthropic Messages", placeholder: "https://host.example" },
+	{
+		id: "google-generative-ai",
+		label: "Google Generative AI",
+		placeholder: "https://host.example/v1beta",
+	},
+];
+
+/** Derive a models.json provider id from a display name, unique among `taken`. */
+function endpointProviderId(name: string, taken: ReadonlySet<string>): string {
+	const base =
+		name
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-+|-+$/g, "") || "endpoint";
+	let id = base;
+	for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+	return id;
+}
 
 const RADIUS_LOGIN_INTRO = "Radius is a service crafted for Pi by the builders of Pi, Earendil Works";
 
@@ -6013,6 +6043,10 @@ export class InteractiveMode {
 			options.push(apiKeyLabel);
 		}
 		if (radiusLabel) options.push(radiusLabel);
+		// Top level only: one standing slot for another custom endpoint, after Radius.
+		const addEndpointLabel =
+			!providerOptions && this.session.modelRuntime.getModelsPath() ? ADD_ENDPOINT_OPTION_NAME : undefined;
+		if (addEndpointLabel) options.push(addEndpointLabel);
 
 		if (options.length === 0) {
 			this.showStatus("No login methods available.");
@@ -6035,6 +6069,10 @@ export class InteractiveMode {
 				done();
 				if (radiusOption && option === radiusLabel) {
 					void this.startProviderLogin(radiusOption, () => this.showLoginAuthTypeSelector());
+					return;
+				}
+				if (addEndpointLabel && option === addEndpointLabel) {
+					void this.showAddEndpointDialog(() => this.showLoginAuthTypeSelector());
 					return;
 				}
 				const authType = option === subscriptionLabel ? "oauth" : "api_key";
@@ -6183,10 +6221,13 @@ export class InteractiveMode {
 		// Dynamic catalogs may be empty until the first authenticated network refresh.
 		const deferSelection =
 			isUnknownModel(previousModel) &&
-			hasDefaultModelProvider(providerId) &&
 			!session.modelRuntime
 				.getAvailableSnapshot()
-				.some((model) => model.provider === providerId && model.id === defaultModelPerProvider[providerId]);
+				.some(
+					(model) =>
+						model.provider === providerId &&
+						(!hasDefaultModelProvider(providerId) || model.id === defaultModelPerProvider[providerId]),
+				);
 		const finishAuthentication = async () => {
 			let selectedModel: Model<any> | undefined;
 			let selectionError: string | undefined;
@@ -6196,16 +6237,17 @@ export class InteractiveMode {
 				// Matches LLAMA_PROVIDER_ID from extensions/llama/provider.ts; kept inline to avoid coupling interactive mode to the built-in extension.
 				if (providerId === "llama.cpp") {
 					selectionError = llamaCppPostLoginGuidance(actionLabel, providerModels.length);
-				} else if (!hasDefaultModelProvider(providerId)) {
-					selectionError = `${actionLabel}, but no default model is configured for provider "${providerId}". Use /model to select a model.`;
 				} else if (providerModels.length === 0) {
 					selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
 				} else {
-					const defaultModelId = defaultModelPerProvider[providerId];
-					// Radius catalogs vary by account; prefer balanced, then use catalog order.
+					const defaultModelId = hasDefaultModelProvider(providerId)
+						? defaultModelPerProvider[providerId]
+						: undefined;
+					// Radius catalogs vary by account; prefer balanced, then use catalog order. Providers
+					// without a default (models.json endpoints) take catalog order too.
 					selectedModel =
 						providerModels.find((model) => model.id === defaultModelId) ??
-						(providerId === "radius" ? providerModels[0] : undefined);
+						(providerId === "radius" || defaultModelId === undefined ? providerModels[0] : undefined);
 					if (!selectedModel) {
 						selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
 					} else {
@@ -6295,6 +6337,104 @@ export class InteractiveMode {
 		this.editorContainer.addChild(dialog);
 		this.ui.setFocus(dialog);
 		this.ui.requestRender();
+	}
+
+	/**
+	 * Ask for a name, protocol, and base URL, add the endpoint to models.json as a generic provider
+	 * (models are discovered from its model list), then run the normal API key login for it.
+	 */
+	private async showAddEndpointDialog(onBack?: () => void): Promise<void> {
+		const modelsPath = this.session.modelRuntime.getModelsPath();
+		if (!modelsPath) {
+			this.showError("No models.json is configured for this session.");
+			return;
+		}
+		const dialog = new LoginDialogComponent(
+			this.ui,
+			ADD_ENDPOINT_OPTION_ID,
+			() => {},
+			"custom endpoint",
+			"Add a custom endpoint",
+		);
+		dialog.showDetails([
+			theme.fg("text", "The endpoint is written to models.json; its models are read from its model list."),
+			theme.fg("accent", `  ${modelsPath}`),
+		]);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
+
+		const restoreEditor = () => {
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor);
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+		};
+
+		let providerId: string;
+		let name: string;
+		try {
+			name = (
+				await this.showAuthPrompt(
+					dialog,
+					{ type: "text", message: "Display name", placeholder: "Local vLLM" },
+					ADD_ENDPOINT_OPTION_ID,
+				)
+			).trim();
+			if (!name) throw new Error("A display name is required.");
+			const apiId = await this.showAuthPrompt(
+				dialog,
+				{
+					type: "select",
+					message: "Protocol",
+					options: CUSTOM_ENDPOINT_APIS.map(({ id, label }) => ({ id, label })),
+				},
+				ADD_ENDPOINT_OPTION_ID,
+			);
+			const api = CUSTOM_ENDPOINT_APIS.find((entry) => entry.id === apiId);
+			if (!api) throw new Error(`Unsupported protocol "${apiId}".`);
+			const baseUrlHint =
+				api.id === "anthropic-messages"
+					? "Base URL (without the /v1 prefix)"
+					: api.id === "google-generative-ai"
+						? "Base URL (including the /v1beta prefix)"
+						: "Base URL (including the /v1 prefix)";
+			const rawBaseUrl = (
+				await this.showAuthPrompt(
+					dialog,
+					{ type: "text", message: baseUrlHint, placeholder: api.placeholder },
+					ADD_ENDPOINT_OPTION_ID,
+				)
+			).trim();
+			let parsedUrl: URL;
+			try {
+				parsedUrl = new URL(rawBaseUrl);
+			} catch {
+				throw new Error(`"${rawBaseUrl}" is not a valid URL.`);
+			}
+			if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+				throw new Error("The base URL must start with http:// or https://.");
+			}
+			const baseUrl = rawBaseUrl.replace(/\/+$/u, "");
+
+			const taken = new Set(this.session.modelRuntime.getProviders().map((provider) => provider.id));
+			providerId = endpointProviderId(name, taken);
+			addModelsJsonProvider(modelsPath, providerId, { name, baseUrl, api: api.id });
+			await this.session.modelRuntime.refresh({ providers: [providerId], allowNetwork: false });
+		} catch (error: unknown) {
+			restoreEditor();
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			if (errorMsg === "Login cancelled") {
+				onBack?.();
+			} else {
+				this.showError(`Could not add the endpoint: ${errorMsg}`);
+			}
+			return;
+		}
+		restoreEditor();
+		this.showStatus(`Added provider "${providerId}" to ${modelsPath}`);
+		await this.showApiKeyLoginDialog(providerId, name, onBack);
 	}
 
 	private async showApiKeyLoginDialog(providerId: string, providerName: string, onBack?: () => void): Promise<void> {
