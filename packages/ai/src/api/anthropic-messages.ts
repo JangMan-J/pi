@@ -534,6 +534,39 @@ async function* iterateSseMessages(
 	}
 }
 
+const MAX_ANTHROPIC_DIAGNOSTIC_VALUE_CHARS = 200;
+
+function normalizeAnthropicDiagnosticValue(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 && trimmed.length <= MAX_ANTHROPIC_DIAGNOSTIC_VALUE_CHARS ? trimmed : undefined;
+}
+
+class AnthropicSseError extends Error {
+	readonly details: Record<string, string>;
+
+	constructor(data: string) {
+		super(data);
+		this.name = "AnthropicSseError";
+		const details: Record<string, string> = {};
+		try {
+			const payload = JSON.parse(data) as {
+				error?: { type?: unknown; details?: { error_code?: unknown } };
+				request_id?: unknown;
+			} | null;
+			const errorType = normalizeAnthropicDiagnosticValue(payload?.error?.type);
+			const errorCode = normalizeAnthropicDiagnosticValue(payload?.error?.details?.error_code);
+			const requestId = normalizeAnthropicDiagnosticValue(payload?.request_id);
+			if (errorType !== undefined) details.errorType = errorType;
+			if (errorCode !== undefined) details.errorCode = errorCode;
+			if (requestId !== undefined) details.requestId = requestId;
+		} catch {
+			// Malformed error frames retain the legacy raw-error behavior.
+		}
+		this.details = details;
+	}
+}
+
 async function* iterateAnthropicEvents(
 	response: Response,
 	signal?: AbortSignal,
@@ -547,7 +580,7 @@ async function* iterateAnthropicEvents(
 
 	for await (const sse of iterateSseMessages(response.body, signal)) {
 		if (sse.event === "error") {
-			throw new Error(sse.data);
+			throw new AnthropicSseError(sse.data);
 		}
 
 		if (!ANTHROPIC_MESSAGE_EVENTS.has(sse.event ?? "")) {
@@ -924,6 +957,13 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				} catch {
 					// Preserve the error that caused request processing to exit.
 				}
+			}
+			if (error instanceof AnthropicSseError && Object.keys(error.details).length > 0) {
+				appendAssistantMessageDiagnostic(output, {
+					type: "anthropic_response_failure",
+					timestamp: Date.now(),
+					details: error.details,
+				});
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
