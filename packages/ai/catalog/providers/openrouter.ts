@@ -85,7 +85,10 @@ export default defineProvider({
 			model.api === "anthropic-messages" &&
 			supportsClaudeMidConvoEffort(model.id) &&
 			!MID_CONVO_EFFORT_UNSUPPORTED_MODEL_IDS.has(
-				model.id.toLowerCase().replace(/^~?anthropic\//, "").replace(/-\d{8}$/, ""),
+				model.id
+					.toLowerCase()
+					.replace(/^~?anthropic\//, "")
+					.replace(/-\d{8}$/, ""),
 			)
 		) {
 			enableClaudeMidConvoEffort(model as Model<"anthropic-messages">);
