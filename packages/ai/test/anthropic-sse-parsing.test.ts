@@ -5,6 +5,7 @@ import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { transformMessages } from "../src/api/transform-messages.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
 import type { Api, Model, ToolCall } from "../src/types.ts";
+import { isRetryableAssistantError } from "../src/utils/retry.ts";
 
 function createSseResponse(events: Array<{ event: string; data: string }>): Response {
 	const body = events.map(({ event, data }) => `event: ${event}\ndata: ${data}\n`).join("\n");
@@ -110,6 +111,80 @@ function createResponseModelSseResponse(model: string, contentBlock: ResponseCon
 }
 
 describe("Anthropic raw SSE parsing", () => {
+	it("records structured SSE errors without changing error text or retry classification", async () => {
+		const errorBody = {
+			type: "error",
+			error: {
+				type: "invalid_request_error",
+				message: "Claude Code version 2.1.900 or newer is required.",
+				details: { error_code: "claude_code_version_too_old" },
+			},
+			request_id: "req_anthropic_sse_test",
+		};
+		const data = JSON.stringify(errorBody);
+		const result = await streamAnthropic(
+			getModel("anthropic", "claude-haiku-4-5"),
+			normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
+			{ client: createFakeAnthropicClient(createSseResponse([{ event: "error", data }])) },
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe(data);
+		expect(isRetryableAssistantError(result)).toBe(false);
+		expect(result.diagnostics).toEqual([
+			{
+				type: "anthropic_response_failure",
+				timestamp: expect.any(Number),
+				details: {
+					errorType: "invalid_request_error",
+					errorCode: "claude_code_version_too_old",
+					requestId: "req_anthropic_sse_test",
+				},
+			},
+		]);
+	});
+
+	it("omits oversized SSE diagnostic values", async () => {
+		const data = JSON.stringify({
+			type: "error",
+			error: {
+				type: "invalid_request_error",
+				message: "Invalid request",
+				details: { error_code: "c".repeat(201) },
+			},
+			request_id: "r".repeat(201),
+		});
+		const result = await streamAnthropic(
+			getModel("anthropic", "claude-haiku-4-5"),
+			normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
+			{ client: createFakeAnthropicClient(createSseResponse([{ event: "error", data }])) },
+		).result();
+
+		expect(result.errorMessage).toBe(data);
+		expect(result.diagnostics).toEqual([
+			{
+				type: "anthropic_response_failure",
+				timestamp: expect.any(Number),
+				details: { errorType: "invalid_request_error" },
+			},
+		]);
+	});
+
+	it.each(["{not-json", JSON.stringify({ type: "error", error: { message: "Missing metadata" } })])(
+		"preserves unstructured SSE errors without fabricated diagnostics: %s",
+		async (data) => {
+			const result = await streamAnthropic(
+				getModel("anthropic", "claude-haiku-4-5"),
+				normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
+				{ client: createFakeAnthropicClient(createSseResponse([{ event: "error", data }])) },
+			).result();
+
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toBe(data);
+			expect(result.diagnostics).toBeUndefined();
+		},
+	);
+
 	it("forwards parsed provider stream events in order", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const providerEvents: unknown[] = [];
