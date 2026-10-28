@@ -1,4 +1,5 @@
-import type { Model, ModelCost } from "../../src/types.ts";
+import { kimiCodingModelName } from "../../scripts/native-providers.ts";
+import type { Model, ModelCost, OpenAICompletionsCompat } from "../../src/types.ts";
 import { defineProvider, modelsDevModels } from "../define.ts";
 import { KIMI_K3_COST, KIMI_K3_OPENAI_COMPAT, KIMI_OPENAI_COMPAT } from "../families/kimi.ts";
 import { getEffortThinkingLevelMap } from "../reasoning.ts";
@@ -12,6 +13,12 @@ const IMPLIED_COSTS: Record<string, ModelCost> = {
 	"k3.1-pro-highspeed": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 0 },
 	"kimi-for-coding": { input: 0.95, output: 4, cacheRead: 0.19, cacheWrite: 0 },
 	"kimi-for-coding-highspeed": { input: 1.9, output: 8, cacheRead: 0.38, cacheWrite: 0 },
+};
+
+// Request fields the Kimi Code client sends to K3-style models in place of the generic K3 settings.
+const KIMI_CODING_K3_WIRE: OpenAICompletionsCompat = {
+	thinkingFormat: "kimi",
+	maxTokensField: "max_completion_tokens",
 };
 
 // Kimi Coding uses Chat Completions, the same protocol as the official Kimi Code client.
@@ -34,12 +41,19 @@ export default defineProvider({
 					isK3Style && source.reasoningOptions ? getEffortThinkingLevelMap(source.reasoningOptions) : undefined;
 				return {
 					...model,
+					name: kimiCodingModelName(model.id, source.name),
 					compat: {
 						...(isK3Style ? KIMI_K3_OPENAI_COMPAT : KIMI_OPENAI_COMPAT),
 						// All models accept system text after the conversation starts.
 						supportsMidConvoSystemMessages: true,
 						...(isK3Style ? { supportsMidConvoToolAdditions: true } : {}),
+						// The Kimi Code client sends thinking:{type,effort,keep} and max_completion_tokens
+						// to K3-style models (snoop capture, 2026-10-28).
+						...(isK3Style ? KIMI_CODING_K3_WIRE : {}),
 					},
+					// The Kimi Code client asks for the remaining context window as the output cap.
+					// buildBaseOptions shrinks this by the prompt size on every request.
+					...(isK3Style ? { maxTokens: model.contextWindow } : {}),
 					cost: {
 						input: source.cost.input || impliedCost?.input || 0,
 						output: source.cost.output || impliedCost?.output || 0,
