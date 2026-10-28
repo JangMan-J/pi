@@ -2232,3 +2232,67 @@ describe("runToolCall", () => {
 		expect(seen).toEqual([undefined, { value: "replaced" }, { value: "both" }, { value: "original" }]);
 	});
 });
+
+describe("provider-reported unfinished turns", () => {
+	function scriptedStream(responses: AssistantMessage[], seen: Message[][]) {
+		let call = 0;
+		return (_model: unknown, context: { messages: Message[] }) => {
+			seen.push([...context.messages]);
+			const message = responses[Math.min(call++, responses.length - 1)]!;
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => stream.push({ type: "done", reason: message.stopReason as "stop", message }));
+			return stream;
+		};
+	}
+	const text = (value: string, endTurn?: boolean): AssistantMessage => ({
+		...createAssistantMessage([{ type: "text", text: value }]),
+		...(endTurn === undefined ? {} : { endTurn }),
+	});
+	async function run(responses: AssistantMessage[], config: Partial<AgentLoopConfig> = {}) {
+		const seen: Message[][] = [];
+		const context: AgentContext = { messages: [], tools: [] };
+		const stream = agentLoop(
+			[createUserMessage("Fix the bug")],
+			context,
+			{ model: createModel(), convertToLlm: identityConverter, ...config },
+			undefined,
+			scriptedStream(responses, seen) as never,
+		);
+		for await (const _event of stream) {
+			// drain
+		}
+		return { seen, messages: await stream.result() };
+	}
+
+	it("samples again without new input when the provider says the turn is not over", async () => {
+		const { seen, messages } = await run([text("I'll now check the tests.", false), text("All tests pass.", true)]);
+		expect(seen).toHaveLength(2);
+		const second = seen[1]!;
+		expect(second.at(-1)).toMatchObject({ role: "assistant", content: [{ text: "I'll now check the tests." }] });
+		expect(second.filter((m) => m.role === "user")).toHaveLength(1);
+		expect(messages.at(-1)).toMatchObject({ role: "assistant", content: [{ text: "All tests pass." }] });
+	});
+
+	it.each([true, undefined])("stops after one request when endTurn is %s", async (endTurn) => {
+		const { seen } = await run([text("Done.", endTurn)]);
+		expect(seen).toHaveLength(1);
+	});
+
+	it("caps consecutive continuations", async () => {
+		const { seen } = await run([text("Still going.", false)]);
+		expect(seen).toHaveLength(4);
+	});
+
+	it("lets finishTurn end the run", async () => {
+		const { seen } = await run([text("I'll now check the tests.", false), text("unreachable", true)], {
+			finishTurn: async () => ({ action: "end" }),
+		});
+		expect(seen).toHaveLength(1);
+	});
+
+	it("ignores endTurn on a message that stopped for another reason", async () => {
+		const truncated = { ...text("Cut off", false), stopReason: "length" as const };
+		const { seen } = await run([truncated]);
+		expect(seen).toHaveLength(1);
+	});
+});
