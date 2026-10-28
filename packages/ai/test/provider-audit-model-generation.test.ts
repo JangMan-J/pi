@@ -30,9 +30,7 @@ it.each([true, false])("generates upstream OpenAI limits and Meta catalog limits
 	const sources: CatalogSources = {
 		modelsDev: {
 			openai: {
-				models: listed
-					? Object.fromEntries(ids.map((id) => [id, sourceModel(id, 1000000, 128000)]))
-					: {},
+				models: listed ? Object.fromEntries(ids.map((id) => [id, sourceModel(id, 1000000, 128000)])) : {},
 			},
 			meta: { models: { "muse-custom": sourceModel("muse-custom", 90000, 12000) } },
 		},
