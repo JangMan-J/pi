@@ -524,6 +524,9 @@ fn serve(token: &str) -> io::Result<()> {
 }
 
 fn main() {
+    // The SSH login-shell launch names this binary in `PI_ENV_LAUNCH`; commands must not inherit it.
+    // SAFETY: no other thread exists yet, so nothing reads the environment concurrently.
+    unsafe { env::remove_var("PI_ENV_LAUNCH") };
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("serve") => {
