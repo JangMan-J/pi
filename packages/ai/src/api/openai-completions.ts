@@ -782,6 +782,11 @@ function createClient(
 	});
 }
 
+// OpenAI and the Kimi Code client both send the session ID as prompt_cache_key.
+function sendsPromptCacheKey(model: Model<"openai-completions">, compat: ResolvedOpenAICompletionsCompat): boolean {
+	return model.baseUrl.includes("api.openai.com") || compat.thinkingFormat === "kimi";
+}
+
 function buildParams(
 	model: Model<"openai-completions">,
 	context: TranscriptContext,
@@ -809,7 +814,7 @@ function buildParams(
 		messages,
 		stream: true,
 		prompt_cache_key:
-			(model.baseUrl.includes("api.openai.com") && cacheRetention !== "none") ||
+			(sendsPromptCacheKey(model, compat) && cacheRetention !== "none") ||
 			(cacheRetention === "long" && compat.supportsLongCacheRetention)
 				? clampOpenAIPromptCacheKey(options?.sessionId)
 				: undefined,
@@ -919,6 +924,20 @@ function buildParams(
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			(params as any).reasoning_effort =
 				model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
+		}
+	} else if (compat.thinkingFormat === "kimi" && model.reasoning) {
+		// The Kimi Code client sends thinking:{type,effort,keep} instead of reasoning_effort. keep "all"
+		// retains earlier reasoning, which convertMessages resends as reasoning_content.
+		if (options?.reasoningEffort) {
+			const mappedEffort = model.thinkingLevelMap?.[options.reasoningEffort];
+			const effort = mappedEffort === undefined ? options.reasoningEffort : mappedEffort;
+			(params as any).thinking = {
+				type: "enabled",
+				...(typeof effort === "string" ? { effort } : {}),
+				keep: "all",
+			};
+		} else if (model.thinkingLevelMap?.off !== null) {
+			(params as any).thinking = { type: "disabled" };
 		}
 	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
 		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
