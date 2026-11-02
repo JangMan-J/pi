@@ -58,6 +58,22 @@ const EXTRA_META_MODELS: ReadonlyArray<{ id: string; name: string; cost: ModelCo
 	{ id: "muse-wonder-full-1.0-contributor", name: "Muse Wonder Full Contributor", cost: META_CONTRIBUTOR_COST },
 ];
 
+function mergeMetaInputLimits(
+	inputLimits: Model<"openai-responses">["inputLimits"],
+	fallback: Model<"openai-responses">["inputLimits"] = DEFAULT_META_INPUT_LIMITS,
+): NonNullable<Model<"openai-responses">["inputLimits"]> {
+	return {
+		...DEFAULT_META_INPUT_LIMITS,
+		...fallback,
+		...inputLimits,
+		images: {
+			...DEFAULT_META_INPUT_LIMITS.images,
+			...fallback?.images,
+			...inputLimits?.images,
+		},
+	};
+}
+
 export function buildMetaModels(
 	catalog: Record<string, Model<"openai-responses">> | readonly Model<"openai-responses">[],
 ): Model<"openai-responses">[] {
@@ -70,7 +86,7 @@ export function buildMetaModels(
 			maxTokens: model.maxTokens || META_MAX_TOKENS,
 			thinkingLevelMap: isFullEffort ? { ...META_FULL_EFFORT_MAP } : model.thinkingLevelMap,
 			compat: { ...META_RESPONSES_COMPAT, ...model.compat },
-			inputLimits: model.inputLimits ?? DEFAULT_META_INPUT_LIMITS,
+			inputLimits: mergeMetaInputLimits(model.inputLimits),
 		};
 	});
 
@@ -192,13 +208,13 @@ function mergeWithBaseline(
 				reasoning: model.reasoning ?? base.reasoning,
 				thinkingLevelMap: model.thinkingLevelMap ?? base.thinkingLevelMap,
 				compat: { ...META_RESPONSES_COMPAT, ...base.compat, ...model.compat },
-				inputLimits: model.inputLimits ?? base.inputLimits,
+				inputLimits: mergeMetaInputLimits(model.inputLimits, base.inputLimits),
 			});
 		} else {
 			merged.set(model.id, {
 				...model,
 				compat: { ...META_RESPONSES_COMPAT, ...model.compat },
-				inputLimits: model.inputLimits ?? DEFAULT_META_INPUT_LIMITS,
+				inputLimits: mergeMetaInputLimits(model.inputLimits),
 			});
 		}
 	}
@@ -318,7 +334,7 @@ export function metaProvider(): Provider<"openai-responses"> {
 					maxTokens: mc.limit?.output ?? base?.maxTokens ?? META_MAX_TOKENS,
 					thinkingLevelMap: buildMetaThinkingLevelMap(mc.variants, base?.thinkingLevelMap),
 					compat: { ...META_RESPONSES_COMPAT, ...base?.compat },
-					inputLimits: base?.inputLimits ?? DEFAULT_META_INPUT_LIMITS,
+					inputLimits: mergeMetaInputLimits(base?.inputLimits),
 				});
 			}
 
