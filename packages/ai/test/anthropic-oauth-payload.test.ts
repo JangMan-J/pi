@@ -29,7 +29,7 @@ const model: Model<"anthropic-messages"> = {
 	maxTokens: 4096,
 };
 const prompt =
-	"You are an expert coding assistant operating inside pi, a coding agent harness.\n\n<tools>\n- read: Read files\n\nIn addition to the tools above, more tools may exist.\n</tools>\n\n<docs>\nPi documentation (read only when the user asks about pi itself): docs here\n</docs>\n\n<project_context>\nKeep ALL project instructions.\n</project_context>\n\n<skills>\nkeep skills\n</skills>\n\n<cwd>\n/home/u/project\n</cwd>";
+	"You are a coding assistant running inside pi, a coding agent harness.\n\n<tools>\n- read: Read files\n\nAdditional tools may be available.\n</tools>\n\n<docs>\nPi documentation (read only when the user asks about the harness itself): docs here\n</docs>\n\n<project_context>\nKeep ALL project instructions.\n</project_context>\n\n<skills>\nkeep skills\n</skills>\n\n<cwd>\n/home/u/project\n</cwd>";
 const context = normalizeContext({ systemPrompt: prompt, messages: [{ role: "user", content: "Hi", timestamp: 1 }] });
 function success(): Response {
 	return new Response(
@@ -130,7 +130,7 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(text).toContain("keep skills");
 		expect(text).toContain("/home/u/project");
 		expect(text).not.toContain("Pi documentation");
-		expect(text).not.toContain("In addition to the tools above");
+		expect(text).not.toContain("Additional tools may be available.");
 		expect(wire.headers[0]!.get("user-agent")).toBe("claude-cli/2.1.280");
 		expect(wire.headers[0]!.get("authorization")).toBe(`Bearer ${apiKey}`);
 	});
@@ -456,7 +456,7 @@ describe("native Anthropic OAuth shaping", () => {
 					content: [
 						{
 							type: "text",
-							text: 'Updated system prompt section "docs":\n\n<docs>\nPi documentation (read only when the user asks about pi itself): docs\n</docs>',
+							text: 'Updated system prompt section "docs":\n\n<docs>\nPi documentation (read only when the user asks about the harness itself): docs\n</docs>',
 						},
 					],
 				},
