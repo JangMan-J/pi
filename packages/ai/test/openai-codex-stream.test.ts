@@ -1133,16 +1133,19 @@ describe("openai-codex streaming", () => {
 	});
 
 	it.each([
-		["gpt-5.1-codex", "flex", 0.5],
-		["gpt-5.1-codex", "priority", 2],
-		["gpt-5.5", "flex", 0.5],
-		["gpt-5.5", "priority", 2.5],
+		["gpt-5.1-codex", "flex", "flex", 0.5],
+		["gpt-5.1-codex", "priority", "priority", 2],
+		["gpt-5.5", "flex", "flex", 0.5],
+		["gpt-5.5", "priority", "priority", 2.5],
+		["gpt-6.1-sol", "fast", "priority", 2],
+		["gpt-6.1-sol", "ultrafast", "ultrafast", 6],
 	] as const)(
-		"uses the client-sent %s service tier for %s when Codex echoes default",
-		async (modelId, serviceTier, multiplier) => {
+		"uses the client-sent %s service tier for %s (wire %s) when Codex echoes default",
+		async (modelId, serviceTier, expectedWireTier, multiplier) => {
 			const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
 			process.env.PI_CODING_AGENT_DIR = tempDir;
 			const token = mockToken();
+			let capturedPayload: { service_tier?: string } | undefined;
 			const sse = `${[
 				`data: ${JSON.stringify({
 					type: "response.output_item.added",
@@ -1203,7 +1206,7 @@ describe("openai-codex streaming", () => {
 
 			const model: Model<"openai-codex-responses"> = {
 				id: modelId,
-				name: modelId === "gpt-5.5" ? "GPT-5.5" : "GPT-5.1 Codex",
+				name: modelId,
 				api: "openai-codex-responses",
 				provider: "openai-codex",
 				baseUrl: "https://chatgpt.com/backend-api",
@@ -1223,8 +1226,13 @@ describe("openai-codex streaming", () => {
 				apiKey: token,
 				serviceTier,
 				transport: "sse",
+				onPayload: (payload) => {
+					capturedPayload = payload as { service_tier?: string };
+					return undefined;
+				},
 			}).result();
 
+			expect(capturedPayload?.service_tier).toBe(expectedWireTier);
 			expect(result.usage.cost.input).toBe(1 * multiplier);
 			expect(result.usage.cost.output).toBe(2 * multiplier);
 			expect(result.usage.cost.total).toBe(3 * multiplier);
