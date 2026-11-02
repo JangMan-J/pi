@@ -1,5 +1,7 @@
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildCatalog } from "../catalog/build.ts";
+import metaCatalog from "../catalog/providers/meta.ts";
 import {
 	META_REASONING_ONLY_PLACEHOLDER,
 	repairMetaConversationStructure,
@@ -9,6 +11,7 @@ import { metaOAuth } from "../src/auth/oauth/meta.ts";
 import type { ProviderAuthInteraction } from "../src/auth/types.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
 import { getSupportedThinkingLevels } from "../src/models.ts";
+import { META_MODELS } from "../src/providers/meta.models.ts";
 import { buildMetaModels, metaProvider } from "../src/providers/meta.ts";
 import type { AssistantMessage, Model } from "../src/types.ts";
 
@@ -188,7 +191,62 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 		expect(getSupportedThinkingLevels(wonderFull)).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
 		expect(models.get("muse-wonder-full-1.0-contributor")?.cost.input).toBe(0.1);
 		expect(models.get("muse-wonder-1.0-contributor")?.cost.input).toBe(0.1);
+		expect(models.get("muse-spark-1.3-contributor")?.thinkingLevelMap?.max).toBe("max");
 		expect(getSupportedThinkingLevels(models.get("muse-spark-1.3-contributor")!)).toContain("max");
+
+		const expectedImagesLimit = {
+			maxPerRequest: 50,
+			resize: {
+				maxWidth: 2000,
+				maxHeight: 2000,
+				maxBytes: 4718592,
+				jpegQuality: 80,
+			},
+		};
+		for (const model of models.values()) {
+			expect(model.inputLimits?.images).toEqual(expectedImagesLimit);
+		}
+		for (const model of Object.values(META_MODELS)) {
+			expect(model.inputLimits?.images).toEqual(expectedImagesLimit);
+		}
+		expect(META_MODELS["muse-spark-1.3-contributor"].thinkingLevelMap?.max).toBe("max");
+
+		const built = buildCatalog(
+			[metaCatalog],
+			{
+				modelsDev: {
+					meta: {
+						models: {
+							"muse-spark-1.3-contributor": {
+								id: "muse-spark-1.3-contributor",
+								type: "chat",
+								name: "Muse Spark 1.3 Contributor",
+								modalities: { input: ["text", "image"], output: ["text"] },
+								capabilities: {
+									tools: { supported: true },
+									reasoning: {
+										supported: true,
+										effort: ["minimal", "low", "medium", "high", "xhigh"],
+									},
+								},
+								api: {},
+							},
+						},
+					},
+				},
+				modelsDevDecisions: {},
+				openRouter: { chat: [], images: [], classifiers: [] },
+				aiGateway: { chat: [], classifiers: [] },
+				nvidiaModelIds: new Map(),
+				radius: [],
+			},
+			true,
+		);
+		const builtSparkContributor = built.meta.chat.find((m) => m.id === "muse-spark-1.3-contributor");
+		expect(builtSparkContributor?.thinkingLevelMap?.max).toBe("max");
+		for (const model of built.meta.chat) {
+			expect(model.inputLimits?.images).toEqual(expectedImagesLimit);
+		}
 	});
 
 	it("refreshes /muse-code/models and preserves baseline models over stale stored snapshots", async () => {
@@ -451,6 +509,51 @@ describe("Meta audit regressions", () => {
 			}
 		},
 	);
+	it("omits mid-conversation tool_search items when toolChoice is none", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(
+				'data: {"type":"response.completed","response":{"id":"done","status":"completed","output":[]}}\n\n',
+			),
+		);
+		let payload: { tools?: unknown; tool_choice?: unknown; input: Array<Record<string, unknown>> } | undefined;
+		const result = await streamOpenAIResponses(
+			metaProvider().getModels()[0],
+			normalizeContext({
+				messages: [
+					{ role: "user", content: "Start", timestamp: 1 },
+					{
+						role: "system",
+						content: "Loaded extra tool.",
+						toolsAdded: [{ name: "extra", description: "Extra", parameters: Type.Object({}) }],
+						timestamp: 2,
+					},
+					{ role: "user", content: "Answer in prose only.", timestamp: 3 },
+				],
+				tools: [
+					{ name: "ping", description: "Ping", parameters: Type.Object({}) },
+					{ name: "extra", description: "Extra", parameters: Type.Object({}) },
+				],
+			}),
+			{
+				apiKey: "test",
+				toolChoice: "none",
+				onPayload: (value) => {
+					payload = value as typeof payload;
+				},
+			},
+		).result();
+		expect(result.stopReason, result.errorMessage).toBe("stop");
+		expect(payload).not.toHaveProperty("tools");
+		expect(payload).not.toHaveProperty("tool_choice");
+		expect(
+			payload?.input.filter(
+				(item) =>
+					item.type === "tool_search_call" ||
+					item.type === "tool_search_output" ||
+					item.type === "additional_tools",
+			),
+		).toEqual([]);
+	});
 	it("keeps catalog baseline limits and uses constants only when missing", () => {
 		const base = metaProvider().getModels()[0];
 		expect(buildMetaModels([{ ...base, contextWindow: 90000, maxTokens: 12000 }])[0]).toMatchObject({
@@ -667,6 +770,54 @@ describe("Meta conversation structure", () => {
 		const at = input.findIndex((item) => item.type === "reasoning");
 		expect(input[at + 1]).toMatchObject({ role: "assistant", content: [{ text: META_REASONING_ONLY_PLACEHOLDER }] });
 		expect(input[at + 2]).toMatchObject({ role: "user" });
+	});
+
+	it("does not treat synthetic tool_search_call from system.toolsAdded as an assistant call", async () => {
+		const model = metaProvider().getModels()[0];
+		const extraTool = { name: "extra", description: "Extra tool", parameters: Type.Object({}) };
+
+		const afterFinalReply = await payloadFor([
+			{ role: "user", content: "Hello.", timestamp: 1 },
+			{
+				role: "assistant",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-5-5",
+				content: [{ type: "text", text: "Final answer." }],
+				usage: zeroUsage,
+				stopReason: "stop",
+				timestamp: 2,
+			},
+			{ role: "system", content: "Tool loaded.", toolsAdded: [extraTool], timestamp: 3 },
+			{ role: "user", content: "Next.", timestamp: 4 },
+		]);
+		const finalAssistant = afterFinalReply.find((item) => item.type === "message" && item.role === "assistant");
+		expect(finalAssistant).toBeDefined();
+		expect(finalAssistant?.phase).toBeUndefined();
+		expect(afterFinalReply.some((item) => item.type === "tool_search_call")).toBe(true);
+
+		const afterReasoningOnly = await payloadFor([
+			{ role: "user", content: "Think hard.", timestamp: 1 },
+			{
+				role: "assistant",
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				content: [{ type: "thinking", thinking: "", thinkingSignature: JSON.stringify(reasoning("rs_1")) }],
+				usage: zeroUsage,
+				stopReason: "length",
+				timestamp: 2,
+			},
+			{ role: "system", content: "Tool loaded.", toolsAdded: [extraTool], timestamp: 3 },
+			{ role: "user", content: "Continue.", timestamp: 4 },
+		]);
+		const at = afterReasoningOnly.findIndex((item) => item.type === "reasoning");
+		expect(afterReasoningOnly[at + 1]).toMatchObject({
+			role: "assistant",
+			phase: "final_answer",
+			content: [{ text: META_REASONING_ONLY_PLACEHOLDER }],
+		});
+		expect(afterReasoningOnly[at + 2]).toMatchObject({ type: "tool_search_call", execution: "client" });
 	});
 });
 
