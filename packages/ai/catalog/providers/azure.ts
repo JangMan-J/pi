@@ -10,6 +10,11 @@ const CONTEXT_WINDOW_OVERRIDES: Record<string, number> = {
 	"gpt-5.6-luna": 1050000,
 	"gpt-5.6-sol": 1050000,
 	"gpt-5.6-terra": 1050000,
+	"gpt-6-astra": 272000,
+	"gpt-6-luna": 272000,
+	"gpt-6-sol": 272000,
+	"gpt-6.1-sol": 272000,
+	"gpt-6.1-terra": 272000,
 };
 
 // Azure resells DeepSeek at its own rates. US data zone, checked 2026-09-16.
