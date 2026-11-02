@@ -7,10 +7,10 @@ import {
 import { shapeOAuthPayload } from "../src/api/anthropic-oauth/request-shaping.ts";
 import { shapeSystemPrompt, shapeSystemUpdateText } from "../src/api/anthropic-oauth/system-prompt-shaping.ts";
 
-const preamble = `${PI_DEFAULT_PROMPT_PREFIX} You help users by reading files, executing commands, editing code, and writing new files.`;
-const filler = "In addition to the tools above, you may have access to other custom tools depending on the project.";
+const preamble = `${PI_DEFAULT_PROMPT_PREFIX} Help users inspect files, run commands, and modify code.`;
+const filler = "Additional tools may be available.";
 const docsBody =
-	"Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /tmp/README.md";
+	"Pi documentation (read only when the user asks about the harness itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /tmp/README.md";
 const toolsBody = `- read: Read file contents\n\n${filler}`;
 
 function section(name: string, body: string): string {
@@ -65,7 +65,7 @@ describe("Anthropic OAuth prompt boundaries", () => {
 
 	it("preserves an extension docs section that quotes rather than starts with the docs anchor", () => {
 		const customDocs =
-			"Team runbook. Do not confuse this with: Pi documentation (read only when the user asks about pi itself).";
+			"Team runbook. Do not confuse this with: Pi documentation (read only when the user asks about the harness itself).";
 		const input = prompt(section("tools", toolsBody), section("docs", customDocs));
 
 		expect(shapeSystemPrompt(input)).toBe(
