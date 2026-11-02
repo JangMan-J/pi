@@ -1589,6 +1589,19 @@ describe("openai-completions tool_choice", () => {
 		}
 	});
 
+	it("sends thinking enabled and reasoning_effort for DeepSeek models", async () => {
+		const model = getModel("deepseek", "deepseek-flash")!;
+		expect(model.compat?.thinkingFormat).toBe("deepseek");
+
+		const params = await captureSimpleParams(model, "high");
+		expect(params.thinking).toEqual({ type: "enabled" });
+		expect(params.reasoning_effort).toBe("high");
+
+		const disabledParams = await captureSimpleParams(model, undefined);
+		expect(disabledParams.thinking).toEqual({ type: "disabled" });
+		expect(disabledParams.reasoning_effort).toBeUndefined();
+	});
+
 	it("sends max_tokens for Z.AI completions models", async () => {
 		const cases = [getModel("zai", "glm-5-turbo")!, getModel("zai", "glm-5.2")!] as const;
 
