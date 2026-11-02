@@ -43,7 +43,31 @@ function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynam
 		// The pi.dev catalog inherits models.dev names, some of which only repeat the ID. Such a name
 		// does not replace a real built-in name.
 		const keepName = base !== undefined && hasDisplayName(base) && !hasDisplayName(model);
-		merged.set(key(model), keepName ? { ...model, name: base.name } : model);
+		// pi.dev serves upstream's generic K3 settings for kimi-coding; keep the Kimi Code client wire
+		// settings from the built-in catalog when a newer pi.dev overlay arrives.
+		const keepKimiWire =
+			base !== undefined &&
+			isModelType(base, "chat") &&
+			isModelType(model, "chat") &&
+			base.provider === "kimi-coding" &&
+			base.compat !== undefined &&
+			"thinkingFormat" in base.compat &&
+			base.compat.thinkingFormat === "kimi";
+		merged.set(
+			key(model),
+			keepName || keepKimiWire
+				? {
+						...model,
+						...(keepName ? { name: base.name } : {}),
+						...(keepKimiWire
+							? {
+									compat: { ...model.compat, ...base.compat },
+									maxTokens: Math.max(base.maxTokens, model.maxTokens),
+								}
+							: {}),
+					}
+				: model,
+		);
 	}
 	return [...merged.values()];
 }
