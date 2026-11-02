@@ -80,3 +80,56 @@ it.each([
 	expect(byId.get("renamed")?.name).toBe("New Name");
 	expect(byId.get("bare")?.name).toBe("bare");
 });
+
+it("keeps kimi-coding K3 wire compat and maxTokens over a newer pi.dev overlay", async () => {
+	const builtinK3: Model<"openai-completions"> = {
+		...model("k3.1-pro-highspeed", "Kimi K3.1 Pro HighSpeed", 1_048_576),
+		provider: "kimi-coding",
+		reasoning: true,
+		maxTokens: 1_048_576,
+		compat: {
+			thinkingFormat: "kimi",
+			maxTokensField: "max_completion_tokens",
+			supportsReasoningEffort: true,
+			requiresReasoningContentOnAssistantMessages: true,
+		},
+	};
+	const remoteK3: Model<"openai-completions"> = {
+		...builtinK3,
+		maxTokens: 131_072,
+		compat: {
+			thinkingFormat: "openai",
+			maxTokensField: "max_tokens",
+			supportsReasoningEffort: true,
+			requiresReasoningContentOnAssistantMessages: true,
+		},
+	};
+	vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ "k3.1-pro-highspeed": remoteK3 }));
+	const provider = withRemoteCatalog(
+		createProvider({
+			id: "kimi-coding",
+			auth: { apiKey: { name: "Kimi", resolve: async () => ({ auth: {} }) } },
+			models: [builtinK3],
+			api: {
+				stream: () => {
+					throw new Error("not used");
+				},
+				streamSimple: () => {
+					throw new Error("not used");
+				},
+			},
+		}),
+		"https://pi.dev",
+	);
+	await refresh(provider);
+
+	const merged = provider.getModels()[0];
+	expect(merged).toMatchObject({
+		id: "k3.1-pro-highspeed",
+		maxTokens: 1_048_576,
+		compat: {
+			thinkingFormat: "kimi",
+			maxTokensField: "max_completion_tokens",
+		},
+	});
+});
