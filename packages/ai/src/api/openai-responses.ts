@@ -354,7 +354,7 @@ const isAssistantMessage = (
 	phase?: string | null;
 } => item?.type === "message" && (item as { role?: string }).role === "assistant";
 const isCallItem = (item: InputItem | undefined): boolean =>
-	item?.type === "function_call" || item?.type === "custom_tool_call" || item?.type === "tool_search_call";
+	item?.type === "function_call" || item?.type === "custom_tool_call";
 
 /** Text a reasoning-only turn is closed with, as Meta prescribes. */
 export const META_REASONING_ONLY_PLACEHOLDER = "(no reply)";
@@ -408,24 +408,25 @@ function buildParams(
 	grammarToolInputProperties: ReadonlyMap<string, string>,
 	configurationUpdateEffort: string | undefined,
 ) {
+	const isMeta = isMetaModel(model);
+	const suppressMetaTools = isMeta && options?.toolChoice === "none";
 	const transcriptTools = resolveTranscriptTools(context.messages, getResponsesToolSupport(compat));
 	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
 		supportsMidConvoSystemMessages: compat.supportsMidConvoSystemMessages,
-		supportsAdditionalTools: compat.supportsAdditionalTools,
-		supportsToolSearch: compat.supportsToolSearch,
+		supportsAdditionalTools: suppressMetaTools ? false : compat.supportsAdditionalTools,
+		supportsToolSearch: suppressMetaTools ? false : compat.supportsToolSearch,
 		toolOptions: {
 			supportsStrictMode: compat.supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		},
 		configurationUpdateEffort,
 	});
-	if (isMetaModel(model)) repairMetaConversationStructure(messages);
+	if (isMeta) repairMetaConversationStructure(messages);
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 	// Sign in with ChatGPT rejects these request fields.
 	const omitUnsupportedFields = isChatGPTSignIn(model, options?.apiKey);
-	const isMeta = isMetaModel(model);
 	const params: ResponseCreateParamsStreaming = {
 		model: model.id,
 		input: messages,
