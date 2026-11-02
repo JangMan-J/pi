@@ -1,5 +1,5 @@
 import type { Model, OpenAIResponsesCompat, ThinkingLevelMap } from "../../src/types.ts";
-import { addMissing, defineProvider, modelsDevModels } from "../define.ts";
+import { addMissing, defineProvider, mergeThinking, modelsDevModels, withInputLimits } from "../define.ts";
 
 const BASE_URL = "https://api.meta.ai/v1";
 const META_RESPONSES_COMPAT: OpenAIResponsesCompat = {
@@ -72,11 +72,11 @@ export default defineProvider({
 				compat: META_RESPONSES_COMPAT,
 				defaultContextWindow: 1007997,
 				defaultMaxTokens: 128000,
-				map: (model) => {
-					if (model.id === "muse-spark-1.3-contributor") model.thinkingLevelMap = { ...FULL_EFFORT_MAP };
-					return model;
-				},
 			}),
 			structuredClone(EXTRA_MODELS),
 		),
+	finalize: (model) => {
+		if (model.id === "muse-spark-1.3-contributor") mergeThinking(model, { max: "max" });
+		withInputLimits(model, { images: { maxPerRequest: 50 } });
+	},
 });
