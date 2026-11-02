@@ -28,8 +28,7 @@
  * Used to detect whether a system block contains Pi's original verbose
  * preamble so it can be replaced with the minimal neutral prompt.
  */
-export const PI_DEFAULT_PROMPT_PREFIX =
-	"You are an expert coding assistant operating inside pi, a coding agent harness.";
+export const PI_DEFAULT_PROMPT_PREFIX = "You are a coding assistant running inside pi, a coding agent harness.";
 
 /**
  * Prefix of the minimal neutral Anthropic OAuth system prompt.
@@ -88,7 +87,7 @@ export const PI_OWNED_SECTIONS: readonly string[] = ["tools", "rules", "docs"];
  * The paragraph containing it is dropped; the section and its tool snippets
  * are kept, because extensions contribute those (Issue #10).
  */
-export const PI_TOOLS_FILLER_ANCHOR = "In addition to the tools above";
+export const PI_TOOLS_FILLER_ANCHOR = "Additional tools may be available.";
 
 /**
  * Marks a `docs` section as Pi's own documentation block.
@@ -97,7 +96,7 @@ export const PI_TOOLS_FILLER_ANCHOR = "In addition to the tools above";
  * applies custom sections after the built-ins, so the section is dropped on
  * this anchor rather than on its name alone.
  */
-export const PI_DOCS_SECTION_ANCHOR = "Pi documentation (read only when the user asks about pi itself";
+export const PI_DOCS_SECTION_ANCHOR = "Pi documentation (read only when the user asks about the harness itself";
 
 /**
  * Inline text replacements applied to Pi-generated sections.
