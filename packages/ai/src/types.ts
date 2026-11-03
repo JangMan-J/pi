@@ -601,8 +601,8 @@ export interface AssistantMessage {
 	errorMessage?: string;
 	rawStopReason?: string;
 	/**
-	 * Provider indication of whether the model explicitly ended its turn.
-	 * Preserved for debugging and does not currently affect agent control flow.
+	 * Provider indication of whether the model explicitly ended its turn. When it is `false` on a
+	 * message with no tool calls, the agent loop samples again without new input (bounded).
 	 */
 	endTurn?: boolean;
 	/** Unix timestamp in milliseconds when the request started. */
