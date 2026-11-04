@@ -1065,7 +1065,12 @@ export class ModelRuntime implements Models {
 		const routed = `${name} routed to ${route.model.provider}/${route.model.id}`;
 		if (!target) throw new Error(`${routed}, which is not a physical model.`);
 		if (!this.hasConfiguredAuth(target.provider)) throw new Error(`${routed}, which has no credentials.`);
-		return { model: target, thinkingLevel: clampThinkingLevel(target, route.thinkingLevel), state: route.state };
+		return {
+			model: target,
+			thinkingLevel: clampThinkingLevel(target, route.thinkingLevel),
+			state: route.state,
+			suppressTextDisplay: route.suppressTextDisplay,
+		};
 	}
 
 	/** A catalog chat model that is not virtual. */
