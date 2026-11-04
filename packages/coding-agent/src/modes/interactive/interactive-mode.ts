@@ -97,6 +97,8 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
+import type { McpHttpServerConfig } from "../../core/mcp-servers.ts";
+import { presentMessage } from "../../core/message-presentation.ts";
 import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
 import { addModelsJsonProvider } from "../../core/model-config.ts";
 import {
@@ -211,6 +213,15 @@ import { InteractiveThemeController } from "./theme/theme-controller.ts";
 import { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
 
 export { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
+
+function hasAssistantDisplayContent(message: AssistantMessage): boolean {
+	return (
+		message.content.some((block) => block.type === "text" || block.type === "thinking") ||
+		message.stopReason === "error" ||
+		message.stopReason === "aborted" ||
+		message.stopReason === "length"
+	);
+}
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -3550,6 +3561,23 @@ export class InteractiveMode {
 		});
 	}
 
+	private updateStreamingAssistant(message: AssistantMessage, isStreaming: boolean): void {
+		message = presentMessage(message);
+		if (!hasAssistantDisplayContent(message)) return;
+		if (!this.streamingComponent) {
+			this.streamingComponent = new AssistantMessageComponent(
+				undefined,
+				this.hideThinkingBlock,
+				this.getMarkdownThemeWithSettings(),
+				this.hiddenThinkingLabel,
+				this.outputPad,
+				this.getMarkdownTransformers(),
+			);
+			this.chatContainer.addChild(this.streamingComponent);
+		}
+		this.streamingComponent.updateContent(message, isStreaming);
+	}
+
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
 		if (!this.isInitialized) {
 			await this.init();
@@ -3653,25 +3681,16 @@ export class InteractiveMode {
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
-					this.streamingComponent = new AssistantMessageComponent(
-						undefined,
-						this.hideThinkingBlock,
-						this.getMarkdownThemeWithSettings(),
-						this.hiddenThinkingLabel,
-						this.outputPad,
-						this.getMarkdownTransformers(),
-					);
 					this.streamingMessage = event.message;
-					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage, true);
+					this.updateStreamingAssistant(this.streamingMessage, true);
 					this.ui.requestRender();
 				}
 				break;
 
 			case "message_update":
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if (event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					this.streamingComponent.updateContent(this.streamingMessage, true);
+					this.updateStreamingAssistant(this.streamingMessage, true);
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
@@ -3706,7 +3725,7 @@ export class InteractiveMode {
 
 			case "message_end":
 				if (event.message.role === "user") break;
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if (event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
@@ -3717,7 +3736,7 @@ export class InteractiveMode {
 								: "Operation aborted";
 						this.streamingMessage.errorMessage = errorMessage;
 					}
-					this.streamingComponent.updateContent(this.streamingMessage, false);
+					this.updateStreamingAssistant(this.streamingMessage, false);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 						if (!errorMessage) {
@@ -3805,8 +3824,8 @@ export class InteractiveMode {
 				if (this.streamingComponent) {
 					this.chatContainer.removeChild(this.streamingComponent);
 					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
 				}
+				this.streamingMessage = undefined;
 				this.pendingTools.clear();
 
 				this.ui.requestRender();
@@ -4148,6 +4167,8 @@ export class InteractiveMode {
 				break;
 			}
 			case "assistant": {
+				message = presentMessage(message);
+				if (!hasAssistantDisplayContent(message)) break;
 				const assistantComponent = new AssistantMessageComponent(
 					message,
 					this.hideThinkingBlock,
