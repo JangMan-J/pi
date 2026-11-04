@@ -1,5 +1,10 @@
 import OpenAI from "openai";
-import type { ResponseCreateParamsStreaming, ResponseInput } from "openai/resources/responses/responses.js";
+import type {
+	ResponseCreateParamsStreaming,
+	ResponseInput,
+	ResponseOutputItem,
+	ResponseStreamEvent,
+} from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
@@ -57,6 +62,41 @@ function isChatGPTSignIn(model: Model<"openai-responses">, apiKey: string | unde
 
 function isMetaModel(model: Pick<Model<"openai-responses">, "provider" | "baseUrl">): boolean {
 	return model.provider === "meta" || model.baseUrl.includes("api.meta.ai");
+}
+
+function getHeaderValue(headers: ProviderHeaders | undefined, name: string): string | null | undefined {
+	if (!headers) return undefined;
+	const expected = name.toLowerCase();
+	for (const [key, value] of Object.entries(headers)) {
+		if (key.toLowerCase() === expected) return value;
+	}
+	return undefined;
+}
+
+function setHeaderCaseInsensitive(headers: ProviderHeaders, name: string, value: string | null): void {
+	const expected = name.toLowerCase();
+	for (const existing of Object.keys(headers)) {
+		if (existing.toLowerCase() === expected && existing !== name) {
+			delete headers[existing];
+		}
+	}
+	headers[name] = value;
+}
+
+function deleteHeaderCaseInsensitive(headers: ProviderHeaders, name: string): void {
+	const expected = name.toLowerCase();
+	for (const existing of Object.keys(headers)) {
+		if (existing.toLowerCase() === expected) {
+			delete headers[existing];
+		}
+	}
+}
+
+function isMetaOAuthHeaders(headers: ProviderHeaders | undefined): boolean {
+	const ua = getHeaderValue(headers, "user-agent");
+	if (typeof ua === "string" && ua.startsWith("muse-build/")) return true;
+	const role = getHeaderValue(headers, "x-tbh-agent-role");
+	return typeof role === "string" && role.trim().length > 0;
 }
 
 function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
@@ -214,9 +254,15 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				grammarToolInputProperties,
 				configurationUpdateEffort,
 			);
+			const metaToolNames = isMetaModel(model) ? shapeMetaWireTools(params) : undefined;
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
+				if (metaToolNames) {
+					for (const [wire, original] of shapeMetaWireTools(params)) {
+						metaToolNames.set(wire, original);
+					}
+				}
 			}
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
@@ -234,7 +280,11 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
-			await processResponsesStream(openaiStream, output, stream, model, {
+			const responseStream =
+				metaToolNames && metaToolNames.size > 0
+					? restoreMetaStreamToolNames(openaiStream, metaToolNames)
+					: openaiStream;
+			await processResponsesStream(responseStream, output, stream, model, {
 				onProviderStreamEvent: options?.onProviderStreamEvent,
 				serviceTier: options?.serviceTier,
 				grammarToolInputProperties,
@@ -307,7 +357,14 @@ function createClient(
 	sessionId?: string,
 ) {
 	const compat = getCompat(model);
-	const headers: ProviderHeaders = { ...getIdentityHeaders(model, identity), ...model.headers };
+	const isMeta = isMetaModel(model);
+	const isMetaOAuth = isMeta && (isMetaOAuthHeaders(optionsHeaders) || isMetaOAuthHeaders(model.headers));
+	const headers: ProviderHeaders = { ...getIdentityHeaders(model, identity) };
+	if (model.headers) {
+		for (const [key, value] of Object.entries(model.headers)) {
+			setHeaderCaseInsensitive(headers, key, value);
+		}
+	}
 	if (model.provider === "github-copilot") {
 		const hasImages = hasCopilotVisionInput(context.messages);
 		const copilotHeaders = buildCopilotDynamicHeaders({
@@ -315,13 +372,22 @@ function createClient(
 			hasImages,
 		});
 		Object.assign(headers, copilotHeaders);
-	} else if (isMetaModel(model)) {
-		headers["x-api-version"] ??= "1.0.0";
-		headers["x-client-id"] ??= "tbh:tui";
+	} else if (isMetaOAuth) {
+		deleteHeaderCaseInsensitive(headers, "x-api-version");
+		setHeaderCaseInsensitive(headers, "x-client-id", "tbh:exec");
+		setHeaderCaseInsensitive(headers, "x-tbh-agent-role", "main");
+	} else if (isMeta) {
+		if (!hasHeader(headers, "x-api-version")) headers["x-api-version"] = "1.0.0";
+		if (!hasHeader(headers, "x-client-id")) headers["x-client-id"] = "tbh:tui";
 	}
 
 	if (sessionId) {
-		if (isMetaModel(model)) {
+		if (isMetaOAuth) {
+			setHeaderCaseInsensitive(headers, "x-meta-ai-gateway-session-id", sessionId);
+			setHeaderCaseInsensitive(headers, "x-tbh-session-id", sessionId);
+			setHeaderCaseInsensitive(headers, "x-tbh-root-session-id", sessionId);
+			setHeaderCaseInsensitive(headers, "x-tbh-thread-id", sessionId);
+		} else if (isMeta) {
 			headers["x-meta-ai-gateway-session-id"] = sessionId;
 		} else if (compat.sessionAffinityFormat === "openrouter") {
 			headers["x-session-id"] = sessionId;
@@ -335,7 +401,9 @@ function createClient(
 
 	// Merge options headers last so they can override defaults
 	if (optionsHeaders) {
-		Object.assign(headers, optionsHeaders);
+		for (const [key, value] of Object.entries(optionsHeaders)) {
+			setHeaderCaseInsensitive(headers, key, value);
+		}
 	}
 
 	return new OpenAI({
@@ -359,6 +427,156 @@ const isCallItem = (item: InputItem | undefined): boolean =>
 
 /** Text a reasoning-only turn is closed with, as Meta prescribes. */
 export const META_REASONING_ONLY_PLACEHOLDER = "(no reply)";
+
+/**
+ * Tool names that trigger HTTP 403 `client_attestation_denied` on Meta's `/v1/responses`
+ * endpoint when their schema differs from Muse Code's built-in tool definitions (such as `bash`
+ * or `web_search`) or when they match non-Muse coding-agent signature tools (`TodoWrite`,
+ * `shell`, `apply_patch`, `update_plan`, `request_user_input`).
+ *
+ * Live probe 2026-11-04 against muse-spark-1.3 and muse-wonder-1.0: declaring any of these
+ * names with a non-Muse schema returns 403 `client_attestation_denied`, while case-shifted wire
+ * names (e.g. `Bash`, `Web_search`, `todo_write`) return 200 and round-trip tool calls.
+ */
+export const META_ATTESTATION_BLOCKED_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"add_memory",
+	"apply_patch",
+	"bash",
+	"bash_input",
+	"code_exec",
+	"code_wait",
+	"edit_file",
+	"edit_memory",
+	"image_generation",
+	"monitor",
+	"read_file",
+	"read_memory",
+	"read_skill",
+	"request_user_input",
+	"search",
+	"shell",
+	"snooze_reminder",
+	"submit_reminder_decision",
+	"TodoWrite",
+	"update_plan",
+	"web_fetch",
+	"web_search",
+	"work_list",
+	"work_status",
+	"work_stop",
+	"workflow",
+	"write_file",
+	"write_todos",
+]);
+
+/**
+ * Rewrites attestation-blocked tool names in `params.tools` and `params.input` to collision-free
+ * wire names and returns a `wireName -> originalName` map for stream restoration.
+ */
+export function shapeMetaWireTools(params: ResponseCreateParamsStreaming): Map<string, string> {
+	const declaredNames = new Set<string>();
+	for (const tool of params.tools ?? []) {
+		if ((tool.type === "function" || tool.type === "custom") && typeof tool.name === "string") {
+			declaredNames.add(tool.name);
+		}
+	}
+	if (Array.isArray(params.input)) {
+		for (const item of params.input) {
+			if ((item?.type === "function_call" || item?.type === "custom_tool_call") && typeof item.name === "string") {
+				declaredNames.add(item.name);
+			} else if (item?.type === "additional_tools" || item?.type === "tool_search_output") {
+				for (const tool of item.tools) {
+					if ((tool.type === "function" || tool.type === "custom") && typeof tool.name === "string") {
+						declaredNames.add(tool.name);
+					}
+				}
+			}
+		}
+	}
+
+	const reserved = new Set<string>(declaredNames);
+	const originalToWire = new Map<string, string>();
+	const wireToOriginal = new Map<string, string>();
+	for (const name of declaredNames) {
+		if (!META_ATTESTATION_BLOCKED_TOOL_NAMES.has(name)) continue;
+		const baseCandidate = name === "TodoWrite" ? "todo_write" : `${name[0]!.toUpperCase()}${name.slice(1)}`;
+		let candidate = baseCandidate;
+		let suffix = 2;
+		while (reserved.has(candidate) || META_ATTESTATION_BLOCKED_TOOL_NAMES.has(candidate)) {
+			candidate = `${baseCandidate}_${suffix++}`;
+		}
+		reserved.add(candidate);
+		originalToWire.set(name, candidate);
+		wireToOriginal.set(candidate, name);
+	}
+
+	if (originalToWire.size === 0) return wireToOriginal;
+
+	for (const tool of params.tools ?? []) {
+		if (tool.type === "function" || tool.type === "custom") {
+			const mapped = originalToWire.get(tool.name);
+			if (mapped !== undefined) tool.name = mapped;
+		}
+	}
+	if (Array.isArray(params.input)) {
+		for (const item of params.input) {
+			if (item?.type === "function_call" || item?.type === "custom_tool_call") {
+				const mapped = originalToWire.get(item.name);
+				if (mapped !== undefined) item.name = mapped;
+			} else if (item?.type === "additional_tools" || item?.type === "tool_search_output") {
+				for (const tool of item.tools) {
+					if (tool.type === "function" || tool.type === "custom") {
+						const mapped = originalToWire.get(tool.name);
+						if (mapped !== undefined) tool.name = mapped;
+					}
+				}
+			} else if (
+				item?.type === "tool_search_call" &&
+				item.arguments &&
+				typeof item.arguments === "object" &&
+				"query" in item.arguments &&
+				typeof item.arguments.query === "string"
+			) {
+				item.arguments.query = item.arguments.query
+					.split(" ")
+					.map((token) => originalToWire.get(token) ?? token)
+					.join(" ");
+			}
+		}
+	}
+
+	return wireToOriginal;
+}
+
+async function* restoreMetaStreamToolNames(
+	source: AsyncIterable<ResponseStreamEvent>,
+	wireToOriginal: ReadonlyMap<string, string>,
+): AsyncIterable<ResponseStreamEvent> {
+	const restoreName = (name: string): string => {
+		const direct = wireToOriginal.get(name);
+		if (direct !== undefined) return direct;
+		const lower = name.toLowerCase();
+		for (const [wire, original] of wireToOriginal) {
+			if (wire.toLowerCase() === lower) return original;
+		}
+		return name;
+	};
+	const restoreItem = (item: ResponseOutputItem): void => {
+		if (item.type === "function_call" || item.type === "custom_tool_call") {
+			item.name = restoreName(item.name);
+		}
+	};
+	for await (const event of source) {
+		if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
+			restoreItem(event.item);
+		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
+			for (const item of event.response?.output ?? []) {
+				restoreItem(item);
+			}
+		}
+		yield event;
+	}
+}
 
 /**
  * Keeps replayed history in the shape Meta's Responses protocol documents
