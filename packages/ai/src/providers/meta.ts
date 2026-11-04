@@ -2,7 +2,7 @@ import { openAIResponsesApi } from "../api/openai-responses.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadMetaOAuth } from "../auth/oauth/load.ts";
 import { createProvider, isModelType, type Provider } from "../models.ts";
-import type { Model, ModelCost, OpenAIResponsesCompat, ThinkingLevelMap } from "../types.ts";
+import type { Model, ModelCost, OpenAIResponsesCompat, ProviderEnv, ThinkingLevelMap } from "../types.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { META_MODELS } from "./meta.models.ts";
 
@@ -10,10 +10,31 @@ const DEFAULT_META_BASE_URL = "https://api.meta.ai/v1";
 const DEFAULT_META_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
 export const META_CONTEXT_WINDOW = 1_007_997;
 export const META_MAX_TOKENS = 128_000;
+export const META_MUSE_VERSION = "1.4.14";
+export const META_MUSE_BUILD_SHA = "dec7d7497fecdad135ec5835a8161dbc92e55b58";
+
+function detectMusePlatform(): string {
+	if (typeof process === "undefined") return "linux-x86_64";
+	const os = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
+	const arch = process.arch === "arm64" ? "aarch64" : process.arch === "x64" ? "x86_64" : process.arch || "x86_64";
+	return `${os}-${arch}`;
+}
+
+export function formatMetaMuseUserAgent(env?: ProviderEnv): string {
+	const version = getProviderEnvValue("PI_META_MUSE_VERSION", env)?.trim() || META_MUSE_VERSION;
+	const build = getProviderEnvValue("PI_META_MUSE_BUILD_SHA", env)?.trim() || META_MUSE_BUILD_SHA;
+	return `muse-build/${version} (non-interactive; ${detectMusePlatform()}; build ${build})`;
+}
 
 export const META_DEFAULT_HEADERS: Readonly<Record<string, string>> = {
 	"x-api-version": "1.0.0",
 	"x-client-id": "tbh:tui",
+};
+
+export const META_OAUTH_HEADERS: Readonly<Record<string, string>> = {
+	"user-agent": formatMetaMuseUserAgent(),
+	"x-client-id": "tbh:exec",
+	"x-tbh-agent-role": "main",
 };
 
 export const META_RESPONSES_COMPAT: OpenAIResponsesCompat = {
@@ -237,7 +258,22 @@ export function metaProvider(): Provider<"openai-responses"> {
 				name: "Meta (Muse subscription)",
 				isSubscription: true,
 				loginLabel: "Sign in with Meta",
-				load: loadMetaOAuth,
+				load: async () => {
+					const oauth = await loadMetaOAuth();
+					return {
+						...oauth,
+						toAuth: async (credential) => {
+							const auth = await oauth.toAuth(credential);
+							return {
+								...auth,
+								headers: {
+									...META_OAUTH_HEADERS,
+									...auth.headers,
+								},
+							};
+						},
+					};
+				},
 			}),
 		},
 		models: baseline,
@@ -285,6 +321,7 @@ export function metaProvider(): Provider<"openai-responses"> {
 			if (!context.force && checkedAt > 0 && now >= checkedAt && now - checkedAt < refreshInterval) return;
 
 			const baseUrl = context.baseUrl ?? DEFAULT_META_BASE_URL;
+			const authHeaders = context.credential.type === "oauth" ? META_OAUTH_HEADERS : META_DEFAULT_HEADERS;
 			let response: Response;
 			try {
 				response = await fetch(resolveCatalogUrl(baseUrl), {
@@ -292,7 +329,7 @@ export function metaProvider(): Provider<"openai-responses"> {
 					headers: {
 						Accept: "application/json",
 						Authorization: `Bearer ${apiKey}`,
-						...META_DEFAULT_HEADERS,
+						...authHeaders,
 					},
 					signal: AbortSignal.any([AbortSignal.timeout(15_000), context.signal]),
 				});
