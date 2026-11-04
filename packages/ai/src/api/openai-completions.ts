@@ -814,8 +814,7 @@ function buildParams(
 	const supportsPromptCacheKey =
 		promptCacheKeyMode === "enabled" ||
 		(promptCacheKeyMode === "auto" &&
-			(sendsPromptCacheKey(model, compat) ||
-				(cacheRetention === "long" && compat.supportsLongCacheRetention)));
+			(sendsPromptCacheKey(model, compat) || (cacheRetention === "long" && compat.supportsLongCacheRetention)));
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 		model: model.id,
