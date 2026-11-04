@@ -272,6 +272,9 @@ describe("AgentSession codemode tool", () => {
 		expect(description("result")).toBe(
 			"result tool\n\nCodemode: `tools.result(args)` resolves to `{ value } | { error }`.",
 		);
+	});
+
+	// #10343
 	it("switches presentation for the session with /codemode", async () => {
 		const harness = await setup();
 		const notifications: string[] = [];
