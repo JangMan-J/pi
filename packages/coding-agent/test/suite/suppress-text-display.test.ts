@@ -56,7 +56,7 @@ async function routed(options: HarnessOptions = {}, hiddenTurns = 1): Promise<Ha
 }
 
 describe("routed text presentation", () => {
-	it("hides scout prose and deltas, retaining thinking, tools, canonical identity and persisted IDs", async () => {
+	it("hides scout prose, thinking and deltas, retaining tools, canonical identity and persisted IDs", async () => {
 		const scoutBrief = "<scout_brief>Internal findings</scout_brief>";
 		let canonical: AssistantMessage | undefined;
 		let entryId: string | undefined;
@@ -78,8 +78,8 @@ describe("routed text presentation", () => {
 			fauxAssistantMessage(
 				[
 					{ type: "text", text: scoutBrief },
-					{ type: "thinking", thinking: "visible thought" },
-					fauxToolCall("echo", {}),
+					{ type: "thinking", thinking: "hidden thought", thinkingSignature: "canonical-signature" },
+					{ ...fauxToolCall("echo", {}), thoughtSignature: "canonical-tool-signature" },
 				],
 				{ stopReason: "toolUse" },
 			),
@@ -88,23 +88,41 @@ describe("routed text presentation", () => {
 		await harness.session.prompt("go");
 		expect(entryId).toBeTruthy();
 		expect(JSON.stringify(harness.events.map(toJsonEvent))).not.toContain(scoutBrief);
-		expect(JSON.stringify(harness.events)).toContain("visible thought");
+		expect(JSON.stringify(harness.events)).not.toContain("hidden thought");
+		expect(canonical?.content).toContainEqual({
+			type: "thinking",
+			thinking: "hidden thought",
+			thinkingSignature: "canonical-signature",
+		});
+		const stored = harness.sessionManager.getEntry(entryId!);
+		if (stored?.type !== "message") throw new Error("Missing canonical entry");
+		expect(stored.message).toBe(canonical);
+		expect(JSON.stringify(stored.message)).toContain("canonical-signature");
+		expect(JSON.stringify(stored.message)).toContain("canonical-tool-signature");
+		expect(JSON.stringify(harness.sessionManager.buildSessionContext().messages)).toContain("hidden thought");
 		expect(harness.eventsOfType("tool_execution_end")).toHaveLength(1);
 		const toolStart = harness
 			.eventsOfType("message_update")
 			.find((event) => event.assistantMessageEvent.type === "toolcall_start");
 		expect(toolStart && toJsonEvent(toolStart).assistantMessageEvent).toMatchObject({
 			type: "toolcall_start",
-			contentIndex: 1,
+			contentIndex: 0,
 			toolName: "echo",
 		});
 		const scoutEnd = harness.eventsOfType("message_end").find((event) => event.message.role === "assistant")!;
-		expect(scoutEnd.message).toMatchObject({ content: [{ type: "thinking" }, { type: "toolCall" }] });
+		expect(scoutEnd.message).toMatchObject({ content: [{ type: "toolCall" }] });
 		expect(scoutEnd.message).not.toBe(canonical);
+		for (const event of harness.eventsOfType("message_update")) {
+			const update = event.assistantMessageEvent;
+			if (update.type === "toolcall_start" || update.type === "toolcall_delta" || update.type === "toolcall_end") {
+				expect(update.contentIndex).toBe(0);
+				expect(update.partial.content).toHaveLength(1);
+			}
+		}
 		const scoutEvents = harness.events.slice(0, harness.events.indexOf(scoutEnd));
 		expect(
 			scoutEvents.filter(
-				(event) => event.type === "message_update" && event.assistantMessageEvent.type.startsWith("text_"),
+				(event) => event.type === "message_update" && /^(text|thinking)_/.test(event.assistantMessageEvent.type),
 			),
 		).toEqual([]);
 		const architectEvents = harness.events.slice(harness.events.indexOf(scoutEnd) + 1);
@@ -157,12 +175,23 @@ describe("routed text presentation", () => {
 		"restores full content and diagnostics on terminal %s events",
 		async (stopReason) => {
 			const harness = await routed({ settings: { retry: { enabled: false } } });
-			harness.setResponses([fauxAssistantMessage(secret, { stopReason, errorMessage: "diagnostic" })]);
+			harness.setResponses([
+				fauxAssistantMessage(
+					[
+						{ type: "thinking", thinking: "failed thought", thinkingSignature: "failed-signature" },
+						{ type: "text", text: secret },
+					],
+					{ stopReason, errorMessage: "diagnostic" },
+				),
+			]);
 			await harness.session.prompt("go");
 			const message = harness.session.messages.at(-1);
 			if (message?.role !== "assistant") throw new Error("Expected assistant");
 			expect(presentMessage(message)).toBe(message);
-			expect(message.content).toEqual([{ type: "text", text: secret }]);
+			expect(message.content).toEqual([
+				{ type: "thinking", thinking: "failed thought", thinkingSignature: "failed-signature" },
+				{ type: "text", text: secret },
+			]);
 			const terminalMessages = [
 				harness.eventsOfType("message_end").at(-1)?.message,
 				harness.eventsOfType("turn_end").at(-1)?.message,

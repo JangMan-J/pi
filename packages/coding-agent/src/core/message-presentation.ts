@@ -19,7 +19,10 @@ export function presentMessage<T extends AgentMessage>(message: T): T {
 		!(message as PresentedAssistantMessage).suppressTextDisplay
 	)
 		return message;
-	return { ...message, content: message.content.filter((block) => block.type !== "text") };
+	return {
+		...message,
+		content: message.content.filter((block) => block.type !== "text" && block.type !== "thinking"),
+	};
 }
 
 /** Remove hidden prose from every assistant snapshot and delta on the session event surface. */
@@ -29,11 +32,21 @@ export function presentSessionEvent(event: AgentSessionEvent): AgentSessionEvent
 		const message = presentMessage(event.message);
 		if (message === event.message) return event;
 		const update = event.assistantMessageEvent;
-		if (update.type === "text_start" || update.type === "text_delta" || update.type === "text_end") return undefined;
+		if (
+			update.type === "text_start" ||
+			update.type === "text_delta" ||
+			update.type === "text_end" ||
+			update.type === "thinking_start" ||
+			update.type === "thinking_delta" ||
+			update.type === "thinking_end"
+		)
+			return undefined;
 		if ("partial" in update) {
 			const contentIndex =
 				"contentIndex" in update
-					? update.partial.content.slice(0, update.contentIndex).filter((block) => block.type !== "text").length
+					? update.partial.content
+							.slice(0, update.contentIndex)
+							.filter((block) => block.type !== "text" && block.type !== "thinking").length
 					: undefined;
 			return {
 				...event,
