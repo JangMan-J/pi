@@ -3,17 +3,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildCatalog } from "../catalog/build.ts";
 import metaCatalog from "../catalog/providers/meta.ts";
 import {
+	META_ATTESTATION_BLOCKED_TOOL_NAMES,
 	META_REASONING_ONLY_PLACEHOLDER,
 	repairMetaConversationStructure,
+	shapeMetaWireTools,
 	stream as streamOpenAIResponses,
 } from "../src/api/openai-responses.ts";
+import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import { metaOAuth } from "../src/auth/oauth/meta.ts";
 import type { ProviderAuthInteraction } from "../src/auth/types.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
-import { getSupportedThinkingLevels } from "../src/models.ts";
+import { createModels, getSupportedThinkingLevels } from "../src/models.ts";
 import { META_MODELS } from "../src/providers/meta.models.ts";
-import { buildMetaModels, metaProvider } from "../src/providers/meta.ts";
-import type { AssistantMessage, Model } from "../src/types.ts";
+import {
+	buildMetaModels,
+	formatMetaMuseUserAgent,
+	META_MUSE_BUILD_SHA,
+	META_MUSE_VERSION,
+	META_OAUTH_HEADERS,
+	metaProvider,
+} from "../src/providers/meta.ts";
+import type { AssistantMessage, AssistantMessageEvent, Model } from "../src/types.ts";
 
 const CLIENT_ID = "1031625952748946";
 const DEVICE_AUTHORIZATION_URL = "https://auth.meta.com/oidc/device/authorization/";
@@ -267,9 +277,9 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 				expect(getUrl(input)).toBe(MODELS_URL);
 				expect(init?.headers).toMatchObject({
 					Authorization: "Bearer LLM|minted-key",
-					"x-api-version": "1.0.0",
-					"x-client-id": "tbh:tui",
+					...META_OAUTH_HEADERS,
 				});
+				expect(init?.headers).not.toHaveProperty("x-api-version");
 				return jsonResponse({
 					object: "list",
 					data: [
@@ -863,5 +873,236 @@ describe("Meta catalog names", () => {
 	it("uses a real display name from the catalog", async () => {
 		const models = await refreshWith([{ id: "muse-wonder-1.0", name: "Muse Wonder 1.0 (Preview)" }]);
 		expect(models.find((model) => model.id === "muse-wonder-1.0")?.name).toBe("Muse Wonder 1.0 (Preview)");
+	});
+});
+
+describe("Meta OAuth subscription vs META_API_KEY wire compatibility", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+
+	it("sends Muse Code headers without x-api-version on OAuth credentials and standard Meta headers on META_API_KEY", async () => {
+		const oauthCredentials = new InMemoryCredentialStore();
+		await oauthCredentials.modify("meta", async () => ({
+			type: "oauth",
+			refresh: "dca:identity",
+			access: "LLM|oauth-minted-key",
+			expires: Date.now() + 60 * 60 * 1000,
+		}));
+		const oauthModels = createModels({ credentials: oauthCredentials });
+		oauthModels.setProvider(metaProvider());
+
+		let oauthHeaders: Headers | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			oauthHeaders = new Headers(init?.headers);
+			return new Response(
+				'data: {"type":"response.completed","response":{"id":"done","status":"completed","output":[]}}\n\n',
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		});
+
+		const spark = oauthModels.getModel("meta", "muse-spark-1.3")!;
+		await oauthModels.complete(
+			spark,
+			{ messages: [{ role: "user", content: "Reply with OK.", timestamp: 1 }] },
+			{ sessionId: "01a1a42e-08b5-70c0-a699-93f3a2177dda" },
+		);
+
+		expect(oauthHeaders?.get("user-agent")).toBe(formatMetaMuseUserAgent());
+		expect(oauthHeaders?.get("user-agent")).toContain(`muse-build/${META_MUSE_VERSION}`);
+		expect(oauthHeaders?.get("user-agent")).toContain(`build ${META_MUSE_BUILD_SHA}`);
+		expect(oauthHeaders?.get("x-client-id")).toBe("tbh:exec");
+		expect(oauthHeaders?.get("x-tbh-agent-role")).toBe("main");
+		expect(oauthHeaders?.get("x-meta-ai-gateway-session-id")).toBe("01a1a42e-08b5-70c0-a699-93f3a2177dda");
+		expect(oauthHeaders?.get("x-tbh-session-id")).toBe("01a1a42e-08b5-70c0-a699-93f3a2177dda");
+		expect(oauthHeaders?.get("x-tbh-root-session-id")).toBe("01a1a42e-08b5-70c0-a699-93f3a2177dda");
+		expect(oauthHeaders?.get("x-tbh-thread-id")).toBe("01a1a42e-08b5-70c0-a699-93f3a2177dda");
+		expect(oauthHeaders?.get("x-api-version")).toBeNull();
+
+		const apiKeyCredentials = new InMemoryCredentialStore();
+		const apiKeyModels = createModels({
+			credentials: apiKeyCredentials,
+			authContext: {
+				env: async (name) => (name === "META_API_KEY" ? "LLM|payg-key" : undefined),
+				fileExists: async () => false,
+			},
+		});
+		apiKeyModels.setProvider(metaProvider());
+
+		let apiKeyHeaders: Headers | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			apiKeyHeaders = new Headers(init?.headers);
+			return new Response(
+				'data: {"type":"response.completed","response":{"id":"done","status":"completed","output":[]}}\n\n',
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		});
+
+		await apiKeyModels.complete(
+			spark,
+			{ messages: [{ role: "user", content: "Reply with OK.", timestamp: 1 }] },
+			{ sessionId: "sess-payg-1" },
+		);
+
+		expect(apiKeyHeaders?.get("user-agent")).toMatch(/^pi\//);
+		expect(apiKeyHeaders?.get("x-api-version")).toBe("1.0.0");
+		expect(apiKeyHeaders?.get("x-client-id")).toBe("tbh:tui");
+		expect(apiKeyHeaders?.get("x-meta-ai-gateway-session-id")).toBe("sess-payg-1");
+		expect(apiKeyHeaders?.get("x-tbh-session-id")).toBeNull();
+		expect(apiKeyHeaders?.get("x-tbh-agent-role")).toBeNull();
+	});
+
+	it("rewrites attestation-blocked tool names on the wire and restores original names in streamed tool calls", async () => {
+		const model = metaProvider().getModels()[0];
+		let capturedPayload:
+			| {
+					tools?: Array<{ type: string; name?: string }>;
+					input?: Array<Record<string, unknown>>;
+			  }
+			| undefined;
+
+		const sseBody = [
+			'data: {"type":"response.created","response":{"id":"resp_1"}}\n\n',
+			'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_01","call_id":"call_01","name":"Bash","arguments":""}}\n\n',
+			'data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_01","delta":"{\\"command\\":\\"echo ok\\"}"}\n\n',
+			'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_01","call_id":"call_01","name":"Bash","arguments":"{\\"command\\":\\"echo ok\\"}","status":"completed"}}\n\n',
+			'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"function_call","id":"fc_01","call_id":"call_01","name":"Bash","arguments":"{\\"command\\":\\"echo ok\\"}","status":"completed"}]}}\n\n',
+		].join("");
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(sseBody, { status: 200, headers: { "content-type": "text/event-stream" } }),
+		);
+
+		const priorAssistant: AssistantMessage = {
+			role: "assistant",
+			api: "openai-responses",
+			provider: "meta",
+			model: model.id,
+			content: [
+				{
+					type: "toolCall",
+					id: "call_prev|fc_prev",
+					name: "bash",
+					arguments: { command: "pwd" },
+				},
+			],
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 2,
+		};
+
+		const events: AssistantMessageEvent[] = [];
+		const stream = streamOpenAIResponses(
+			model,
+			normalizeContext({
+				messages: [
+					{ role: "user", content: "Run pwd", timestamp: 1 },
+					priorAssistant,
+					{
+						role: "toolResult",
+						toolCallId: "call_prev|fc_prev",
+						toolName: "bash",
+						content: [{ type: "text", text: "/tmp\n" }],
+						isError: false,
+						timestamp: 3,
+					},
+					{
+						role: "system",
+						content: "Loaded search tool.",
+						toolsAdded: [
+							{
+								name: "web_search",
+								description: "Search web",
+								parameters: Type.Object({ q: Type.String() }),
+							},
+						],
+						timestamp: 4,
+					},
+					{ role: "user", content: "Now echo ok", timestamp: 5 },
+				],
+				tools: [
+					{ name: "read", description: "Read file", parameters: Type.Object({ path: Type.String() }) },
+					{ name: "bash", description: "Run bash", parameters: Type.Object({ command: Type.String() }) },
+					{ name: "edit", description: "Edit file", parameters: Type.Object({ path: Type.String() }) },
+					{ name: "write", description: "Write file", parameters: Type.Object({ path: Type.String() }) },
+					{ name: "TodoWrite", description: "Todos", parameters: Type.Object({}) },
+				],
+			}),
+			{
+				apiKey: "LLM|test",
+				headers: { ...META_OAUTH_HEADERS },
+				onPayload: (payload) => {
+					capturedPayload = payload as typeof capturedPayload;
+				},
+			},
+		);
+
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const wireToolNames = (capturedPayload?.tools ?? [])
+			.filter((tool) => tool.type === "function")
+			.map((tool) => tool.name);
+		expect(wireToolNames).toEqual(["read", "Bash", "edit", "write", "todo_write"]);
+		for (const wireName of wireToolNames) {
+			expect(META_ATTESTATION_BLOCKED_TOOL_NAMES.has(wireName!)).toBe(false);
+		}
+
+		const replayedCall = capturedPayload?.input?.find((item) => item.type === "function_call");
+		expect(replayedCall).toMatchObject({ type: "function_call", name: "Bash" });
+
+		const toolSearchCall = capturedPayload?.input?.find((item) => item.type === "tool_search_call");
+		expect(toolSearchCall).toMatchObject({
+			type: "tool_search_call",
+			arguments: { query: "Web_search", limit: 1 },
+		});
+		const toolSearchOutput = capturedPayload?.input?.find((item) => item.type === "tool_search_output") as
+			| { tools: Array<{ name?: string }> }
+			| undefined;
+		expect(toolSearchOutput?.tools.map((t) => t.name)).toEqual(["Web_search"]);
+
+		const startEvent = events.find((e) => e.type === "toolcall_start");
+		const endEvent = events.find((e) => e.type === "toolcall_end");
+		const doneEvent = events.find((e) => e.type === "done");
+		expect(startEvent && "partial" in startEvent ? startEvent.partial.content[0] : undefined).toMatchObject({
+			type: "toolCall",
+			name: "bash",
+		});
+		expect(endEvent && "toolCall" in endEvent ? endEvent.toolCall : undefined).toMatchObject({
+			type: "toolCall",
+			name: "bash",
+			arguments: { command: "echo ok" },
+		});
+		expect(doneEvent && "message" in doneEvent ? doneEvent.message.content[0] : undefined).toMatchObject({
+			type: "toolCall",
+			name: "bash",
+			arguments: { command: "echo ok" },
+		});
+	});
+
+	it("avoids wire name collisions when both bash and Bash are declared", () => {
+		const params = {
+			model: "muse-spark-1.3",
+			stream: true as const,
+			input: [],
+			tools: [
+				{ type: "function" as const, name: "bash", description: "lower", parameters: {}, strict: null },
+				{ type: "function" as const, name: "Bash", description: "upper", parameters: {}, strict: null },
+			],
+		};
+		const mapping = shapeMetaWireTools(params);
+		expect(params.tools.map((t) => (t as { name: string }).name)).toEqual(["Bash_2", "Bash"]);
+		expect(mapping.get("Bash_2")).toBe("bash");
+		expect(mapping.has("Bash")).toBe(false);
 	});
 });
