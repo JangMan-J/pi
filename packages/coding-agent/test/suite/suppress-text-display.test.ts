@@ -172,7 +172,7 @@ describe("routed text presentation", () => {
 	});
 
 	it.each(["error", "aborted"] as const)(
-		"restores full content and diagnostics on terminal %s events",
+		"keeps hidden prose and thinking off the surface on terminal %s events, with the diagnostic",
 		async (stopReason) => {
 			const harness = await routed({ settings: { retry: { enabled: false } } });
 			harness.setResponses([
@@ -185,10 +185,10 @@ describe("routed text presentation", () => {
 				),
 			]);
 			await harness.session.prompt("go");
-			const message = harness.session.messages.at(-1);
-			if (message?.role !== "assistant") throw new Error("Expected assistant");
-			expect(presentMessage(message)).toBe(message);
-			expect(message.content).toEqual([
+			const canonical = harness.session.messages.at(-1);
+			if (canonical?.role !== "assistant") throw new Error("Expected assistant");
+			// Canonical history is untouched; only the presented surface is filtered.
+			expect(canonical.content).toEqual([
 				{ type: "thinking", thinking: "failed thought", thinkingSignature: "failed-signature" },
 				{ type: "text", text: secret },
 			]);
@@ -198,18 +198,28 @@ describe("routed text presentation", () => {
 				harness.eventsOfType("agent_end").at(-1)?.messages.at(-1),
 			];
 			for (const terminalMessage of terminalMessages) {
-				expect(terminalMessage).toBe(message);
-				expect(terminalMessage).toMatchObject({ content: message.content, stopReason, errorMessage: "diagnostic" });
+				expect(terminalMessage).toMatchObject({ content: [], stopReason, errorMessage: "diagnostic" });
 			}
 			const jsonEvents = harness.events.map(toJsonEvent);
 			for (const type of ["message_end", "turn_end", "agent_end"]) {
 				const terminal = jsonEvents.findLast((event) => event.type === type);
-				expect(JSON.stringify(terminal)).toContain(secret);
+				expect(JSON.stringify(terminal)).not.toContain(secret);
+				expect(JSON.stringify(terminal)).not.toContain("failed thought");
 				expect(JSON.stringify(terminal)).toContain("diagnostic");
 			}
-			expect(new AssistantMessageComponent(message).render(80).join("\n")).toContain("diagnostic");
+			const rendered = new AssistantMessageComponent(JSON.parse(JSON.stringify(canonical))).render(80).join("\n");
+			expect(rendered).toContain("diagnostic");
+			expect(rendered).not.toContain(secret);
+			expect(rendered).not.toContain("failed thought");
 		},
 	);
+
+	it("never exposes a hidden turn through getLastAssistantText", async () => {
+		const harness = await routed();
+		harness.setResponses([fauxAssistantMessage(secret)]);
+		await harness.session.prompt("go");
+		expect(harness.session.getLastAssistantText()).toBeUndefined();
+	});
 
 	it("leaves direct requests canonical", async () => {
 		const harness = await routed();
