@@ -71,6 +71,8 @@ export interface ModelRouteRequest<TState = unknown> {
 
 /** Physical model and thinking level for one request. */
 export interface ModelRoute<TState = unknown> {
+	/** Hide assistant text from session presentation, not hooks or persisted context. Ignored for direct requests. */
+	suppressTextDisplay?: boolean;
 	model: Model<Api>;
 	thinkingLevel: ModelThinkingLevel;
 	/**
