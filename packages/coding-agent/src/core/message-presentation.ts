@@ -12,17 +12,18 @@ export function suppressAssistantText(message: AssistantMessage): void {
 
 /** Project a message for display; canonical history and model context stay untouched. */
 export function presentMessage<T extends AgentMessage>(message: T): T {
-	if (
-		message.role !== "assistant" ||
-		message.stopReason === "error" ||
-		message.stopReason === "aborted" ||
-		!(message as PresentedAssistantMessage).suppressTextDisplay
-	)
-		return message;
+	// Every stop reason is filtered: a failed or aborted hidden turn shows only its diagnostic
+	// (`errorMessage`), never its partial prose or thinking.
+	if (message.role !== "assistant" || !(message as PresentedAssistantMessage).suppressTextDisplay) return message;
 	return {
 		...message,
 		content: message.content.filter((block) => block.type !== "text" && block.type !== "thinking"),
 	};
+}
+
+/** True when the message is a routed turn whose prose and thinking never reach the surface. */
+export function isTextSuppressed(message: AgentMessage): boolean {
+	return message.role === "assistant" && Boolean((message as PresentedAssistantMessage).suppressTextDisplay);
 }
 
 /** Remove hidden prose from every assistant snapshot and delta on the session event surface. */

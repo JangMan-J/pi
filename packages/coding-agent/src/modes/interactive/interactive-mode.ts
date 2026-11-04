@@ -97,7 +97,6 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import type { McpHttpServerConfig } from "../../core/mcp-servers.ts";
 import { presentMessage } from "../../core/message-presentation.ts";
 import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
 import { addModelsJsonProvider } from "../../core/model-config.ts";

@@ -75,7 +75,7 @@ describe("suppressed interactive assistant messages", () => {
 	});
 
 	it.each(["error", "aborted"] as const)(
-		"creates a diagnostic component for hidden streams ending in %s",
+		"shows only the diagnostic, never hidden prose or thinking, for streams ending in %s",
 		async (stopReason) => {
 			const message = fauxAssistantMessage("internal");
 			suppressAssistantText(message);
@@ -86,7 +86,11 @@ describe("suppressed interactive assistant messages", () => {
 				message: { ...message, stopReason, errorMessage: "diagnostic" },
 			});
 			expect(view.chatContainer.children).toHaveLength(1);
-			expect(view.chatContainer.render(80).join("\n")).toContain("internal");
+			const rendered = view.chatContainer.render(80).join("\n");
+			expect(rendered).toContain(stopReason === "error" ? "diagnostic" : "Operation aborted");
+			expect(rendered).not.toContain("internal");
+			view.addMessageToChat(JSON.parse(JSON.stringify({ ...message, stopReason, errorMessage: "diagnostic" })));
+			expect(view.chatContainer.render(80).join("\n")).not.toContain("internal");
 		},
 	);
 
