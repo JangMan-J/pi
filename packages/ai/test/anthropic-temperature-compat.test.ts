@@ -110,8 +110,11 @@ describe("Anthropic temperature compatibility", () => {
 		},
 	);
 
-	it("keeps temperature for Claude Sonnet 5 when thinking is disabled", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-sonnet-5"), { temperature: 0 });
+	it("keeps temperature for a custom managed-effort model when thinking is disabled", async () => {
+		const payload = await capturePayload(
+			makeCustomModel({ supportsMidConvoEffort: true, forceAdaptiveThinking: true }),
+			{ temperature: 0 },
+		);
 
 		expect(payload.temperature).toBe(0);
 	});
