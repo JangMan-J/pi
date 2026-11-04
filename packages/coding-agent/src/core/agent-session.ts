@@ -116,7 +116,7 @@ import {
 } from "./extensions/index.ts";
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
-import { presentSessionEvent, suppressAssistantText } from "./message-presentation.ts";
+import { isTextSuppressed, presentSessionEvent, suppressAssistantText } from "./message-presentation.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -4500,6 +4500,7 @@ export class AgentSession {
 			.reverse()
 			.find((m) => {
 				if (m.role !== "assistant") return false;
+				if (isTextSuppressed(m)) return false;
 				const msg = m as AssistantMessage;
 				// Skip aborted messages with no content
 				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;
