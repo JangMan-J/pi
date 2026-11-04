@@ -85,6 +85,14 @@ Returning `previous` for `continuation` and `failed` for `retry` keeps prompt ca
 
 If `route()` throws, or returns a virtual model or a model without credentials, the request ends with an error response.
 
+### Hide internal response text
+
+Return `suppressTextDisplay: true` alongside `model` and `thinkingLevel` to hide assistant text for that request. It defaults to false and is ignored for `direct` requests. This is useful for a scout phase that produces an internal handoff rather than a user-facing answer.
+
+Session presentation events omit text blocks and `text_*` updates, including snapshots in `turn_end` and `agent_end`. Thinking, tool calls/results, usage, and error/abort diagnostics remain visible. Interactive rendering (including restored messages) and print text/JSON output honor the flag; text-only hidden responses render no blank bubble. Non-text streaming content indices refer to the filtered content array.
+
+This is presentation, not redaction: extension hooks, low-level Agent subscribers, model context, and persisted canonical assistant content remain complete. The session records a `suppressTextDisplay` presentation marker on the assistant message without replacing its identity. Boundary hooks still receive the full `turn_end.message` and its persisted `messageEntryId`, so a router can use `context_edit` to remove or replace internal prose before continuing. Raw session access and exports remain canonical; do not use this flag to protect secrets.
+
 ## Keep routing state
 
 `route()` can return `state` next to the model. Pi stores it on the session branch and passes it back as `request.state` on later requests. Use it for decisions the transcript does not record, such as classifier results or a routing phase:
