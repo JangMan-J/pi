@@ -8,11 +8,15 @@ import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import { createModels } from "../src/models.ts";
 import { ANTHROPIC_MODELS } from "../src/providers/anthropic.models.ts";
 import { anthropicProvider } from "../src/providers/anthropic.ts";
+import { cleanupSessionResources } from "../src/session-resources.ts";
 import type { AssistantMessage, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 beforeEach(() => vi.stubEnv(CLAUDE_CODE_VERSION_ENV, undefined));
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+	cleanupSessionResources();
+	vi.unstubAllEnvs();
+});
 
 const apiKey = "sk-ant-oat-synthetic";
 const pin = { [CLAUDE_CODE_VERSION_ENV]: "2.1.280" };
@@ -428,6 +432,32 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(ids[2]).not.toBe(ids[0]);
 		expect(ids[4]).toBe(ids[3]);
 		expect(ids[3]).not.toBe(ids[0]);
+	});
+
+	it("omits system on OAuth message-thread continuations while keeping Claude Code headers", async () => {
+		const wire = capture();
+		const sessionId = "01a115f3-4c34-7791-bbfc-c9688e9c0db4";
+		const first = await stream(model, context, { apiKey, env: pin, fetch: wire.fetch, sessionId }).result();
+		expect(first.stopReason).toBe("stop");
+		const second = await stream(
+			model,
+			normalizeContext({
+				systemPrompt: prompt,
+				messages: [
+					{ role: "user", content: "Hi", timestamp: 1 },
+					first,
+					{ role: "user", content: "Follow up", timestamp: 2 },
+				],
+			}),
+			{ apiKey, env: pin, fetch: wire.fetch, sessionId },
+		).result();
+		expect(second.stopReason).toBe("stop");
+		expect(wire.payloads[0]).toMatchObject({ thread: { type: "create" } });
+		expect(billing(wire.payloads[0]!)).toBeDefined();
+		expect(wire.payloads[1]).toMatchObject({ thread: { type: "continue", previous_message_id: "msg_mock" } });
+		expect(wire.payloads[1]).not.toHaveProperty("system");
+		expect(wire.headers[1]!.get("user-agent")).toBe("claude-cli/2.1.280");
+		expect(wire.headers[1]!.get("x-claude-code-session-id")).toBe(wire.headers[0]!.get("x-claude-code-session-id"));
 	});
 
 	it("preserves signed assistant order, system tool updates, and empty effort messages", async () => {
