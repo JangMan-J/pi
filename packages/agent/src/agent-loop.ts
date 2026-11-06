@@ -181,6 +181,7 @@ async function runLoop(
 	let config = initialConfig;
 	let lastCompletedTurn: PrepareNextTurnContext | undefined;
 	let explicitContinuation = false;
+	let unfinishedTurnContinuations = 0;
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
@@ -301,6 +302,17 @@ async function runLoop(
 			}
 
 			explicitContinuation = decision?.action === "continue";
+			// The provider reports that the model has not finished its turn (Codex `end_turn: false`
+			// after a progress message with no tool call). Sample again without new input, as the Codex
+			// CLI does, instead of handing the turn back to the user mid-task.
+			if (isUnfinishedTurn(message, toolCalls.length)) {
+				if (unfinishedTurnContinuations < MAX_UNFINISHED_TURN_CONTINUATIONS) {
+					unfinishedTurnContinuations++;
+					hasMoreToolCalls = true;
+				}
+			} else {
+				unfinishedTurnContinuations = 0;
+			}
 			pendingMessages = (await config.getSteeringMessages?.()) || [];
 			if (hasMoreToolCalls || pendingMessages.length > 0) {
 				explicitContinuation = false;
@@ -327,6 +339,13 @@ async function runLoop(
 	}
 
 	await emit({ type: "agent_end", messages: newMessages });
+}
+
+/** Consecutive context-only requests made for turns the provider marks unfinished. */
+const MAX_UNFINISHED_TURN_CONTINUATIONS = 3;
+
+function isUnfinishedTurn(message: AssistantMessage, toolCallCount: number): boolean {
+	return message.endTurn === false && message.stopReason === "stop" && toolCallCount === 0;
 }
 
 /**
