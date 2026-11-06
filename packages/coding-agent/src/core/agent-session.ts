@@ -116,6 +116,7 @@ import {
 } from "./extensions/index.ts";
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
+import { isTextSuppressed, presentSessionEvent, suppressAssistantText } from "./message-presentation.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -449,6 +450,7 @@ export class AgentSession {
 	 * retry is routed with it as `failed`, since the context no longer contains it.
 	 */
 	private _failedResponse: AssistantMessage | undefined;
+	private _suppressTextDisplay = false;
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -823,6 +825,7 @@ export class AgentSession {
 	private _installAgentRequestProjection(): void {
 		const previousPrepareRequest = this.agent.prepareRequest;
 		this.agent.prepareRequest = async (request, signal) => {
+			this._suppressTextDisplay = false;
 			const failed = this._failedResponse;
 			this._failedResponse = undefined;
 			const prepare = async () => {
@@ -875,6 +878,7 @@ export class AgentSession {
 				await this._runAutoCompaction("threshold", false);
 				({ previous, context } = await prepare());
 			}
+			this._suppressTextDisplay = route.suppressTextDisplay === true;
 			return { ...previous, context, model: route.model, thinkingLevel: route.thinkingLevel };
 		};
 	}
@@ -1073,8 +1077,10 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
+		const presentation = presentSessionEvent(event);
+		if (!presentation) return;
 		for (const l of this._eventListeners) {
-			l(event);
+			l(presentation);
 		}
 	}
 
@@ -1179,8 +1185,18 @@ export class AgentSession {
 			}
 		}
 
-		// Emit to extensions first, then notify public listeners.
+		// Extensions and persistence retain canonical content; only public presentation is filtered.
 		await this._emitExtensionEvent(event);
+		if (
+			this._suppressTextDisplay &&
+			(event.type === "message_start" || event.type === "message_update" || event.type === "message_end") &&
+			event.message.role === "assistant"
+		) {
+			suppressAssistantText(event.message);
+			if (event.type === "message_update" && "partial" in event.assistantMessageEvent) {
+				suppressAssistantText(event.assistantMessageEvent.partial);
+			}
+		}
 		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
 
 		// Handle session persistence
@@ -4492,6 +4508,7 @@ export class AgentSession {
 			.reverse()
 			.find((m) => {
 				if (m.role !== "assistant") return false;
+				if (isTextSuppressed(m)) return false;
 				const msg = m as AssistantMessage;
 				// Skip aborted messages with no content
 				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;
