@@ -509,7 +509,7 @@ export function resolveGoogleFunctionCallingMode(
 /**
  * Map Gemini FinishReason to our StopReason.
  */
-export function mapStopReason(reason: FinishReason): StopReason {
+export function mapStopReason(reason: `${FinishReason}`): StopReason {
 	switch (reason) {
 		case "STOP":
 			return "stop";
