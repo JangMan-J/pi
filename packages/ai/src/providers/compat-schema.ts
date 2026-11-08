@@ -425,7 +425,7 @@ const OpenAIResponsesCompatProperties = {
 	supportsMidConvoEffort: opt(
 		bool({
 			description:
-				"Whether thinking level changes are sent as configuration_update input items instead of changing reasoning.effort, so a change keeps the prompt cache. Only used by the openai-responses API, and ignored with Sign in with ChatGPT on the openai provider.",
+				"Whether thinking level changes are sent as configuration_update input items instead of changing reasoning.effort, so a change keeps the prompt cache. Used by the openai-responses and openai-codex-responses APIs, and ignored with Sign in with ChatGPT on the openai provider.",
 			default: false,
 		}),
 	),
