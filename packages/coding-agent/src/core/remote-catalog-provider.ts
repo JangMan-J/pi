@@ -106,6 +106,7 @@ export function withRemoteCatalog(
 	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
 	localGeneratedAt?: number,
 ): Provider {
+	if (provider.refreshModels) return provider;
 	let dynamicModels: readonly AnyModel[] = [];
 
 	return {
