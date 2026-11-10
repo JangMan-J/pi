@@ -641,6 +641,49 @@ describe("Meta audit regressions", () => {
 	);
 });
 
+describe("Meta catalog cost tiers", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+	});
+
+	it("keeps explicit baseline tiers beside live flat prices on refresh", async () => {
+		const id = "muse-spark-1.3";
+		const tiers = [{ inputTokensAbove: 200_000, input: 3, output: 12, cacheRead: 0.3, cacheWrite: 0 }];
+		const original = META_MODELS[id];
+		META_MODELS[id] = { ...original, cost: { ...original.cost, tiers } };
+		try {
+			const provider = metaProvider();
+			vi.stubEnv("PI_META_CATALOG_REFRESH_INTERVAL_MS", "0");
+			vi.spyOn(globalThis, "fetch").mockResolvedValue(
+				Response.json({
+					data: [
+						{ id, metadata: { "muse-code": { tool_call: true, cost: { input: 2, output: 8, cached: 0.5 } } } },
+					],
+				}),
+			);
+			await provider.refreshModels!({
+				allowNetwork: true,
+				credential: { type: "api_key", key: "test" },
+				signal: new AbortController().signal,
+				publish: async (pub) => {
+					pub.update?.();
+					return true;
+				},
+			});
+			expect(provider.getModels().find((m) => m.id === id)?.cost).toEqual({
+				input: 2,
+				output: 8,
+				cacheRead: 0.5,
+				cacheWrite: 0,
+				tiers,
+			});
+		} finally {
+			META_MODELS[id] = original;
+		}
+	});
+});
+
 describe("Meta conversation structure", () => {
 	afterEach(() => vi.restoreAllMocks());
 	const zeroUsage = {
