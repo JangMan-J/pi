@@ -190,6 +190,8 @@ function inferMetaCost(id: string, rawCost: MuseCodeModelMetadata["cost"], fallb
 		output: price(rawCost?.output, base.output),
 		cacheRead: price(rawCost?.cached, base.cacheRead),
 		cacheWrite: base.cacheWrite,
+		// Live metadata has no tier fields, so baseline tiers stay beside the live flat prices.
+		...(base.tiers ? { tiers: base.tiers } : {}),
 	};
 }
 
