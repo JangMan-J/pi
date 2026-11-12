@@ -81,14 +81,20 @@ export function supportsOpenAiXhigh(modelId: string): boolean {
 	);
 }
 
-const GPT_6_MODEL_IDS = new Set(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"]);
+export const OPENAI_MID_CONVO_EFFORT_MODEL_IDS = new Set([
+	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
+	"gpt-6.1-sol",
+	"gpt-6.1-terra",
+]);
 
 /** Thinking levels of GPT models on any host. */
 export function applyOpenAiFamilyRules(model: ChatModel): void {
 	if ((model.api === "openai-responses" || model.api === "azure-openai-responses") && model.id.startsWith("gpt-5")) {
 		mergeThinking(model, { off: null });
 	}
-	if (GPT_6_MODEL_IDS.has(model.id) && isResponsesApi(model)) {
+	if (OPENAI_MID_CONVO_EFFORT_MODEL_IDS.has(model.id) && isResponsesApi(model)) {
 		mergeThinking(model, {
 			// GPT-6 Astra and GPT-6.1 Sol reject reasoning.effort "none"; GPT-6.1 Terra accepts it. All reject
 			// "minimal" (verified on Codex, October 2026).
