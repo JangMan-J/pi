@@ -1,0 +1,57 @@
+# Working on the JangMan-J/pi fork
+
+Read this before changing anything. Upstream's own rules in the repo root `AGENTS.md` still apply; this file adds the fork's branch discipline. `.fork/` exists only on `next` and `fork/tooling`; from another branch, read it with `git show next:.fork/AGENTS.md`. To set up a development checkout, run `.fork/install-tests.sh`; it also installs the `pre-push` hook that refuses pushes of `next` and `main`.
+
+## Layout
+
+`main` mirrors `earendil-works/pi` and is never edited. Each fork change lives on exactly one owning branch. `next` is generated: the first branch in `.fork/branches` plus a `--no-ff` merge of each following branch, in file order. Nobody commits on `next`; `.fork/sync.sh` refuses to rebuild while such commits exist.
+
+| Branch | Owns |
+| --- | --- |
+| `feat/native-anthropic` | `packages/ai/src/api/anthropic-oauth/`, `api/anthropic-tool-choice.ts`, the Anthropic transport changes in `api/anthropic-messages.ts`, `auth/oauth/anthropic.ts` and its callback cancellation handling in `auth/oauth/callback-server.ts`, Claude rules in `catalog/build.ts`, `catalog/families/anthropic.ts` and the Anthropic-related provider definitions, `test/anthropic-*.test.ts`, `test/oauth-callback-server.test.ts`, `packages/coding-agent/test/anthropic-oauth-prompt-drift.test.ts` |
+| `feat/native-antigravity` | `packages/ai/src/api/antigravity/`, `antigravity-api.ts`, `antigravity-images.ts`, `providers/antigravity.ts`, `auth/oauth/antigravity.ts`, additions to `google-shared.ts`, `test/antigravity-*.test.ts` |
+| `feat/native-meta` | `providers/meta.ts`, the Meta branches in `api/openai-responses.ts`, `catalog/providers/meta.ts`, `test/meta-oauth.test.ts` |
+| `feat/native-openai` | `api/openai-codex-responses.ts`, `catalog/families/openai.ts`, the OpenAI/Codex rules in `catalog/providers/openai.ts`, `openai-codex.ts` and `azure.ts`, the OpenAI context and mid-convo tests, the `end_turn` continuation in `packages/agent/src/agent-loop.ts` |
+| `fix/coding-agent` | `providers/generic-endpoint.ts`, `providers/openrouter*.ts`, `providers/README.md`, `packages/coding-agent/src/core/model-runtime.ts`, `model-config.ts`, `remote-catalog-provider.ts` (`refreshModels` preservation), `modes/interactive/interactive-mode.ts` (`/login` custom endpoint dialog), the stationarity example, the `/codemode` command in `extensions/codemode/index.ts` and `docs/codemode.md`, `packages/env` non-POSIX login shell daemon startup, provider-audit coverage, and their tests |
+| `feat/native-providers` | providers no other branch owns, such as Kimi Coding and xAI: `packages/ai/scripts/native-providers.ts` (catalog corrections such as the `kimi-for-coding` name and the unlisted `xai/grok-4.7-build-fast`) and its hooks in `catalog/providers/kimi-coding.ts` and `xai.ts`, `mergeModels` in `packages/coding-agent/src/core/remote-catalog-provider.ts`, `test/native-providers-catalog.test.ts`, `test/remote-catalog-names.test.ts`. A provider that collects enough fork changes moves to its own branch |
+| `fork/tooling` | this directory (`.fork/`: `branches`, `sync.sh`, `check.sh`, `pack-release.sh`, `install-next.sh`, `install-tests.sh`, these docs) and `.github/workflows/fork-sync.yml` |
+
+`packages/ai/catalog/` is touched by several branches. Edit only your model family's or provider's rules, on that provider's branch. A change that spans two providers is two commits on two branches.
+
+## Releases
+
+`next` is the repository's default branch. Only the workflow `.github/workflows/fork-sync.yml` pushes `next` and `main`; no person or agent ever does. It runs on every push to `fork/tooling`, daily, and on demand (`gh workflow run fork-sync.yml --repo JangMan-J/pi`, or the Actions tab). Each run first runs the full `sync.sh --hold-on-conflict --push`: fast-forward `main` from upstream, rebase every branch onto it, rebuild `next`, focused checks, push. If any branch does not rebase cleanly onto the new upstream, the run restores every pre-sync ref, names all conflicting branches and commits in warnings and the run summary, and fails before pushing or releasing; each branch's owner rebases it by hand (Recovery). Then, if the `next` commit has no release yet, it builds, runs `npm run check` and `.fork/check.sh focused`, packs the build with `.fork/pack-release.sh` (the layout pi's own installer produces), and publishes the GitHub release `next-<first 12 hex of the commit>` with `pi-next.tar.gz` and its `.sha256`. It releases only when `sync.sh --status` is clean: no commits on `next` outside the listed branches, every branch on `main`, and `main` a mirror of upstream. A failed check publishes nothing. The five newest releases are kept. The workflow pushes through the write deploy key in the secret `FORK_SYNC_DEPLOY_KEY` (`GITHUB_TOKEN` may not push changes to `.github/workflows/`) and signs with `FORK_SYNC_GPG_KEY`.
+
+Machines that run pi install with `.fork/install-next.sh`: it downloads the latest release, verifies the SHA-256, unpacks it under `~/.local/share/pi-fork/releases/`, and switches `~/.local/bin/pi`. It builds and checks nothing; the workflow did. `--rollback` switches back to the previous release.
+
+## Model catalog
+
+Model data is generated from live sources (models.dev, OpenRouter, AI Gateway, NVIDIA, Radius) on every rebuild and release: `sync.sh` and the workflow's Build run `npm run hydrate:model-data`. The catalog is not pinned; a release carries the model list as it was when it was built. A source that fails to load fails the run (strict mode).
+
+## Order of work
+
+1. **Check state** on `next`: `git checkout next && .fork/sync.sh --status`. On a machine that has fallen behind (branches shown behind origin, `next` stale), run `.fork/sync.sh --align` first; it resets `main`, the branches and `next` to origin, but only where the local tip is already on an origin branch or tag, so nothing is lost. It tells you which branch you are on, whether each branch is rebased on `main`, and whether `next` is current, stale, or carries stray commits. Fix a dirty tree before anything else.
+2. **Pick the owning branch** from the table and switch to it: `git checkout <branch>`. If you are on `next` or `main`, do not commit there.
+3. **Bring the branch up to date**: `git fetch origin && git rebase origin/<branch>` (or `git reset --hard origin/<branch>` if you have no local commits on it).
+4. **Make the change with its test.** Every wire change gets a payload-shape test in the branch's test file that pins the bytes. Where server behavior decides, run a live probe and record the sanitized result in the commit message. Run the tests you touched (`cd packages/<package> && npx vitest run test/<file>`); the focused checks run in step 6.
+5. **Commit on the branch.** Commits are signed when the global git config sets `commit.gpgsign=true` and `user.signingkey` to a key GitHub knows (Jang's is `9B79F5EBD9E8D2E5`); `install-tests.sh` warns when signing is off. The pre-commit hook runs `npm run check`. `install-tests.sh` installs it with husky, because `npm ci --ignore-scripts` skips upstream's `prepare` step; if `git config core.hooksPath` prints nothing, run `npx husky` once. Use the upstream commit style, for example `fix(ai): …`.
+6. **Optionally preview `next` locally**: `git checkout next && .fork/sync.sh --rebuild-only` tags the old local `next`, rebuilds it from the current local tips and runs the focused checks. Nothing is fetched, rebased or pushed; the local `next` is a throwaway preview.
+7. **Push only the owning branch**: `git push origin <branch>` (`--force-with-lease` after a rebase). Never push `next` or `main`: the `pre-push` hook (`.fork/install-hooks.sh`) refuses it and `.fork/sync.sh --push` refuses to run outside GitHub Actions. A push of `fork/tooling` starts `fork-sync.yml` automatically; GitHub only runs push workflows present on the pushed branch, so after pushing a `feat/**` or `fix/**` branch run `gh workflow run fork-sync.yml --repo JangMan-J/pi`. The workflow rebuilds, checks, pushes and releases `next`; watch it with `gh run watch --repo JangMan-J/pi`. To run it without a push: `gh workflow run fork-sync.yml --repo JangMan-J/pi`. When it is green, `.fork/sync.sh --align` moves the local refs to the workflow's `next` and `.fork/install-next.sh` installs its release.
+
+The workflow pulls in upstream on every run. A local `.fork/sync.sh` (full mode, no `--push`) previews that on your machine: tag tips, fetch, fast-forward `main`, rebase every branch onto `main` in file order, rebuild `next`, check. If a rebase stops on a conflict, resolve it, `git rebase --continue`, return to `next`, and re-run `.fork/sync.sh --offline --resume`. Resume mode allows the old `next` commits that the rebase replaced; never use it to discard unrelated commits. Of the result, push only the owning branches you resolved.
+
+## Recovery
+
+- Committed on `next` by mistake: `git checkout <owning branch> && git cherry-pick <sha>`, then `.fork/sync.sh --rebuild-only`.
+- The workflow fails with an "upstream held back" warning for each conflicting branch: on each branch, `git fetch upstream && git rebase upstream/main`, resolve, run its tests, `git push --force-with-lease origin <branch>`. Then dispatch the workflow (for `fork/tooling` the push starts it), which advances `main` once every branch rebases cleanly.
+- Need a previous state: every run leaves signed `pre-sync/<stamp>/<ref>` tags for the refs it moved; the audit left `backup/*` tags. `git tag -l 'pre-sync/*'`.
+- Branch not based on `main` after a manual change: `git rebase main <branch>`, then rebuild.
+
+## Do not
+
+- Push `next` or `main`, ever, from any machine (`git push ... next`, `git push ... main`, `.fork/sync.sh --push`). Push only the owning branch; `fork-sync.yml` alone builds, pushes and releases `next`.
+- Commit on `main` or `next`.
+- Edit `main`'s upstream files from a branch unless the change is the branch's purpose.
+- Rewrite `next` by hand; always use `sync.sh`.
+- Change `.fork/` or the workflow anywhere but `fork/tooling`.
+- Skip the payload test or the probe; "it reads right" closes nothing.
