@@ -84,7 +84,9 @@ describe("personalizeOpenRouterCatalog", () => {
 			classifierModel,
 		];
 
-		const result = await personalizeOpenRouterCatalog(catalog, refreshContext());
+		const personalized = await personalizeOpenRouterCatalog(catalog, refreshContext());
+		expect(personalized.status).toBe("personalized");
+		const result = personalized.models;
 
 		expect(result.map((model) => model.id)).toEqual(["listed", "no-limits", "router", "image", "classifier"]);
 		expect(result[0]).toMatchObject({
@@ -107,7 +109,11 @@ describe("personalizeOpenRouterCatalog", () => {
 			stubUserModels(new Response("", { status }));
 			const catalog = [chatModel("a")];
 
-			expect(await personalizeOpenRouterCatalog(catalog, refreshContext())).toBe(catalog);
+			expect(await personalizeOpenRouterCatalog(catalog, refreshContext())).toEqual({
+				status: "unavailable",
+				reason: status,
+				models: catalog,
+			});
 		},
 	);
 });

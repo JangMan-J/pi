@@ -13,25 +13,30 @@ import { type OpenRouterModel, openRouterCost } from "./openrouter-api.ts";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const OPENROUTER_USER_MODELS_TIMEOUT_MS = 15_000;
 
+export type PersonalizedOpenRouterCatalog =
+	| { status: "personalized"; models: readonly AnyModel[] }
+	| { status: "unavailable"; reason: "missing-key" | 401 | 403 | 404; models: readonly AnyModel[] };
+
 /**
  * Restrict an OpenRouter catalog to the chat models the key may use, with the key's limits and
  * prices from `GET /models/user`. Image and classifier models are returned unchanged. A missing
  * limit keeps the catalog value. The request uses the provider's configured base URL, so regional
  * endpoints such as `https://us.openrouter.ai/api/v1` apply their region's filtering. When the
  * endpoint rejects the key (401/403) or does not exist (404), for example with a proxy configured
- * in models.json, the catalog is returned unchanged.
+ * in models.json, the result explicitly reports unavailable and retains the catalog.
  */
 export async function personalizeOpenRouterCatalog(
 	catalog: readonly AnyModel[],
 	context: RefreshModelsContext,
-): Promise<readonly AnyModel[]> {
+): Promise<PersonalizedOpenRouterCatalog> {
 	const key = context.credential?.type === "oauth" ? context.credential.access : context.credential?.key;
-	if (!key) return catalog;
+	if (!key) return { status: "unavailable", reason: "missing-key", models: catalog };
 	const response = await fetch(`${(context.baseUrl ?? OPENROUTER_BASE_URL).replace(/\/+$/, "")}/models/user`, {
 		headers: { accept: "application/json", authorization: `Bearer ${key}` },
 		signal: AbortSignal.any([context.signal, AbortSignal.timeout(OPENROUTER_USER_MODELS_TIMEOUT_MS)]),
 	});
-	if (response.status === 401 || response.status === 403 || response.status === 404) return catalog;
+	if (response.status === 401 || response.status === 403 || response.status === 404)
+		return { status: "unavailable", reason: response.status, models: catalog };
 	if (!response.ok) throw new Error(`OpenRouter model list request failed: ${response.status}`);
 	const body: unknown = await response.json();
 	if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
@@ -43,7 +48,7 @@ export async function personalizeOpenRouterCatalog(
 			allowed.set(entry.id, entry as OpenRouterModel);
 		}
 	}
-	return catalog.flatMap((model): AnyModel[] => {
+	const models = catalog.flatMap((model): AnyModel[] => {
 		if (!isModelType(model, "chat")) return [model];
 		const entry = allowed.get(model.id);
 		if (!entry) return [];
@@ -57,6 +62,7 @@ export async function personalizeOpenRouterCatalog(
 			},
 		];
 	});
+	return { status: "personalized", models };
 }
 
 export function openrouterProvider(): Provider<"anthropic-messages" | "openai-completions"> {
