@@ -1414,6 +1414,7 @@ describe("openai-completions tool_choice", () => {
 				requiresToolsWithToolHistory: false,
 				requiresThinkingAsText: false,
 				requiresReasoningContentOnAssistantMessages: false,
+				requiresMoonshotToolSchemas: false,
 				thinkingFormat: "openai",
 				openRouterRouting: {},
 				vercelGatewayRouting: {},

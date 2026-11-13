@@ -67,6 +67,7 @@ import {
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
+import { toMoonshotToolSchema } from "./moonshot-tool-schema.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
 	buildBaseOptions,
@@ -1512,12 +1513,16 @@ function convertTools(
 		}
 
 		const strict = resolveJsonSchemaStrictSampling(tool, compat.supportsStrictMode !== false);
+		const parameters = getJsonSchemaToolParameters(tool, strict);
 		return {
 			type: "function",
 			function: {
 				name: tool.name,
 				description: tool.description,
-				parameters: getJsonSchemaToolParameters(tool, strict) as Record<string, unknown>,
+				parameters: (compat.requiresMoonshotToolSchemas ? toMoonshotToolSchema(parameters) : parameters) as Record<
+					string,
+					unknown
+				>,
 				// Only include strict if provider supports it. Some reject unknown fields.
 				...(compat.supportsStrictMode !== false && { strict: strict ?? false }),
 			},
@@ -1616,6 +1621,10 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 	const isTogether =
 		provider === "together" || baseUrl.includes("api.together.ai") || baseUrl.includes("api.together.xyz");
 	const isMoonshot = provider === "moonshotai" || provider === "moonshotai-cn" || baseUrl.includes("api.moonshot.");
+	// Kimi Coding runs Moonshot's tool-schema validator too (live probe, 2026-11-13). Kimi Code 2.5.2 itself sends to
+	// api.kimi.ai; api.kimi.com serves the same models with the same token.
+	const usesMoonshotToolSchemas =
+		isMoonshot || provider === "kimi-coding" || baseUrl.includes("api.kimi.com") || baseUrl.includes("api.kimi.ai");
 	const isOpenRouter = provider === "openrouter" || baseUrl.includes("openrouter.ai");
 	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || baseUrl.includes("api.cloudflare.com");
 	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || baseUrl.includes("gateway.ai.cloudflare.com");
@@ -1669,6 +1678,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		requiresToolsWithToolHistory: false,
 		requiresThinkingAsText: false,
 		requiresReasoningContentOnAssistantMessages: isDeepSeek,
+		requiresMoonshotToolSchemas: usesMoonshotToolSchemas,
 		thinkingFormat: isDeepSeek
 			? "deepseek"
 			: isZai
@@ -1730,6 +1740,7 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		requiresReasoningContentOnAssistantMessages:
 			model.compat.requiresReasoningContentOnAssistantMessages ??
 			detected.requiresReasoningContentOnAssistantMessages,
+		requiresMoonshotToolSchemas: model.compat.requiresMoonshotToolSchemas ?? detected.requiresMoonshotToolSchemas,
 		thinkingFormat: model.compat.thinkingFormat ?? detected.thinkingFormat,
 		openRouterRouting: model.compat.openRouterRouting ?? {},
 		vercelGatewayRouting: model.compat.vercelGatewayRouting ?? detected.vercelGatewayRouting,

@@ -115,6 +115,7 @@ const OpenAICompletionsCompatSchema = obj(
 		requiresAssistantAfterToolResult: opt(bool()),
 		requiresThinkingAsText: opt(bool()),
 		requiresReasoningContentOnAssistantMessages: opt(bool()),
+		requiresMoonshotToolSchemas: opt(bool()),
 		thinkingFormat: opt(
 			union([
 				literal("openai"),
