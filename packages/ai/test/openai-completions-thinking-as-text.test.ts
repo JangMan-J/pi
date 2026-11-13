@@ -35,6 +35,7 @@ const compat = {
 	requiresToolsWithToolHistory: false,
 	requiresThinkingAsText: true,
 	requiresReasoningContentOnAssistantMessages: false,
+	requiresMoonshotToolSchemas: false,
 	thinkingFormat: "openai",
 	openRouterRouting: {},
 	vercelGatewayRouting: {},
