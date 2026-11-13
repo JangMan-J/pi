@@ -784,11 +784,6 @@ function createClient(
 	});
 }
 
-// OpenAI and the Kimi Code client both send the session ID as prompt_cache_key.
-function sendsPromptCacheKey(model: Model<"openai-completions">, compat: ResolvedOpenAICompletionsCompat): boolean {
-	return model.baseUrl.includes("api.openai.com") || compat.thinkingFormat === "kimi";
-}
-
 function buildParams(
 	model: Model<"openai-completions">,
 	context: TranscriptContext,
@@ -814,7 +809,7 @@ function buildParams(
 	const supportsPromptCacheKey =
 		promptCacheKeyMode === "enabled" ||
 		(promptCacheKeyMode === "auto" &&
-			(sendsPromptCacheKey(model, compat) ||
+			(model.baseUrl.includes("api.openai.com") ||
 				(cacheRetention === "long" && compat.supportsLongCacheRetention)));
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
