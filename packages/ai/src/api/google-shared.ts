@@ -2,16 +2,17 @@
  * Shared utilities for Google Generative AI and Google Vertex providers.
  */
 
-import {
-	type Content,
+import type {
+	Content,
 	FinishReason,
 	FunctionCallingConfigMode,
 	ThinkingLevel as GoogleSdkThinkingLevel,
-	type Part,
-	type ThinkingConfig,
+	Part,
+	ThinkingConfig,
 } from "@google/genai";
 import { clampThinkingLevel } from "../models.ts";
 import type {
+	Api,
 	ImageContent,
 	Model,
 	StopReason,
@@ -30,22 +31,36 @@ import { transformMessages } from "./transform-messages.ts";
 type GoogleApiType = "google-generative-ai" | "google-vertex";
 
 /**
- * Thinking level for Gemini 3 models.
- * Mirrors Google's ThinkingLevel enum values.
+ * Thinking level for Gemini 3+ models.
+ * Mirrors Google's ThinkingLevel enum values (including XHIGH added in @google/genai 3.3.0 / Gemini 4 Hydrogen).
  */
-export type GoogleApiThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
-export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "xhigh" | "max">;
+export type GoogleApiThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" | "XHIGH";
+export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "max">;
 
-const GOOGLE_SDK_THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, GoogleSdkThinkingLevel> = {
-	THINKING_LEVEL_UNSPECIFIED: GoogleSdkThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
-	MINIMAL: GoogleSdkThinkingLevel.MINIMAL,
-	LOW: GoogleSdkThinkingLevel.LOW,
-	MEDIUM: GoogleSdkThinkingLevel.MEDIUM,
-	HIGH: GoogleSdkThinkingLevel.HIGH,
+// Keep shared wire helpers independent of the SDK runtime. Type-check SDK enum values present in @google/genai 2.x;
+// XHIGH was added in @google/genai 3.3.0 (2026-11-12, inside the npm release age gate) and is sent as "XHIGH".
+const GOOGLE_SDK_BASE_THINKING_LEVEL_MAP = {
+	THINKING_LEVEL_UNSPECIFIED: "THINKING_LEVEL_UNSPECIFIED",
+	MINIMAL: "MINIMAL",
+	LOW: "LOW",
+	MEDIUM: "MEDIUM",
+	HIGH: "HIGH",
+} satisfies Record<Exclude<GoogleApiThinkingLevel, "XHIGH">, `${GoogleSdkThinkingLevel}`>;
+
+const GOOGLE_SDK_THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, `${GoogleSdkThinkingLevel}` | "XHIGH"> = {
+	...GOOGLE_SDK_BASE_THINKING_LEVEL_MAP,
+	XHIGH: "XHIGH",
 };
 
+const GOOGLE_FUNCTION_CALLING_MODES = {
+	AUTO: "AUTO",
+	NONE: "NONE",
+	ANY: "ANY",
+	VALIDATED: "VALIDATED",
+} satisfies Record<string, `${FunctionCallingConfigMode}`>;
+
 /** Resolve a supported pi level or model-specific Google mapping to a standard Google level. */
-export function resolveGoogleThinkingLevel<T extends GoogleApiType>(
+export function resolveGoogleThinkingLevel<T extends Api>(
 	model: Model<T>,
 	level: ThinkingLevel,
 ): ResolvedGoogleThinkingLevel {
@@ -56,6 +71,7 @@ export function resolveGoogleThinkingLevel<T extends GoogleApiType>(
 		case "low":
 		case "medium":
 		case "high":
+		case "xhigh":
 			return resolvedLevel;
 		default:
 			throw new Error(
@@ -69,7 +85,7 @@ export function resolveGoogleThinkingLevel<T extends GoogleApiType>(
  * the token-based `thinkingBudget` control. Supported levels come from the
  * model's `thinkingLevelMap`; this only selects the Google wire format.
  */
-export function usesGoogleThinkingLevel<T extends GoogleApiType>(model: Model<T>): boolean {
+export function usesGoogleThinkingLevel<T extends Api>(model: Model<T>): boolean {
 	const id = model.id.toLowerCase();
 	return (
 		// Match Gemini 3 Pro/Flash IDs with or without a minor version, such as
@@ -94,14 +110,16 @@ export function toGoogleThinkingLevel(level: ResolvedGoogleThinkingLevel): Googl
 			return "MEDIUM";
 		case "high":
 			return "HIGH";
+		case "xhigh":
+			return "XHIGH";
 	}
 }
 
 export function toGoogleSdkThinkingLevel(level: GoogleApiThinkingLevel): GoogleSdkThinkingLevel {
-	return GOOGLE_SDK_THINKING_LEVEL_MAP[level];
+	return GOOGLE_SDK_THINKING_LEVEL_MAP[level] as GoogleSdkThinkingLevel;
 }
 
-export function getDisabledGoogleThinkingConfig<T extends GoogleApiType>(model: Model<T>): ThinkingConfig {
+export function getDisabledGoogleThinkingConfig<T extends Api>(model: Model<T>): ThinkingConfig {
 	if (!usesGoogleThinkingLevel(model)) return { thinkingBudget: 0 };
 
 	const fallback = clampThinkingLevel(model, "off");
@@ -148,7 +166,7 @@ export function retainThoughtSignature(existing: string | undefined, incoming: s
 // Thought signatures must be base64 for Google APIs (TYPE_BYTES).
 const base64SignaturePattern = /^[A-Za-z0-9+/]+={0,2}$/;
 
-function isValidThoughtSignature(signature: string | undefined): boolean {
+export function isValidThoughtSignature(signature: string | undefined): boolean {
 	if (!signature) return false;
 	if (signature.length % 4 !== 0) return false;
 	return base64SignaturePattern.test(signature);
@@ -157,7 +175,10 @@ function isValidThoughtSignature(signature: string | undefined): boolean {
 /**
  * Only keep signatures from the same provider/model and with valid base64.
  */
-function resolveThoughtSignature(isSameProviderAndModel: boolean, signature: string | undefined): string | undefined {
+export function resolveThoughtSignature(
+	isSameProviderAndModel: boolean,
+	signature: string | undefined,
+): string | undefined {
 	return isSameProviderAndModel && isValidThoughtSignature(signature) ? signature : undefined;
 }
 
@@ -173,13 +194,13 @@ export function requiresToolCallId(modelId: string): boolean {
 	);
 }
 
-function getGeminiMajorVersion(modelId: string): number | undefined {
+export function getGeminiMajorVersion(modelId: string): number | undefined {
 	const match = modelId.toLowerCase().match(/^gemini(?:-live)?-(\d+)/);
 	if (!match) return undefined;
 	return Number.parseInt(match[1], 10);
 }
 
-function supportsMultimodalFunctionResponse(modelId: string): boolean {
+export function supportsMultimodalFunctionResponse(modelId: string): boolean {
 	const geminiMajorVersion = getGeminiMajorVersion(modelId);
 	if (geminiMajorVersion !== undefined) {
 		return geminiMajorVersion >= 3;
@@ -405,7 +426,7 @@ const JSON_SCHEMA_SUBSCHEMAS = new Set([
  * Rewrite string and number `const` values to single-value `enum`s.
  * Gemini ignores `const` in `parametersJsonSchema` but honors `enum`.
  */
-function rewriteConstAsEnum(schema: unknown, isNameMap = false): unknown {
+export function rewriteConstAsEnum(schema: unknown, isNameMap = false): unknown {
 	if (Array.isArray(schema)) return schema.map((item) => rewriteConstAsEnum(item));
 	if (typeof schema !== "object" || schema === null) return schema;
 
@@ -469,13 +490,13 @@ export function supportsGoogleStrictToolSampling(modelId: string): boolean {
 export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 	switch (choice) {
 		case "auto":
-			return FunctionCallingConfigMode.AUTO;
+			return GOOGLE_FUNCTION_CALLING_MODES.AUTO as FunctionCallingConfigMode;
 		case "none":
-			return FunctionCallingConfigMode.NONE;
+			return GOOGLE_FUNCTION_CALLING_MODES.NONE as FunctionCallingConfigMode;
 		case "any":
-			return FunctionCallingConfigMode.ANY;
+			return GOOGLE_FUNCTION_CALLING_MODES.ANY as FunctionCallingConfigMode;
 		default:
-			return FunctionCallingConfigMode.AUTO;
+			return GOOGLE_FUNCTION_CALLING_MODES.AUTO as FunctionCallingConfigMode;
 	}
 }
 
@@ -489,7 +510,7 @@ export function resolveGoogleFunctionCallingMode(
 		return mapToolChoice(toolChoice);
 	}
 	if (useStrictMode) {
-		return FunctionCallingConfigMode.VALIDATED;
+		return GOOGLE_FUNCTION_CALLING_MODES.VALIDATED as FunctionCallingConfigMode;
 	}
 	return toolChoice ? mapToolChoice(toolChoice) : undefined;
 }
@@ -497,30 +518,30 @@ export function resolveGoogleFunctionCallingMode(
 /**
  * Map Gemini FinishReason to our StopReason.
  */
-export function mapStopReason(reason: FinishReason): StopReason {
+export function mapStopReason(reason: `${FinishReason}`): StopReason {
 	switch (reason) {
-		case FinishReason.STOP:
+		case "STOP":
 			return "stop";
-		case FinishReason.MAX_TOKENS:
+		case "MAX_TOKENS":
 		// Per-request token limit reached before generation completed; pi does not resume with the continuation token.
-		case FinishReason.CONTINUATION:
+		case "CONTINUATION":
 			return "length";
-		case FinishReason.BLOCKLIST:
-		case FinishReason.PROHIBITED_CONTENT:
-		case FinishReason.SPII:
-		case FinishReason.SAFETY:
-		case FinishReason.IMAGE_SAFETY:
-		case FinishReason.IMAGE_PROHIBITED_CONTENT:
-		case FinishReason.IMAGE_RECITATION:
-		case FinishReason.IMAGE_OTHER:
-		case FinishReason.RECITATION:
-		case FinishReason.FINISH_REASON_UNSPECIFIED:
-		case FinishReason.OTHER:
-		case FinishReason.LANGUAGE:
-		case FinishReason.MALFORMED_FUNCTION_CALL:
-		case FinishReason.UNEXPECTED_TOOL_CALL:
-		case FinishReason.TOO_MANY_TOOL_CALLS:
-		case FinishReason.NO_IMAGE:
+		case "BLOCKLIST":
+		case "PROHIBITED_CONTENT":
+		case "SPII":
+		case "SAFETY":
+		case "IMAGE_SAFETY":
+		case "IMAGE_PROHIBITED_CONTENT":
+		case "IMAGE_RECITATION":
+		case "IMAGE_OTHER":
+		case "RECITATION":
+		case "FINISH_REASON_UNSPECIFIED":
+		case "OTHER":
+		case "LANGUAGE":
+		case "MALFORMED_FUNCTION_CALL":
+		case "UNEXPECTED_TOOL_CALL":
+		case "TOO_MANY_TOOL_CALLS":
+		case "NO_IMAGE":
 			return "error";
 		default: {
 			const _exhaustive: never = reason;
