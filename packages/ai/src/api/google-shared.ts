@@ -31,20 +31,26 @@ import { transformMessages } from "./transform-messages.ts";
 type GoogleApiType = "google-generative-ai" | "google-vertex";
 
 /**
- * Thinking level for Gemini 3 models.
- * Mirrors Google's ThinkingLevel enum values.
+ * Thinking level for Gemini 3+ models.
+ * Mirrors Google's ThinkingLevel enum values (including XHIGH added in @google/genai 3.3.0 / Gemini 4 Hydrogen).
  */
-export type GoogleApiThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
-export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "xhigh" | "max">;
+export type GoogleApiThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" | "XHIGH";
+export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "max">;
 
-// Keep shared wire helpers independent of the SDK runtime. Type-check its enum values.
-const GOOGLE_SDK_THINKING_LEVEL_MAP = {
+// Keep shared wire helpers independent of the SDK runtime. Type-check SDK enum values present in @google/genai 2.x;
+// XHIGH was added in @google/genai 3.3.0 (2026-11-12, inside the npm release age gate) and is sent as "XHIGH".
+const GOOGLE_SDK_BASE_THINKING_LEVEL_MAP = {
 	THINKING_LEVEL_UNSPECIFIED: "THINKING_LEVEL_UNSPECIFIED",
 	MINIMAL: "MINIMAL",
 	LOW: "LOW",
 	MEDIUM: "MEDIUM",
 	HIGH: "HIGH",
-} satisfies Record<GoogleApiThinkingLevel, `${GoogleSdkThinkingLevel}`>;
+} satisfies Record<Exclude<GoogleApiThinkingLevel, "XHIGH">, `${GoogleSdkThinkingLevel}`>;
+
+const GOOGLE_SDK_THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, `${GoogleSdkThinkingLevel}` | "XHIGH"> = {
+	...GOOGLE_SDK_BASE_THINKING_LEVEL_MAP,
+	XHIGH: "XHIGH",
+};
 
 const GOOGLE_FUNCTION_CALLING_MODES = {
 	AUTO: "AUTO",
@@ -65,6 +71,7 @@ export function resolveGoogleThinkingLevel<T extends Api>(
 		case "low":
 		case "medium":
 		case "high":
+		case "xhigh":
 			return resolvedLevel;
 		default:
 			throw new Error(
@@ -103,6 +110,8 @@ export function toGoogleThinkingLevel(level: ResolvedGoogleThinkingLevel): Googl
 			return "MEDIUM";
 		case "high":
 			return "HIGH";
+		case "xhigh":
+			return "XHIGH";
 	}
 }
 
