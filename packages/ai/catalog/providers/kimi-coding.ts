@@ -19,6 +19,7 @@ const IMPLIED_COSTS: Record<string, ModelCost> = {
 const KIMI_CODING_K3_WIRE: OpenAICompletionsCompat = {
 	thinkingFormat: "kimi",
 	maxTokensField: "max_completion_tokens",
+	promptCacheKeyMode: "enabled",
 };
 
 // Kimi Coding uses Chat Completions, the same protocol as the official Kimi Code client.
