@@ -53,9 +53,17 @@ function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynam
 			base.compat !== undefined &&
 			"thinkingFormat" in base.compat &&
 			base.compat.thinkingFormat === "kimi";
+		// pi.dev omits supportsMidConvoEffort on openai-codex GPT-6 models; keep the built-in flag.
+		const keepMidConvoEffort =
+			base !== undefined &&
+			isModelType(base, "chat") &&
+			isModelType(model, "chat") &&
+			base.compat !== undefined &&
+			"supportsMidConvoEffort" in base.compat &&
+			base.compat.supportsMidConvoEffort === true;
 		merged.set(
 			key(model),
-			keepName || keepKimiWire
+			keepName || keepKimiWire || keepMidConvoEffort
 				? {
 						...model,
 						...(keepName ? { name: base.name } : {}),
@@ -64,7 +72,9 @@ function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynam
 									compat: { ...model.compat, ...base.compat },
 									maxTokens: Math.max(base.maxTokens, model.maxTokens),
 								}
-							: {}),
+							: keepMidConvoEffort
+								? { compat: { ...model.compat, supportsMidConvoEffort: true } }
+								: {}),
 					}
 				: model,
 		);
@@ -150,6 +160,7 @@ export function withRemoteCatalog(
 	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
 	localGeneratedAt?: number,
 ): Provider {
+	if (provider.refreshModels) return provider;
 	let dynamicModels: readonly AnyModel[] = [];
 
 	return {
