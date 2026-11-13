@@ -133,3 +133,49 @@ it("keeps kimi-coding K3 wire compat and maxTokens over a newer pi.dev overlay",
 		},
 	});
 });
+
+it("keeps supportsMidConvoEffort and native refreshModels across withRemoteCatalog", async () => {
+	const builtinCodex: Model<"openai-codex-responses"> = {
+		id: "gpt-6-astra",
+		name: "GPT-6 Astra",
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://chatgpt.com/backend-api",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+		contextWindow: 272_000,
+		maxTokens: 128_000,
+		compat: { supportsMidConvoEffort: true, supportsToolSearch: true },
+	};
+	const remoteCodex: Model<"openai-codex-responses"> = {
+		...builtinCodex,
+		compat: { supportsToolSearch: true },
+	};
+	vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ "gpt-6-astra": remoteCodex }));
+	const provider = withRemoteCatalog(
+		createProvider({
+			id: "openai-codex",
+			auth: { apiKey: { name: "Codex", resolve: async () => ({ auth: {} }) } },
+			models: [builtinCodex],
+			api: {
+				stream: () => {
+					throw new Error("not used");
+				},
+				streamSimple: () => {
+					throw new Error("not used");
+				},
+			},
+		}),
+		"https://pi.dev",
+	);
+	await refresh(provider);
+	expect(provider.getModels()[0]?.compat).toMatchObject({
+		supportsMidConvoEffort: true,
+		supportsToolSearch: true,
+	});
+
+	const nativeRefresh = vi.fn();
+	const withNativeRefresh = { ...builtinProvider(), refreshModels: nativeRefresh };
+	expect(withRemoteCatalog(withNativeRefresh).refreshModels).toBe(nativeRefresh);
+});
