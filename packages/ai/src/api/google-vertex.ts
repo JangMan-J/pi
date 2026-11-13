@@ -551,8 +551,9 @@ function getGoogleBudget(
 	level: ResolvedGoogleThinkingLevel,
 	customBudgets?: ThinkingBudgets,
 ): number {
-	if (customBudgets?.[level] !== undefined) {
-		return customBudgets[level]!;
+	const customBudget = level === "xhigh" ? undefined : customBudgets?.[level];
+	if (customBudget !== undefined) {
+		return customBudget;
 	}
 
 	if (model.id.includes("2.5-pro")) {
@@ -561,6 +562,7 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 32768,
+			xhigh: 32768,
 		};
 		return budgets[level];
 	}
@@ -571,6 +573,7 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 24576,
+			xhigh: 24576,
 		};
 		return budgets[level];
 	}
