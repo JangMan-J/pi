@@ -926,6 +926,20 @@ function buildParams(
 			(params as any).reasoning_effort =
 				model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		}
+	} else if (compat.thinkingFormat === "kimi" && model.reasoning) {
+		// The Kimi Code client sends thinking:{type,effort,keep} instead of reasoning_effort. keep "all"
+		// retains earlier reasoning, which convertMessages resends as reasoning_content.
+		if (options?.reasoningEffort) {
+			const mappedEffort = model.thinkingLevelMap?.[options.reasoningEffort];
+			const effort = mappedEffort === undefined ? options.reasoningEffort : mappedEffort;
+			(params as any).thinking = {
+				type: "enabled",
+				...(typeof effort === "string" ? { effort } : {}),
+				keep: "all",
+			};
+		} else if (model.thinkingLevelMap?.off !== null) {
+			(params as any).thinking = { type: "disabled" };
+		}
 	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
 		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
 		const openRouterParams = params as typeof params & { reasoning?: { effort?: string } };
