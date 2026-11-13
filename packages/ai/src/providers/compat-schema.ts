@@ -260,6 +260,12 @@ const OpenAICompletionsCompatProperties = {
 				"Whether all replayed assistant messages must include an empty reasoning_content field when reasoning is enabled. Default: auto-detected from URL.",
 		}),
 	),
+	requiresMoonshotToolSchemas: opt(
+		bool({
+			description:
+				"Whether tool parameter schemas must be rewritten into Moonshot's accepted subset (typed enums, non-empty enums, single-schema items). Default: auto-detected for Moonshot and Kimi Coding URLs.",
+		}),
+	),
 	thinkingFormat: opt(
 		union(
 			[
