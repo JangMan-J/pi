@@ -611,9 +611,9 @@ describe("native Claude Code version recovery", () => {
 	it("tracks the bundled version, learned floor, equal/lower floors, and repeated rejection in order", async () => {
 		const initial = capture();
 		await stream(model, context, { apiKey, fetch: initial.fetch }).result();
-		expect(initial.headers[0]!.get("user-agent")).toBe("claude-cli/2.1.310");
+		expect(initial.headers[0]!.get("user-agent")).toBe("claude-cli/2.1.322");
 		expect(billing(initial.payloads[0]!)).toBe(
-			"x-anthropic-billing-header: cc_version=2.1.310.077; cc_entrypoint=sdk-cli; cch=3639e;",
+			"x-anthropic-billing-header: cc_version=2.1.322.aaf; cc_entrypoint=sdk-cli; cch=3639e;",
 		);
 
 		const wire = capture([() => rejection("2.1.900"), success]);
