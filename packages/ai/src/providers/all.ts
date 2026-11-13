@@ -46,6 +46,8 @@ import { xiaomiTokenPlanSgpProvider } from "./xiaomi-token-plan-sgp.ts";
 import { zaiProvider } from "./zai.ts";
 import { zaiCodingCnProvider } from "./zai-coding-cn.ts";
 
+// Registration helper only; the factory stays behind the selective `./providers/generic-endpoint` entry.
+export { addGenericEndpointProviders } from "./generic-endpoint.ts";
 export { radiusProvider };
 
 /** Providers present in the generated catalog. `KnownProvider` additionally
