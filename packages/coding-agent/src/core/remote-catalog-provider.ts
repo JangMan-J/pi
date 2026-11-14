@@ -29,9 +29,56 @@ function isSupportedModelType(model: { type?: unknown }): boolean {
 	);
 }
 
+/** A name that only repeats the model ID is no display name. */
+function hasDisplayName(model: AnyModel): boolean {
+	return model.name !== "" && model.name !== model.id;
+}
+
 function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynamic: readonly TModel[]): TModel[] {
 	const merged = new Map<string, TModel>();
-	for (const model of [...baseline, ...dynamic]) merged.set(`${getModelType(model)}\0${model.id}`, model);
+	const key = (model: TModel) => `${getModelType(model)}\0${model.id}`;
+	for (const model of baseline) merged.set(key(model), model);
+	for (const model of dynamic) {
+		const base = merged.get(key(model));
+		// The pi.dev catalog inherits models.dev names, some of which only repeat the ID. Such a name
+		// does not replace a real built-in name.
+		const keepName = base !== undefined && hasDisplayName(base) && !hasDisplayName(model);
+		// pi.dev serves upstream's generic K3 settings for kimi-coding; keep the Kimi Code client wire
+		// settings from the built-in catalog when a newer pi.dev overlay arrives.
+		const keepKimiWire =
+			base !== undefined &&
+			isModelType(base, "chat") &&
+			isModelType(model, "chat") &&
+			base.provider === "kimi-coding" &&
+			base.compat !== undefined &&
+			"thinkingFormat" in base.compat &&
+			base.compat.thinkingFormat === "kimi";
+		// pi.dev omits supportsMidConvoEffort on openai-codex GPT-6 models; keep the built-in flag.
+		const keepMidConvoEffort =
+			base !== undefined &&
+			isModelType(base, "chat") &&
+			isModelType(model, "chat") &&
+			base.compat !== undefined &&
+			"supportsMidConvoEffort" in base.compat &&
+			base.compat.supportsMidConvoEffort === true;
+		merged.set(
+			key(model),
+			keepName || keepKimiWire || keepMidConvoEffort
+				? {
+						...model,
+						...(keepName ? { name: base.name } : {}),
+						...(keepKimiWire
+							? {
+									compat: { ...model.compat, ...base.compat },
+									maxTokens: Math.max(base.maxTokens, model.maxTokens),
+								}
+							: keepMidConvoEffort
+								? { compat: { ...model.compat, supportsMidConvoEffort: true } }
+								: {}),
+					}
+				: model,
+		);
+	}
 	return [...merged.values()];
 }
 
@@ -113,6 +160,7 @@ export function withRemoteCatalog(
 	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
 	localGeneratedAt?: number,
 ): Provider {
+	if (provider.refreshModels) return provider;
 	let dynamicModels: readonly AnyModel[] = [];
 
 	return {
