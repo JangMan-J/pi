@@ -36,6 +36,7 @@ import {
 	convertMessages,
 	convertTools,
 	getDisabledGoogleThinkingConfig,
+	googleContextTokens,
 	isThinkingPart,
 	mapStopReason,
 	resolveGoogleFunctionCallingMode,
@@ -252,7 +253,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 						cacheRead: chunk.usageMetadata.cachedContentTokenCount || 0,
 						cacheWrite: 0,
 						reasoning: chunk.usageMetadata.thoughtsTokenCount || 0,
-						totalTokens: chunk.usageMetadata.totalTokenCount || 0,
+						totalTokens: googleContextTokens(chunk.usageMetadata),
 						cost: {
 							input: 0,
 							output: 0,
@@ -502,9 +503,9 @@ function buildParams(
 		...(functionCallingMode !== undefined && {
 			toolConfig: { functionCallingConfig: { mode: functionCallingMode } },
 		}),
-		// Off for now, until we have evaluated the implications of the SDK's automatic continuation
-		// (extra requests and stream resumes inside the SDK). A CONTINUATION finish ends the turn as "length".
-		automaticContinuation: false,
+		// A CONTINUATION finish (maxOutputTokens above the per-request decode cap) is resumed by the SDK
+		// with its continuationToken; the hops stream into one turn and their usage is summed.
+		automaticContinuation: true,
 	};
 
 	if (options.thinking?.enabled && model.reasoning) {
@@ -540,8 +541,9 @@ function getGoogleBudget(
 	level: ResolvedGoogleThinkingLevel,
 	customBudgets?: ThinkingBudgets,
 ): number {
-	if (customBudgets?.[level] !== undefined) {
-		return customBudgets[level]!;
+	const customBudget = level === "xhigh" ? undefined : customBudgets?.[level];
+	if (customBudget !== undefined) {
+		return customBudget;
 	}
 
 	if (model.id.includes("2.5-pro")) {
@@ -550,6 +552,7 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 32768,
+			xhigh: 32768,
 		};
 		return budgets[level];
 	}
@@ -560,6 +563,7 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 24576,
+			xhigh: 24576,
 		};
 		return budgets[level];
 	}
