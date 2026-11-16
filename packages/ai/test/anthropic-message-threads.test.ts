@@ -242,8 +242,10 @@ describe("Anthropic message threads", () => {
 		expect(create.body.system).toBeDefined();
 		expect(create.body.tools).toBeDefined();
 		expect(next.body.thread).toEqual({ type: "continue", previous_message_id: "msg_1" });
-		expect(next.body).not.toHaveProperty("system");
-		expect(next.body).not.toHaveProperty("tools");
+		// A continuation must carry `system` (and keeps `tools`): Anthropic answers a
+		// continuation without `system` with a billing-shaped 400 (measured 2026-11-16).
+		expect(next.body.system).toEqual(create.body.system);
+		expect(next.body.tools).toEqual(create.body.tools);
 		// The first user message had string content turned into a cached block on request 1,
 		// and plain string content on request 2; the cache marker moved to the new message.
 		expect(create.body.messages[0].content).toEqual([
@@ -269,6 +271,8 @@ describe("Anthropic message threads", () => {
 
 		const next = h.requests[1];
 		expect(next.body.thread).toEqual({ type: "continue", previous_message_id: "msg_tool" });
+		expect(next.body.system).toEqual(h.requests[0].body.system);
+		expect(next.body.tools).toEqual(h.requests[0].body.tools);
 		expect(next.body.messages).toHaveLength(1);
 		expect(next.body.messages[0]).toMatchObject({
 			role: "user",
@@ -403,6 +407,51 @@ describe("Anthropic message threads", () => {
 		expect(later.body).not.toHaveProperty("thread");
 		// The resend was accepted with the threads beta, so the beta list stays the same.
 		expect(later.betas).toEqual(h.requests[0].betas);
+	});
+
+	it("resends in full as a new thread after a billing-shaped 400 on continue", async () => {
+		const h = harness();
+		const messages = [user("first")];
+		await say(h, messages);
+		messages.push(user("second"));
+		// No thread error_code and no "thread" in the message: the disguised rejection
+		// measured live when a continuation was malformed.
+		h.queue.push(() =>
+			errorResponse(
+				400,
+				"Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.",
+			),
+		);
+		const result = await say(h, messages);
+
+		expect(result.stopReason).toBe("stop");
+		expect(h.requests).toHaveLength(3);
+		const [, rejected, resend] = h.requests;
+		expect(rejected.body.thread?.type).toBe("continue");
+		expect(resend.body.thread).toEqual({ type: "create" });
+		expect(resend.body.messages).toHaveLength(3);
+		expect(resend.body.system).toBeDefined();
+		expect(result.diagnostics?.[0]).toMatchObject({ type: "anthropic_thread_fallback" });
+	});
+
+	it("does not resend a billing-shaped 400 on create", async () => {
+		const h = harness();
+		h.queue.push(() => errorResponse(400, "You are out of usage. Add more at claude.ai/settings/usage."));
+		const failed = await turn(h, [user("first")]);
+		expect(failed.stopReason).toBe("error");
+		expect(failed.errorMessage).toContain("out of usage");
+		expect(h.requests).toHaveLength(1);
+		expect(failed.diagnostics).toBeUndefined();
+	});
+
+	it("keeps received content when the provider stops with an unknown reason", async () => {
+		const h = harness();
+		h.queue.push((request) => reply(request, { text: "partial answer", stopReason: "brand_new_reason" }));
+		const result = await turn(h, [user("first")]);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("brand_new_reason");
+		expect(result.rawStopReason).toBe("brand_new_reason");
+		expect(result.content).toContainEqual({ type: "text", text: "partial answer" });
 	});
 
 	it("shows the error when the resend fails too and keeps threads on", async () => {
