@@ -434,7 +434,7 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(ids[3]).not.toBe(ids[0]);
 	});
 
-	it("omits system on OAuth message-thread continuations while keeping Claude Code headers", async () => {
+	it("keeps system on OAuth message-thread continuations while keeping Claude Code headers", async () => {
 		const wire = capture();
 		const sessionId = "01a115f3-4c34-7791-bbfc-c9688e9c0db4";
 		const first = await stream(model, context, { apiKey, env: pin, fetch: wire.fetch, sessionId }).result();
@@ -455,7 +455,10 @@ describe("native Anthropic OAuth shaping", () => {
 		expect(wire.payloads[0]).toMatchObject({ thread: { type: "create" } });
 		expect(billing(wire.payloads[0]!)).toBeDefined();
 		expect(wire.payloads[1]).toMatchObject({ thread: { type: "continue", previous_message_id: "msg_mock" } });
-		expect(wire.payloads[1]).not.toHaveProperty("system");
+		// A continuation without top-level `system` is rejected with a billing-shaped 400
+		// (measured 2026-11-16), so the shaped OAuth system is resent on continuations.
+		// The billing block is derived from each request's first user text, so compare the rest.
+		expect(withoutBilling(wire.payloads[1]!).system).toEqual(withoutBilling(wire.payloads[0]!).system);
 		expect(wire.headers[1]!.get("user-agent")).toBe("claude-cli/2.1.280");
 		expect(wire.headers[1]!.get("x-claude-code-session-id")).toBe(wire.headers[0]!.get("x-claude-code-session-id"));
 	});
