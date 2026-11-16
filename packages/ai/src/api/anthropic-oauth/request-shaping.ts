@@ -104,23 +104,20 @@ export async function shapeOAuthPayload(
 			: firstUser?.content.find((block) => block.type === "text");
 	const text = typeof firstText === "string" ? firstText : firstText?.type === "text" ? firstText.text : "";
 	const billing = await buildBillingHeader(text, version);
-	const isThreadContinue = (params as { thread?: { type?: string } }).thread?.type === "continue";
-	const system = isThreadContinue
-		? undefined
-		: [
-				...(billing ? [{ type: "text" as const, text: billing }] : []),
-				...(typeof params.system === "string"
-					? [{ type: "text" as const, text: params.system }]
-					: (params.system ?? [])
-				)
-					.filter((block) => !block.text.startsWith(BILLING_MARKER))
-					.map((block) => ({ ...block, text: shapeSystemPrompt(block.text) })),
-			];
+	// Thread continuations keep the shaped system too: Anthropic rejects a continuation
+	// without top-level `system` with a billing-shaped 400 (measured 2026-11-16), so the
+	// old `thread: continue` omission here undid the system anthropic-messages.ts sent.
+	const system = [
+		...(billing ? [{ type: "text" as const, text: billing }] : []),
+		...(typeof params.system === "string" ? [{ type: "text" as const, text: params.system }] : (params.system ?? []))
+			.filter((block) => !block.text.startsWith(BILLING_MARKER))
+			.map((block) => ({ ...block, text: shapeSystemPrompt(block.text) })),
+	];
 	const toolChoice = compatibleAnthropicToolChoice(params);
 	return {
 		...params,
 		messages,
-		...(system !== undefined ? { system } : {}),
+		system,
 		...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
 	};
 }
