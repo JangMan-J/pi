@@ -1,0 +1,7 @@
+# Branches merged into `next`, in order. The first is the base; each following branch is merged --no-ff.
+feat/native-anthropic
+feat/native-google
+feat/native-meta
+feat/native-openai
+feat/native-providers
+fork/tooling
