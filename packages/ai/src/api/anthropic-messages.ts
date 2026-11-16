@@ -313,8 +313,9 @@ registerSessionResourceCleanup((sessionId) => {
  * and the messages the server already holds.
  *
  * - Settings, as sent: the endpoint (a thread exists on one endpoint only), and the fixed request
- *   fields. A `continue` omits `system` and `tools` and the server keeps the thread's own, so only
- *   this check can notice a change to them, including their cache markers. The server rejects
+ *   fields. A `continue` resends `system` and `tools` (the server rejects one without `system`), but
+ *   the thread was created with the earlier values, so this check notices a change to them, including
+ *   their cache markers, before the server does. The server rejects
  *   changes to the other fields with `thread_fingerprint_mismatch`; checking them here saves that
  *   rejected request. A fixed field missing here costs only that rejection, which also starts a
  *   new thread.
@@ -374,10 +375,14 @@ function prepareThreadRequest(
 	) {
 		// Each reply can be continued once; deleting also keeps a concurrent request from trying.
 		threadState.delete(sessionId);
-		const { system: _system, tools: _tools, ...rest } = params;
 		return {
 			body: {
-				...rest,
+				// A continuation must carry `system`: Anthropic rejects one without it with a
+				// billing-shaped 400 ("Third-party apps now draw from your extra usage\u2026"),
+				// measured 2026-11-16 on claude-opus-5-5. `tools` is optional for validity but
+				// must stay, or the continued turn cannot call tools. The thread still supplies
+				// the message prefix; only `messages` are trimmed below.
+				...params,
 				messages: params.messages.slice(state.prefixCount),
 				thread: { type: "continue", previous_message_id: state.replyId },
 			},
@@ -413,6 +418,15 @@ async function sendThreadRequest(
 		if (signal?.aborted || !(error instanceof Anthropic.APIError)) throw error;
 		const errorCode = getThreadErrorCode(error);
 		const startNewThread = errorCode !== undefined && NEW_THREAD_ERRORS.has(errorCode);
+		// A malformed continuation can be answered with a billing message instead of a thread
+		// error_code: 400 invalid_request_error "Third-party apps now draw from your extra usage,
+		// \u2026" (measured 2026-11-16). A full `create` request is not answered that way, so on a
+		// `continue` this is a thread rejection: resend once in full as a new thread.
+		const disguisedThreadRejection =
+			thread.body.thread?.type === "continue" &&
+			errorCode === undefined &&
+			error.status === 400 &&
+			/extra usage|out of usage/i.test(error.message);
 		// The endpoint can't use threads: it can't thread this request, or it doesn't know the
 		// `thread` field and rejects it without a code ("thread: Extra inputs are not permitted"),
 		// e.g. with an `anthropic-beta` header that lacks the threads beta.
@@ -421,7 +435,7 @@ async function sendThreadRequest(
 			(errorCode === undefined && error.status === 400 && error.message.includes("thread"));
 		// Any other error (prompt too long, unknown model, strict tool limits, ...) is not about the
 		// thread, and resending would only fail again.
-		if (!startNewThread && !threadsUnsupported) throw error;
+		if (!startNewThread && !threadsUnsupported && !disguisedThreadRejection) throw error;
 		// Recorded before the resend, so a failed resend keeps it.
 		appendAssistantMessageDiagnostic(output, {
 			type: "anthropic_thread_fallback",
@@ -429,7 +443,7 @@ async function sendThreadRequest(
 			error: { message: error.message },
 			details: { reason: errorCode ?? String(error.status) },
 		});
-		if (startNewThread) {
+		if (startNewThread || disguisedThreadRejection) {
 			const created = createThreadRequest(thread.sessionId, params);
 			return { response: await send(created.body), thread: created };
 		}
@@ -1343,6 +1357,17 @@ function getBetaFeatures(
 	if (model.compat?.supportsMidConvoEffort === true && model.compat.forceAdaptiveThinking !== false) {
 		features.push(MID_CONVERSATION_OUTPUT_CONFIG_BETA, THINKING_BINDING_CONTROLS_BETA);
 	}
+	// The plain adaptive branch in buildParams also sends `block_binding`, which needs this beta.
+	// Limited to Anthropic's own endpoint, like message threads: other Messages-compatible
+	// endpoints may reject the unknown beta or field.
+	if (
+		model.reasoning &&
+		options?.thinkingEnabled === true &&
+		model.compat?.forceAdaptiveThinking === true &&
+		model.baseUrl.includes("api.anthropic.com")
+	) {
+		features.push(THINKING_BINDING_CONTROLS_BETA);
+	}
 	if (nativeToolChanges) features.push(INLINE_TOOLS_BETA);
 	if (messageThreads) features.push(MESSAGE_THREADS_BETA);
 	return [...new Set(features)];
@@ -1495,8 +1520,13 @@ function buildParams(
 		// older Claude 4 models (whose API default is also "summarized").
 		const display: AnthropicThinkingDisplay = options.thinkingDisplay ?? "summarized";
 		if (model.compat?.forceAdaptiveThinking === true) {
-			// Adaptive thinking: Claude decides when and how much to think.
-			params.thinking = { type: "adaptive", display };
+			// Adaptive thinking: Claude decides when and how much to think. On Anthropic's own
+			// endpoint, bind replayed thinking blocks the same way the managed-effort branch
+			// does, so a prefix/signature mismatch drops the block instead of surfacing as a
+			// persistent 400 on every later turn.
+			params.thinking = model.baseUrl.includes("api.anthropic.com")
+				? { type: "adaptive", display, block_binding: { prefix_mismatch_behavior: "drop_block" } }
+				: { type: "adaptive", display };
 			if (options.effort) {
 				params.output_config = { effort: options.effort };
 			}
@@ -1652,9 +1682,12 @@ function convertMessages(
 				} else if (block.type === "thinking") {
 					// Redacted thinking: pass the opaque payload back as redacted_thinking
 					if (block.redacted) {
+						// Without the opaque payload there is nothing valid to replay; sending
+						// `data: undefined` would make the whole request a 400.
+						if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) continue;
 						blocks.push({
 							type: "redacted_thinking",
-							data: block.thinkingSignature!,
+							data: block.thinkingSignature,
 						});
 						continue;
 					}
@@ -1908,7 +1941,9 @@ function mapStopReason(
 		case "sensitive": // Content flagged by safety filters (not yet in SDK types)
 			return { stopReason: "error", errorMessage: "Provider stopped with: sensitive" };
 		default:
-			// Handle unknown stop reasons gracefully (API may add new values)
-			throw new Error(`Unhandled stop reason: ${reason}`);
+			// Unknown stop reasons (the API may add new values) surface as a visible error on
+			// the message instead of throwing mid-stream, so the content already received and
+			// the usage in the same event are kept rather than lost with an empty reply.
+			return { stopReason: "error", errorMessage: `Provider stopped with: ${reason}` };
 	}
 }
