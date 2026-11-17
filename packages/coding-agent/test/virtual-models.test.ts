@@ -121,9 +121,10 @@ describe("ModelRuntime virtual models", () => {
 		expect(virtual.input).toEqual(["text", "image"]);
 		expect(getSupportedThinkingLevels(virtual)).toEqual(["low", "high"]);
 		const large = runtime.getModel("faux", "large")!;
+		const previousMessage = { ...assistantFrom(large, "answer"), thinkingLevel: "medium" as const };
 		const messages = [
 			{ role: "user" as const, content: "first", timestamp: 1 },
-			{ ...assistantFrom(large, "answer"), thinkingLevel: "medium" as const },
+			previousMessage,
 			{ role: "user" as const, content: "second", timestamp: 2 },
 		];
 
@@ -131,7 +132,7 @@ describe("ModelRuntime virtual models", () => {
 		expect(low.model.id).toBe("small");
 		// The router asked for "high", but the small model does not reason.
 		expect(low.thinkingLevel).toBe("off");
-		expect(requests[0].previous).toEqual({ model: large, thinkingLevel: "medium" });
+		expect(requests[0].previous).toEqual({ model: large, thinkingLevel: "medium", message: previousMessage });
 
 		const high = await runtime.resolveModel(virtual, messages, { reason: "user", thinkingLevel: "high" });
 		expect(high).toEqual({ model: large, thinkingLevel: "high" });

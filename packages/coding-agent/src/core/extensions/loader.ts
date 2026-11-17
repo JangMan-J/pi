@@ -20,7 +20,12 @@ import { type McpServerConfig, McpServerRegistry, validateMcpServerConfig } from
 import { readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.ts";
 import { time } from "../timings.ts";
-import type { ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
+import type {
+	ModelRouteOutcome,
+	ModelRouteRequest,
+	VirtualModelDefinition,
+	VirtualStreamRequest,
+} from "../virtual-models.ts";
 import type {
 	EntryRenderer,
 	Extension,
@@ -240,6 +245,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 				({ definition }) => definition.provider !== provider || definition.id !== id,
 			);
 		},
+		setVirtualModelState: notInitialized,
 	};
 
 	return runtime;
@@ -515,9 +521,21 @@ function createExtensionAPI(
 			assertActive();
 			// Routing runs after the runner binds, so the context is created per request. The state
 			// comes from the session branch that this router wrote.
+			const { route: extRoute, stream: extStream, onOutcome: extOnOutcome, ...base } = model;
 			const definition: VirtualModelDefinition = {
-				...model,
-				route: (request) => model.route(request as ModelRouteRequest<TState>, runtime.createContext()),
+				...base,
+				route: (request) => extRoute(request as ModelRouteRequest<TState>, runtime.createContext()),
+				...(extStream
+					? {
+							stream: (request) => extStream(request as VirtualStreamRequest<TState>, runtime.createContext()),
+						}
+					: {}),
+				...(extOnOutcome
+					? {
+							onOutcome: (outcome) =>
+								extOnOutcome(outcome as ModelRouteOutcome<TState>, runtime.createContext()),
+						}
+					: {}),
 			};
 			applyRuntimeChange(() => runtime.registerVirtualModel(definition, extension.path));
 		},
@@ -525,6 +543,11 @@ function createExtensionAPI(
 		unregisterVirtualModel(provider: string, id: string) {
 			assertActive();
 			applyRuntimeChange(() => runtime.unregisterVirtualModel(provider, id));
+		},
+
+		setVirtualModelState<TState>(provider: string, id: string, nextState: TState) {
+			assertActive();
+			runtime.setVirtualModelState(provider, id, nextState);
 		},
 
 		events: {
