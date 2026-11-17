@@ -19,13 +19,12 @@ import type {
 	ModelsImagesOptions,
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
-	ModelsSimpleStreamOptions,
 	ModelType,
 	ModelTypeMap,
 	Provider,
 	ProviderHeaders,
 } from "@earendil-works/pi-ai";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime, VirtualStreamOptions } from "./model-runtime.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
 import type { VirtualModelDefinition } from "./virtual-models.ts";
 
@@ -135,8 +134,13 @@ export class ModelRegistry {
 	}
 
 	/** Stream with provider-neutral options and request-time authentication. */
-	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
+	streamSimple(model: Model<Api>, context: Context, options?: VirtualStreamOptions): AssistantMessageEventStream {
 		return this.runtime.streamSimple(model, context, options);
+	}
+
+	/** Complete a simple provider-neutral request and return the final assistant message. */
+	completeSimple(model: Model<Api>, context: Context, options?: VirtualStreamOptions): Promise<AssistantMessage> {
+		return this.runtime.completeSimple(model, context, options);
 	}
 
 	complete<TApi extends Api>(
