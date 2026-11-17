@@ -2,7 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
 	getCurrentSystemMessage,
 	type ImageContent,
@@ -24,7 +24,12 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "../system-prompt.ts";
-import type { VirtualModelDefinition } from "../virtual-models.ts";
+import {
+	getVirtualModelState,
+	VIRTUAL_MODEL_STATE_ENTRY,
+	type VirtualModelDefinition,
+	type VirtualModelStateData,
+} from "../virtual-models.ts";
 import type {
 	AgentBeforeSettleEvent,
 	BeforeAgentStartCustomEvent,
@@ -371,6 +376,7 @@ export class ExtensionRunner {
 	private modelRegistry: ModelRegistry;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
+	private getRoutedModel: () => { model: Model<any>; thinkingLevel?: ThinkingLevel } | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
 	private isProjectTrustedFn: () => boolean = () => true;
@@ -427,6 +433,7 @@ export class ExtensionRunner {
 			unregisterProvider?: (name: string) => void;
 			registerVirtualModel?: (definition: VirtualModelDefinition) => void;
 			unregisterVirtualModel?: (provider: string, id: string) => void;
+			setVirtualModelState?: (provider: string, id: string, state: unknown) => void;
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
@@ -445,10 +452,19 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.setVirtualModelState =
+			providerActions?.setVirtualModelState ??
+			((provider, modelId, nextState) => {
+				const currentState = getVirtualModelState(this.sessionManager.getBranch(), provider, modelId);
+				if (nextState === undefined || nextState === currentState) return;
+				const data: VirtualModelStateData = { provider, modelId, state: nextState };
+				this.sessionManager.appendCustomEntry(VIRTUAL_MODEL_STATE_ENTRY, data);
+			});
 		this.runtime.createContext = () => this.createContext();
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
+		this.getRoutedModel = contextActions.getRoutedModel ?? (() => undefined);
 		this.getScopedModels = contextActions.getScopedModels;
 		this.isIdleFn = contextActions.isIdle;
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
@@ -895,6 +911,7 @@ export class ExtensionRunner {
 	createContext(): ExtensionContext {
 		const runner = this;
 		const getModel = this.getModel;
+		const getRoutedModel = this.getRoutedModel;
 		const getScopedModels = this.getScopedModels;
 		return {
 			get ui() {
@@ -924,6 +941,10 @@ export class ExtensionRunner {
 			get model() {
 				runner.assertActive();
 				return getModel();
+			},
+			get routedModel() {
+				runner.assertActive();
+				return getRoutedModel();
 			},
 			get scopedModels() {
 				runner.assertActive();
