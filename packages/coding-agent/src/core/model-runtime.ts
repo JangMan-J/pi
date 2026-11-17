@@ -86,17 +86,47 @@ import { withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-pro
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 import {
 	createVirtualModel,
+	EMPTY_ROUTE_CACHE_SNAPSHOT,
 	findLatestResponse,
 	isVirtualModel,
 	type ModelRoute,
+	type ModelRouteCacheSnapshot,
+	type ModelRouteOutcome,
+	type ModelRoutePurpose,
 	type ModelRouteReason,
+	type ModelRouteRequest,
+	purposeToReason,
 	type VirtualModelDefinition,
 	withVirtualModels,
 } from "./virtual-models.ts";
+import { executeRoutedStream, type SidecarUsageRecorder } from "./virtual-stream.ts";
 
 interface RegisteredVirtualModel {
 	model: Model<Api>;
-	route: VirtualModelDefinition["route"];
+	definition: VirtualModelDefinition;
+}
+
+export interface ResolveVirtualModelOptions {
+	reason?: ModelRouteReason;
+	purpose?: ModelRoutePurpose;
+	isSubagent?: boolean;
+	boundaryContinuation?: boolean;
+	turnIndex?: number;
+	thinkingLevel: ModelThinkingLevel;
+	signal?: AbortSignal;
+	failed?: AssistantMessage;
+	state?: unknown;
+	cache?: ModelRouteCacheSnapshot;
+	setStatus?: (label: string | undefined) => void;
+}
+
+export interface VirtualStreamOptions extends ModelsSimpleStreamOptions {
+	purpose?: ModelRoutePurpose;
+	isSubagent?: boolean;
+	state?: unknown;
+	cache?: ModelRouteCacheSnapshot;
+	onSidecarUsage?: SidecarUsageRecorder;
+	setStatus?: (label: string | undefined) => void;
 }
 
 interface ModelRuntimeSnapshot {
@@ -741,28 +771,60 @@ export class ModelRuntime implements Models {
 		return this.stream(model, context, options).result();
 	}
 
-	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
+	streamSimple(model: Model<Api>, context: Context, options?: VirtualStreamOptions): AssistantMessageEventStream {
 		const transcript = normalizeContext(context);
 		if (isVirtualModel(model)) {
-			// Requests outside the agent loop are routed here. Callers sized them before routing, so
-			// cap the output budget to the routed model.
+			// Requests outside the agent loop are routed here with full envelope and stream-tier support.
 			return lazyStream(
 				model,
 				async () => {
-					const route = await this.resolveModel(model, transcript.messages, {
-						reason: "direct",
+					const { apiKey, headers, env, purpose, isSubagent, state, cache, onSidecarUsage, setStatus, ...rest } =
+						options ?? {};
+					const resolvedPurpose = purpose ?? "direct";
+					const prepared = await this.prepareVirtualRoute(model, transcript.messages, {
+						purpose: resolvedPurpose,
+						isSubagent,
 						thinkingLevel: options?.reasoning ?? "off",
 						signal: options?.signal,
+						state,
+						cache,
+						setStatus,
 					});
-					const { maxTokens: limit } = route.model;
-					const maxTokens =
-						options?.maxTokens && limit > 0 ? Math.min(options.maxTokens, limit) : options?.maxTokens;
-					const reasoning = route.thinkingLevel === "off" ? undefined : route.thinkingLevel;
-					// Caller credentials were resolved for the virtual model's provider. Another provider
-					// resolves its own, so they are not sent to the wrong vendor.
-					const { apiKey, headers, env, ...rest } = options ?? {};
-					const auth = route.model.provider === model.provider ? { apiKey, headers, env } : {};
-					return this.streamSimple(route.model, context, { ...rest, ...auth, maxTokens, reasoning });
+					const virtualName = `Virtual model ${model.provider}/${model.id}`;
+					return executeRoutedStream({
+						definition: prepared.definition,
+						request: prepared.request,
+						initialRoute: prepared.route,
+						context: transcript,
+						baseOptions: rest,
+						dispatchPhysical: (physicalModel, physicalContext, physicalOptions) => {
+							// Caller credentials were resolved for the virtual model's provider. Another provider
+							// resolves its own, so they are not sent to the wrong vendor.
+							const auth = physicalModel.provider === model.provider ? { apiKey, headers, env } : {};
+							return this.streamSimple(physicalModel, physicalContext, { ...physicalOptions, ...auth });
+						},
+						resolvePhysicalModel: (providerId, modelId) =>
+							this.requirePhysicalTarget(virtualName, providerId, modelId),
+						recordSidecarUsage: onSidecarUsage,
+						onStatus: setStatus,
+						onComplete: async (completion) => {
+							setStatus?.(undefined);
+							if (!prepared.definition.onOutcome) return;
+							const outcome: ModelRouteOutcome = {
+								virtualModel: model,
+								route: completion.route,
+								purpose: resolvedPurpose,
+								turnIndex: 0,
+								message: completion.message,
+								toolResults: [],
+								ttfbMs: completion.ttfbMs,
+								durationMs: completion.durationMs,
+								aborted: completion.message.stopReason === "aborted",
+								state,
+							};
+							await prepared.definition.onOutcome(outcome);
+						},
+					});
 				},
 				undefined,
 				options?.signal,
@@ -780,7 +842,7 @@ export class ModelRuntime implements Models {
 		);
 	}
 
-	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {
+	completeSimple(model: Model<Api>, context: Context, options?: VirtualStreamOptions): Promise<AssistantMessage> {
 		return this.streamSimple(model, context, options).result();
 	}
 
@@ -1006,7 +1068,7 @@ export class ModelRuntime implements Models {
 			throw new Error(`Virtual model ${providerId}/${id} conflicts with a physical model.`);
 		}
 		const models = this.virtualModels.get(providerId) ?? new Map<string, RegisteredVirtualModel>();
-		models.set(id, { model: createVirtualModel(definition), route: (request) => definition.route(request) });
+		models.set(id, { model: createVirtualModel(definition), definition });
 		this.virtualModels.set(providerId, models);
 		if (!this.recomposeProvider(providerId) && !this.snapshot.configuredProviders.has(providerId)) {
 			// A provider of only virtual models needs no credentials. Mark it configured now: session
@@ -1040,34 +1102,99 @@ export class ModelRuntime implements Models {
 	async resolveModel(
 		model: Model<Api>,
 		messages: readonly Message[],
-		options: {
-			reason: ModelRouteReason;
-			thinkingLevel: ModelThinkingLevel;
-			signal?: AbortSignal;
-			failed?: AssistantMessage;
-			state?: unknown;
-		},
+		options: ResolveVirtualModelOptions,
 	): Promise<ModelRoute> {
+		const prepared = await this.prepareVirtualRoute(model, messages, options);
+		return prepared.route;
+	}
+
+	/** Resolve a virtual model and return its definition, normalized request, and validated route. */
+	async prepareVirtualRoute(
+		model: Model<Api>,
+		messages: readonly Message[],
+		options: ResolveVirtualModelOptions,
+	): Promise<{
+		definition: VirtualModelDefinition;
+		request: ModelRouteRequest;
+		route: ModelRoute;
+	}> {
 		const name = `Virtual model ${model.provider}/${model.id}`;
 		const virtual = this.virtualModels.get(model.provider)?.get(model.id);
 		if (!virtual) throw new Error(`${name} is not registered.`);
-		const { failed, ...request } = options;
+
+		const purpose: ModelRoutePurpose =
+			options.purpose ??
+			(options.reason === "user"
+				? options.isSubagent
+					? "subagent"
+					: "prompt"
+				: options.reason === "continuation"
+					? "continuation"
+					: options.reason === "retry"
+						? "retry"
+						: "direct");
+		const reason: ModelRouteReason = options.reason ?? purposeToReason(purpose);
+
 		const latest = findLatestResponse(messages);
 		const previousModel = latest && this.getPhysicalModel(latest.provider, latest.model);
 		// A failed routing attempt names the virtual model; there is no physical request to report.
-		const failedModel = failed && this.getPhysicalModel(failed.provider, failed.model);
-		const route = await virtual.route({
-			...request,
+		const failedModel = options.failed && this.getPhysicalModel(options.failed.provider, options.failed.model);
+		const request: ModelRouteRequest = {
 			model,
-			previous: previousModel && { model: previousModel, thinkingLevel: latest?.thinkingLevel },
-			failed: failedModel && failed && { model: failedModel, thinkingLevel: failed.thinkingLevel, message: failed },
+			thinkingLevel: options.thinkingLevel,
+			reason,
+			purpose,
+			...(options.isSubagent ? { isSubagent: true } : {}),
+			...(options.boundaryContinuation ? { boundaryContinuation: true } : {}),
+			turnIndex: options.turnIndex ?? 0,
+			previous: previousModel &&
+				latest && {
+					model: previousModel,
+					thinkingLevel: latest.thinkingLevel,
+					message: latest,
+				},
+			failed: failedModel &&
+				options.failed && {
+					model: failedModel,
+					thinkingLevel: options.failed.thinkingLevel,
+					message: options.failed,
+				},
+			state: options.state,
+			cache: options.cache ?? EMPTY_ROUTE_CACHE_SNAPSHOT,
 			messages,
-		});
-		const target = this.getPhysicalModel(route.model.provider, route.model.id);
-		const routed = `${name} routed to ${route.model.provider}/${route.model.id}`;
+			signal: options.signal,
+			...(options.setStatus ? { setStatus: options.setStatus } : {}),
+		};
+
+		const rawRoute = await virtual.definition.route(request);
+		const target = this.requirePhysicalTarget(name, rawRoute.model.provider, rawRoute.model.id);
+		const validatedHedge = rawRoute.hedge
+			? {
+					...rawRoute.hedge,
+					model: this.requirePhysicalTarget(name, rawRoute.hedge.model.provider, rawRoute.hedge.model.id),
+				}
+			: undefined;
+		const route: ModelRoute = {
+			...rawRoute,
+			model: target,
+			thinkingLevel: clampThinkingLevel(target, rawRoute.thinkingLevel),
+			...(validatedHedge ? { hedge: validatedHedge } : {}),
+		};
+		return { definition: virtual.definition, request, route };
+	}
+
+	/** Require a registered physical chat model with configured provider credentials. */
+	requirePhysicalTarget(virtualName: string, providerId: string, modelId: string): Model<Api> {
+		const target = this.getPhysicalModel(providerId, modelId);
+		const routed = `${virtualName} routed to ${providerId}/${modelId}`;
 		if (!target) throw new Error(`${routed}, which is not a physical model.`);
 		if (!this.hasConfiguredAuth(target.provider)) throw new Error(`${routed}, which has no credentials.`);
-		return { model: target, thinkingLevel: clampThinkingLevel(target, route.thinkingLevel), state: route.state };
+		return target;
+	}
+
+	/** Registered virtual model definition, when present. */
+	getVirtualModelDefinition(providerId: string, modelId: string): VirtualModelDefinition | undefined {
+		return this.virtualModels.get(providerId)?.get(modelId)?.definition;
 	}
 
 	/** A catalog chat model that is not virtual. */
