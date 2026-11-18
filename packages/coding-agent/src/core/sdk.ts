@@ -38,7 +38,7 @@ import {
 	createWriteTool,
 	withFileMutationQueue,
 } from "./tools/index.ts";
-import { getBranchSelection } from "./virtual-models.ts";
+import { getBranchSelection, isVirtualModel } from "./virtual-models.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
 // or invoke low-level agent loops without supplying streamFn. Agent core remains
@@ -103,6 +103,8 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Session role (`"subagent"` routes initial requests with `purpose: "subagent"`). */
+	sessionRole?: "primary" | "subagent";
 }
 
 /** Result from createAgentSession */
@@ -356,16 +358,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					: headers,
 		};
 	};
-	// Warm only requests for the selected model. Requests a virtual selection routed, or that an
-	// extension redirected, may not be repeated by the next request, so warming them could be wasted.
+	let sessionRef: AgentSession | undefined;
 	const cacheContextIsCurrent = (requestModel: Model<any>) => {
+		const selectedModel = agent.state.model;
 		const messages = agent.state.messages;
 		return () => {
 			const currentModel = agent.state.model;
 			const currentMessages = agent.state.messages;
+			const activePhysical = sessionRef?.routedModel?.model;
+			const modelMatches = isVirtualModel(selectedModel)
+				? currentModel.provider === selectedModel.provider &&
+					currentModel.id === selectedModel.id &&
+					(!activePhysical ||
+						(activePhysical.provider === requestModel.provider && activePhysical.id === requestModel.id))
+				: currentModel.provider === requestModel.provider && currentModel.id === requestModel.id;
 			return (
-				currentModel.provider === requestModel.provider &&
-				currentModel.id === requestModel.id &&
+				modelMatches &&
 				messages.length <= currentMessages.length &&
 				messages.every((message, index) => currentMessages[index] === message)
 			);
@@ -416,7 +424,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// the current transcript still extends the request's prefix. Agent state may
 			// shallow-copy the messages array or refresh the model object without changing
 			// the provider request, so top-level object identity is not a valid cache key.
-			if (options?.sessionId === sessionManager.getSessionId()) {
+			if (options?.sessionId === sessionManager.getSessionId() && sessionRef?.keepVirtualCacheWarm !== false) {
 				cacheWarmer.start({ model, context, options: requestOptions }, cacheContextIsCurrent(model));
 			}
 			return modelRuntime.streamSimple(model, context, requestOptions);
@@ -469,7 +477,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		sessionRole: options.sessionRole,
 	});
+	sessionRef = session;
 
 	const extensionsResult = resourceLoader.getExtensions();
 
