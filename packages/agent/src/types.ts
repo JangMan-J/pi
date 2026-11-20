@@ -177,7 +177,12 @@ export interface PrepareRequestContext {
 }
 
 /** Replacement runtime state for the provider request being prepared. */
-export type AgentRequestUpdate = Omit<AgentLoopTurnUpdate, "messages">;
+export interface AgentRequestUpdate extends Omit<AgentLoopTurnUpdate, "messages"> {
+	/** Stream options applied only to the provider request being prepared. */
+	requestOptions?: Partial<SimpleStreamOptions>;
+	/** Stream function override applied only to the provider request being prepared. */
+	streamFn?: StreamFn;
+}
 
 /**
  * Called immediately before every conversational provider request, including the first.
