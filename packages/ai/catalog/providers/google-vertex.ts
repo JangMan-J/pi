@@ -1,5 +1,5 @@
 import { defineProvider, modelsDevModels } from "../define.ts";
-import { googleThinkingLevels } from "../families/google.ts";
+import { GOOGLE_LONG_DECODE_MAX_TOKENS, googleThinkingLevels } from "../families/google.ts";
 import { modelsDevChatModels } from "../sources/models-dev.ts";
 import { GOOGLE_ALIAS_TARGETS } from "./google.ts";
 
@@ -35,7 +35,7 @@ export default defineProvider({
 						cacheWrite: 0,
 					},
 					contextWindow: source.contextWindow || 4096,
-					maxTokens: source.maxTokens || 4096,
+					maxTokens: GOOGLE_LONG_DECODE_MAX_TOKENS[model.id] ?? (source.maxTokens || 4096),
 				};
 			},
 		});
