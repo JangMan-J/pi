@@ -1,32 +1,30 @@
 # Virtual Models
 
-A virtual model is a selectable model that picks a physical model for each request. Use one to route by task, cost, or conversation state. For example, a router can send quick questions to a small model and hard problems to a large one, while the user selects a single model.
+A virtual model is a selectable catalog entry that routes each request to a physical model and shapes its execution envelope. Use one to route by task, KV-cache locality, latency, or provider health while the user selects a single model.
 
-Register virtual models from an [extension](extensions.md). They appear in `/model`, `--model`, scoped models, and settings like any other model. A virtual model can be listed under any provider, including one with physical models, such as `openai-codex/auto`.
+Register virtual models from an [extension](extensions.md) or via `modelRuntime.registerVirtualModel()`. They appear in `/model`, `--model`, scoped models, and settings like any other model. A virtual model can be listed under any provider, including one with physical models, such as `openai-codex/auto`.
 
 ## Selection and dispatch
 
-A virtual model selects a model and a thinking level. A router maps that pair to a physical pair for each request:
+A virtual model separates selection from physical dispatch:
 
 ```
-selected (virtual model, virtual level)  ->  dispatched (physical model, physical level)
-jev/auto:low                             ->  anthropic/claude-sonnet-4-5:high
+selected (virtual model, virtual level)  ->  dispatched (physical model, physical level, envelope)
+router/auto:low                          ->  anthropic/claude-sonnet-4-5:high
 ```
 
-The virtual thinking level is an input to the router. Its meaning is up to the router; it need not correspond to a reasoning budget.
-
-Pi keeps the two pairs apart:
+The virtual thinking level is an input to the router; its meaning is up to the router.
 
 | | Selection | Dispatch |
 |---|---|---|
 | Recorded in | `model_change` and `thinking_level_change` entries | Each assistant message: `provider`, `api`, `model`, `thinkingLevel` |
-| Visible as | `ctx.model`, `ctx.thinkingLevel`, `PI_MODEL`, `PI_REASONING_LEVEL`, `/model` | The assistant message of each response |
+| Visible as | `ctx.model`, `ctx.thinkingLevel`, `PI_MODEL`, `PI_REASONING_LEVEL`, `/model` | `ctx.routedModel`, `session.routedModel`, and each response's assistant message |
 
-Providers only receive physical models. Assistant messages name the physical model, so replaying a conversation across different physical models works the same as after a manual model switch. Resuming a session restores the virtual selection from its latest `model_change` entry. If the virtual model is no longer registered, Pi falls back to the physical model that answered last.
+Providers only receive physical models. Resuming a session restores the virtual selection from its latest `model_change` entry, falling back to the physical model that answered last if the virtual model is no longer registered.
 
-In interactive mode, the footer shows the routed model next to the selection, for example `auto • high → gpt-5.6-luna • medium`. `/session` lists the cost for each physical model.
+In interactive mode, the footer shows the active routed model next to the selection (`auto • high → claude-sonnet-4-5 • medium`), checks subscription status against the routed model, and `/session` attributes costs per physical model (including sidecar usage from hedging, draft validation, and prompt-cache warming).
 
-Context usage uses the limits of the physical model that produced the latest response, even if that response came before switching to the virtual model. Without such a response, it uses the limits declared on the virtual model, if any. Compaction checks the same limits, and again the limits of the model each request is routed to. If that model's context window is too small for the conversation, Pi compacts before sending the request; the route stays as the router chose it.
+Context limits (`getContextUsage()`, image resizing, compaction checks) reflect the active physical route immediately once `route()` resolves. If a request routes to a model whose context window is smaller than the current projection, Pi compacts before sending the request while preserving the chosen route. `CacheWarmer` keeps the active physical route's prompt cache warm across idle pauses unless `keepCacheWarm: false` is set on the route.
 
 ## Register a virtual model
 
@@ -34,81 +32,77 @@ Context usage uses the limits of the physical model that produced the latest res
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-  pi.registerVirtualModel({
+  pi.registerVirtualModel<{ failures: number }>({
     provider: "router",
     id: "auto",
     name: "Auto",
     thinkingLevels: ["low", "high"],
     route(request, ctx) {
-      // Tool follow-ups and retries stay on the model that handled the turn.
-      const sticky = request.failed ?? request.previous;
-      if (request.reason !== "user" && sticky) {
-        return { model: sticky.model, thinkingLevel: sticky.thinkingLevel ?? "medium" };
+      // Stay sticky when a physical model already has warm prompt-cache tokens.
+      if (request.purpose === "continuation" && request.previous) {
+        return { model: request.previous.model, thinkingLevel: request.previous.thinkingLevel ?? "medium" };
       }
-      const id = request.thinkingLevel === "high" ? "claude-sonnet-4-5" : "claude-haiku-4-5";
-      return { model: ctx.modelRegistry.find("anthropic", id)!, thinkingLevel: "medium" };
+      if (request.purpose === "compaction" || request.purpose === "branch_summary") {
+        return { model: ctx.modelRegistry.find("anthropic", "claude-haiku-4-5")!, thinkingLevel: "off" };
+      }
+      const escalate = (request.state?.failures ?? 0) > 0 || request.thinkingLevel === "high";
+      const id = escalate ? "claude-sonnet-4-5" : "claude-haiku-4-5";
+      return {
+        model: ctx.modelRegistry.find("anthropic", id)!,
+        thinkingLevel: escalate ? "high" : "medium",
+        ttfbTimeoutMs: 8000,
+      };
+    },
+    onOutcome(outcome) {
+      if (outcome.toolResults.some((r) => r.isError)) {
+        return { failures: (outcome.state?.failures ?? 0) + 1 };
+      }
     },
   });
 }
 ```
 
-- `provider` is the provider the model is listed under. It can be any provider ID. A provider can list several virtual models next to its physical ones. On a physical provider, the virtual model is available when that provider has credentials. Under an ID that no provider uses, it is always available.
-- `id` must not be the ID of a physical model of that provider. If a catalog refresh later adds a physical model with the same ID, the virtual model hides it.
-- `thinkingLevels` lists the levels offered for selection. It defaults to `["off"]`.
-- `contextWindow` and `maxTokens` are shown before the first response. Unset limits are unknown.
-- `input` lists the input types offered for selection. It defaults to text and images; physical models without image support receive placeholders.
+## Request inputs (`ModelRouteRequest`)
 
-Registration follows the same queuing and reload rules as `pi.registerProvider()`. Registering the same provider and ID again replaces the virtual model. `pi.unregisterVirtualModel(provider, id)` removes it; `pi.unregisterProvider()` does not. SDK code can register one without an extension: `modelRuntime.registerVirtualModel(definition)`.
-
-## Route requests
-
-`route(request, ctx)` runs before every request made with the virtual model and returns `{ model, thinkingLevel }`. The model can be any physical model in the catalog whose provider has credentials; look it up with `ctx.modelRegistry`. A virtual model cannot route to another virtual model. Pi clamps the thinking level to the returned model.
+`route(request, ctx)` runs before every request made with the virtual model:
 
 | Field | Meaning |
 |---|---|
-| `model`, `thinkingLevel` | The selected virtual model and level |
-| `reason` | Why the request is made, see below |
-| `previous` | Physical model and thinking level of the latest successful response in `messages` |
-| `failed` | For `retry`: physical model, thinking level, and assistant `message` of the failed request, which `messages` no longer contains. The message carries `stopReason` and `errorMessage`. Absent when routing itself failed |
-| `state` | Router state last returned on this session branch, see below |
-| `messages` | The conversation for this request, including system messages |
-| `signal` | Abort signal of the request |
+| `model`, `thinkingLevel` | Selected virtual model and level |
+| `purpose` | Exact harness operation: `"prompt" \| "continuation" \| "retry" \| "compaction" \| "branch_summary" \| "subagent" \| "direct"` |
+| `reason` | Coarse category: `"user" \| "continuation" \| "retry" \| "direct"` (`turn_end` and `agent_before_settle` `continue: true` stay `"continuation"` even when `context_edit: null` drops the prior assistant message, with `boundaryContinuation: true`) |
+| `isSubagent` | `true` when routing inside a subagent session (`sessionRole: "subagent"` or `PI_SUBAGENT=1`) |
+| `turnIndex` | Zero-based turn index within the current agent run (`0` outside a run) |
+| `previous` | `{ model, thinkingLevel, message }` of the latest successful response in `messages` |
+| `failed` | For `retry`: `{ model, thinkingLevel, message }` of the failed physical attempt |
+| `state` | Router state stored on this session branch (passed read-only on `compaction`, `branch_summary`, and `direct` calls) |
+| `cache` | Live KV-cache snapshot on the branch: `cacheFreeBoundary`, `boundaryReason` (`"initial" \| "compaction" \| "branch_summary" \| "expired"`), `entries`, and `cache.get(provider, modelId)` returning `{ warmTokens, lastRefreshedAtMs, expiresAtMs }` |
+| `messages` | Outbound LLM conversation for this request |
+| `signal` | Request abort signal |
+| `setStatus(label)` | Update the live working indicator while async routing runs |
 
-| `reason` | Request |
+## Ephemeral single-request envelope (`ModelRoute`)
+
+`route()` returns `{ model, thinkingLevel }` plus any optional per-request overrides. Ephemeral overrides apply only to that single outbound call and are never written to `SessionManager`:
+
+| Field | Meaning |
 |---|---|
-| `user` | First request after a message the user wrote, including steering and follow-up messages |
-| `continuation` | Any other request in the agent loop, such as after tool results or extension messages |
-| `retry` | Automatic retry after a failed request, including after compaction for a context overflow |
-| `direct` | Request made outside the agent loop, such as a compaction summary or an extension calling `ctx.modelRegistry.streamSimple()` |
+| `state` | Next router state (stored when changed on stateful purposes; return `undefined` or `request.state` to keep unchanged) |
+| `messages` | Replacement `Message[]` slice or `(messages) => Message[]` transform for this call |
+| `systemPromptPrefix`, `systemAppend` | Ephemeral text prepended or appended to `system[0]` |
+| `ephemeralTail` | One-shot trailing `string` (sent as a `user` message) or `Message[]` appended to this call only |
+| `allowedTools`, `blockedToolReason` | Filters outbound `toolsAdded` declarations and blocks disallowed tool calls in `_beforeToolCall` without mutating `agent.state.tools` |
+| `toolChoice` | `"auto" \| "none" \| "required"` for this call |
+| `maxTokens`, `temperature` | Per-request output token cap and temperature |
+| `ttfbTimeoutMs` | Aborts stalled providers before first content with a retryable timeout error |
+| `keepCacheWarm` | Set `false` to skip `CacheWarmer` for one-off routes (defaults to `true`) |
+| `statusLabel` | Working indicator message shown while this routed request streams |
+| `suppressStream` | Hides assistant text and thinking from TUI, print, JSON, and `getLastAssistantText()` while preserving tool calls and canonical history (`suppressTextDisplay` is supported as an alias) |
+| `hedge` | `{ afterMs, model, thinkingLevel? }`: races `model` if primary emits no content within `afterMs`, aborts the loser, and records loser tokens as `"hedge"` usage |
+| `validate` | `(candidate) => { action: "accept", state? } \| { action: "escalate", model, ... }`: buffers non-tool responses before display and either emits or escalates cleanly (recording discarded candidate tokens as `"draft"` usage) |
 
-Returning `previous` for `continuation` and `failed` for `retry` keeps prompt caches and thinking signatures valid. Switching models between turns is allowed but loses the prompt cache. A retry can also switch to another model, for example when `failed.message.errorMessage` reports that a provider is overloaded or the context overflowed.
+## Stream-level tier (`stream`) and closed loop (`onOutcome`)
 
-If `route()` throws, or returns a virtual model or a model without credentials, the request ends with an error response.
-
-## Keep routing state
-
-`route()` can return `state` next to the model. Pi stores it on the session branch and passes it back as `request.state` on later requests. Use it for decisions the transcript does not record, such as classifier results or a routing phase:
-
-```typescript
-pi.registerVirtualModel<{ phase: "plan" | "build" }>({
-  provider: "router",
-  id: "phased",
-  name: "Phased",
-  route(request, ctx) {
-    const state = request.state ?? { phase: "plan" };
-    const id = state.phase === "plan" ? "claude-opus-4-5" : "claude-haiku-4-5";
-    return { model: ctx.modelRegistry.find("anthropic", id)!, thinkingLevel: "medium", state };
-  },
-});
-```
-
-- State must be JSON-serializable. Returning `undefined` or `request.state` itself keeps the current state.
-- Pi stores any other returned object as new state, before the request is sent, even when it equals the current state. Return a new object only when the state changes. The state stays stored if the request later fails.
-- State follows the session tree, so forks and `/tree` navigation see the state of their branch. It survives compaction.
-- `direct` requests have no state, and Pi ignores state they return.
-
-The transcript already records the selection and every dispatched model, and `ctx.sessionManager.getBranch()` exposes both.
-
-Routers can call other models through `ctx.modelRegistry`, for example `ctx.modelRegistry.classify()` with a classifier model from `ctx.modelRegistry.findOfType("classifier", provider, id)`. The call adds latency before the first token of the turn.
-
-See [`jev-router.ts`](../examples/extensions/jev-router.ts) for a complete router. It plans on a strong OpenAI Codex model chosen by the Jev classifier, lets that model make the first edit, and then switches once to a cheaper model, accepting a single prompt-cache miss. It keeps the phase as router state.
+- **`stream?(request, ctx)`**: Optional full stream-tier hook for custom multi-model racing or speculation. `request.dispatch(route)` runs a physical route through auth and ephemeral projection; `request.recordUsage(kind, provider, modelId, usage, note?)` attributes sidecar tokens without adding messages; `request.setState(state)` persists router state.
+- **`onOutcome?(outcome, ctx)`**: Invoked after every routed physical response (and its tool batch, or error/abort) with `{ virtualModel, route, purpose, turnIndex, message, toolResults, ttfbMs, durationMs, aborted, state }`. Returning a new state persists it on the session branch.
+- **`pi.setVirtualModelState(provider, id, state)`**: Explicitly persists router state from any extension command or hook.
