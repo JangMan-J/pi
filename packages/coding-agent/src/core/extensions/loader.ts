@@ -246,6 +246,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 			);
 		},
 		setVirtualModelState: notInitialized,
+		appendUsage: notInitialized,
 	};
 
 	return runtime;
@@ -548,6 +549,11 @@ function createExtensionAPI(
 		setVirtualModelState<TState>(provider: string, id: string, nextState: TState) {
 			assertActive();
 			runtime.setVirtualModelState(provider, id, nextState);
+		},
+
+		appendUsage(kind, provider, model, usage, note) {
+			assertActive();
+			return runtime.appendUsage(kind, provider, model, usage, note);
 		},
 
 		events: {
