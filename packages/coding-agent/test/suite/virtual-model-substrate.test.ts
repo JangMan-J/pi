@@ -519,6 +519,22 @@ describe("Virtual model substrate", () => {
 				contents: [],
 				toolConfig: { functionCallingConfig: { mode: "ANY" } },
 			});
+			expect(
+				applyRequiredToolChoicePayload(
+					{ project: "p", model: "gemini-4-carbon-high", request: { contents: [] } },
+					"antigravity-api",
+				),
+			).toEqual({
+				project: "p",
+				model: "gemini-4-carbon-high",
+				request: { contents: [], toolConfig: { functionCallingConfig: { mode: "ANY" } } },
+			});
+			expect(
+				applyRequiredToolChoicePayload({ model: "muse-spark-1.3" }, "openai-responses", {
+					provider: "meta",
+					baseUrl: "https://api.meta.ai/v1",
+				}),
+			).toEqual({ model: "muse-spark-1.3" });
 		});
 
 		it("aborts a stalled provider on ttfbTimeoutMs and fails over via retry", async () => {
