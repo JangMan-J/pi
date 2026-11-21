@@ -44,6 +44,10 @@ export interface GenericEndpointProviderOptions {
 	baseUrl: string;
 	/** Environment variables consulted for an API key after a stored credential. Default: none. */
 	envVars?: readonly string[];
+	/** Provider-level headers attached to discovered models and `/models` discovery requests. */
+	headers?: Readonly<Record<string, string>>;
+	/** Provider-level wire compatibility overrides merged over protocol defaults on discovered models. */
+	compat?: Readonly<Record<string, unknown>>;
 }
 
 const GENERIC_MODELS_TIMEOUT_MS = 15_000;
@@ -125,11 +129,11 @@ function inputModalities(entry: Record<string, unknown>): ("text" | "image")[] {
 
 /** Map one OpenAI/Anthropic-dialect `/models` entry. Extra OpenRouter-style fields are used when present. */
 function modelFromListEntry(
-	providerId: string,
-	api: GenericEndpointApi,
+	options: GenericEndpointProviderOptions,
 	baseUrl: string,
 	entry: Record<string, unknown>,
 ): Model<GenericEndpointApi> | undefined {
+	const { id: providerId, api } = options;
 	const id = stringField(entry, "id");
 	if (!id) return undefined;
 	const access = isRecord(entry.access) ? entry.access : undefined;
@@ -138,6 +142,17 @@ function modelFromListEntry(
 	if (output && !output.includes("text")) return undefined;
 	const topProvider = isRecord(entry.top_provider) ? entry.top_provider : undefined;
 	const pricing = isRecord(entry.pricing) ? (entry.pricing as OpenRouterPricing) : undefined;
+	const cost = pricing ? openRouterCost(pricing) : { ...ZERO_COST };
+	const defaultCompat =
+		api === "openai-completions"
+			? { supportsStore: false, supportsDeveloperRole: false, maxTokensField: "max_tokens" as const }
+			: undefined;
+	const mergedCompat = defaultCompat || options.compat ? { ...defaultCompat, ...options.compat } : undefined;
+	const supportsPromptCache =
+		api === "anthropic-messages" ||
+		cost.cacheRead > 0 ||
+		cost.cacheWrite > 0 ||
+		options.compat?.promptCacheKeyMode === "enabled";
 	return {
 		id,
 		name: stringField(entry, "display_name", "displayName", "name") ?? id,
@@ -146,10 +161,12 @@ function modelFromListEntry(
 		baseUrl,
 		reasoning: supportsReasoning(entry),
 		input: inputModalities(entry),
-		...(api === "openai-completions"
-			? { compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: "max_tokens" as const } }
+		...(options.headers ? { headers: { ...options.headers } } : {}),
+		...(mergedCompat ? { compat: mergedCompat as Model<GenericEndpointApi>["compat"] } : {}),
+		...(supportsPromptCache
+			? { promptCache: { short: 300, ...(api === "anthropic-messages" ? { long: 3600 } : {}) } }
 			: {}),
-		cost: pricing ? openRouterCost(pricing) : { ...ZERO_COST },
+		cost,
 		contextWindow:
 			positiveNumber(
 				topProvider?.context_length,
@@ -170,7 +187,7 @@ function modelFromListEntry(
 
 /** Map one Google-dialect `/models` entry (`name: "models/<id>"`). */
 function googleModelFromListEntry(
-	providerId: string,
+	options: GenericEndpointProviderOptions,
 	baseUrl: string,
 	entry: Record<string, unknown>,
 ): Model<"google-generative-ai"> | undefined {
@@ -183,10 +200,11 @@ function googleModelFromListEntry(
 		id,
 		name: stringField(entry, "displayName", "display_name") ?? id,
 		api: "google-generative-ai",
-		provider: providerId,
+		provider: options.id,
 		baseUrl,
 		reasoning: entry.thinking === true,
 		input: id.startsWith("gemini-") ? ["text", "image"] : ["text"],
+		...(options.headers ? { headers: { ...options.headers } } : {}),
 		cost: { ...ZERO_COST },
 		contextWindow: positiveNumber(entry.inputTokenLimit) ?? DEFAULT_CONTEXT_WINDOW,
 		maxTokens: positiveNumber(entry.outputTokenLimit) ?? DEFAULT_MAX_TOKENS,
@@ -229,8 +247,12 @@ async function fetchGenericModels(
 			const url = new URL(`${baseUrl}/models`);
 			url.searchParams.set("pageSize", "1000");
 			if (pageToken) url.searchParams.set("pageToken", pageToken);
-			const body = await fetchJson(url.toString(), key ? { "x-goog-api-key": key } : {}, context.signal);
-			for (const entry of listEntries(body, "models")) push(googleModelFromListEntry(options.id, baseUrl, entry));
+			const body = await fetchJson(
+				url.toString(),
+				{ ...options.headers, ...(key ? { "x-goog-api-key": key } : {}) },
+				context.signal,
+			);
+			for (const entry of listEntries(body, "models")) push(googleModelFromListEntry(options, baseUrl, entry));
 			pageToken = isRecord(body) && typeof body.nextPageToken === "string" ? body.nextPageToken : undefined;
 		} while (pageToken && !context.signal.aborted);
 		return models;
@@ -245,11 +267,11 @@ async function fetchGenericModels(
 			if (afterId) url.searchParams.set("after_id", afterId);
 			const body = await fetchJson(
 				url.toString(),
-				{ "anthropic-version": "2023-06-01", ...(key ? { "x-api-key": key } : {}) },
+				{ "anthropic-version": "2023-06-01", ...options.headers, ...(key ? { "x-api-key": key } : {}) },
 				context.signal,
 			);
 			for (const entry of listEntries(body, "data")) {
-				push(modelFromListEntry(options.id, options.api, baseUrl, entry));
+				push(modelFromListEntry(options, baseUrl, entry));
 				if (typeof entry.id === "string") afterId = entry.id;
 			}
 			hasMore = isRecord(body) && body.has_more === true;
@@ -257,8 +279,12 @@ async function fetchGenericModels(
 		return models;
 	}
 
-	const body = await fetchJson(`${baseUrl}/models`, key ? { authorization: `Bearer ${key}` } : {}, context.signal);
-	for (const entry of listEntries(body, "data")) push(modelFromListEntry(options.id, options.api, baseUrl, entry));
+	const body = await fetchJson(
+		`${baseUrl}/models`,
+		{ ...options.headers, ...(key ? { authorization: `Bearer ${key}` } : {}) },
+		context.signal,
+	);
+	for (const entry of listEntries(body, "data")) push(modelFromListEntry(options, baseUrl, entry));
 	return models;
 }
 
@@ -291,6 +317,8 @@ export interface GenericEndpointConfig {
 	api?: string;
 	baseUrl?: string;
 	oauth?: string;
+	headers?: Readonly<Record<string, string>>;
+	compat?: Readonly<Record<string, unknown>>;
 	/** Explicit model definitions; a non-empty list opts out of discovery. */
 	models?: readonly unknown[];
 }
@@ -318,7 +346,14 @@ export function addGenericEndpointProviders(
 		if (!isGenericEndpointApi(config.api)) continue;
 		providers.set(
 			providerId,
-			genericEndpointProvider({ id: providerId, name: config.name, api: config.api, baseUrl: config.baseUrl }),
+			genericEndpointProvider({
+				id: providerId,
+				name: config.name,
+				api: config.api,
+				baseUrl: config.baseUrl,
+				headers: config.headers,
+				compat: config.compat,
+			}),
 		);
 	}
 }
