@@ -81,10 +81,24 @@ function isContentEvent(event: AssistantMessageEvent): boolean {
 	}
 }
 
+function hasNonEmptyEphemeralTail(tail: ModelRoute["ephemeralTail"]): tail is string | readonly Message[] {
+	return tail !== undefined && (typeof tail === "string" ? tail.length > 0 : tail.length > 0);
+}
+
+function resolveStableTimestamp(messages: readonly Message[], fallbackTimestamp?: number): number {
+	if (fallbackTimestamp !== undefined) return fallbackTimestamp;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const ts = messages[i]?.timestamp;
+		if (typeof ts === "number" && Number.isFinite(ts)) return ts;
+	}
+	return Date.now();
+}
+
 function projectSystemHead(
 	head: SystemMessage | undefined,
 	prefix: string | undefined,
 	append: string | undefined,
+	fallbackTimestamp: number,
 ): SystemMessage {
 	const baseText = head ? contentText(head.content) : "";
 	const prefixed = prefix ? `${prefix}${baseText}` : baseText;
@@ -101,12 +115,16 @@ function projectSystemHead(
 		: {
 				role: "system",
 				content,
-				timestamp: Date.now(),
+				timestamp: fallbackTimestamp,
 			};
 }
 
 /** Project outbound LLM messages for a single routed call without mutating session state. */
-export function projectRoutedTranscript(context: TranscriptContext, route: ModelRoute): TranscriptContext {
+export function projectRoutedTranscript(
+	context: TranscriptContext,
+	route: ModelRoute,
+	fallbackTimestamp?: number,
+): TranscriptContext {
 	let messages: readonly Message[] = context.messages;
 	if (route.messages !== undefined) {
 		messages = typeof route.messages === "function" ? route.messages(messages) : route.messages;
@@ -114,20 +132,19 @@ export function projectRoutedTranscript(context: TranscriptContext, route: Model
 
 	const hasSystemOverride = Boolean(route.systemPromptPrefix || route.systemAppend);
 	const allowedSet = route.allowedTools ? new Set(route.allowedTools) : undefined;
-	const hasTail =
-		route.ephemeralTail !== undefined &&
-		(typeof route.ephemeralTail === "string" ? route.ephemeralTail.length > 0 : route.ephemeralTail.length > 0);
+	const hasTail = hasNonEmptyEphemeralTail(route.ephemeralTail);
 
 	if (!hasSystemOverride && !allowedSet && !hasTail && messages === context.messages) {
 		return context;
 	}
 
+	const stableTimestamp = resolveStableTimestamp(messages, fallbackTimestamp);
 	let next = messages.slice();
 	if (hasSystemOverride) {
 		if (next[0]?.role === "system") {
-			next[0] = projectSystemHead(next[0], route.systemPromptPrefix, route.systemAppend);
+			next[0] = projectSystemHead(next[0], route.systemPromptPrefix, route.systemAppend, stableTimestamp);
 		} else {
-			next.unshift(projectSystemHead(undefined, route.systemPromptPrefix, route.systemAppend));
+			next.unshift(projectSystemHead(undefined, route.systemPromptPrefix, route.systemAppend, stableTimestamp));
 		}
 	}
 
@@ -143,13 +160,132 @@ export function projectRoutedTranscript(context: TranscriptContext, route: Model
 
 	if (hasTail && route.ephemeralTail !== undefined) {
 		if (typeof route.ephemeralTail === "string") {
-			next.push({ role: "user", content: route.ephemeralTail, timestamp: Date.now() });
+			next.push({ role: "user", content: route.ephemeralTail, timestamp: stableTimestamp });
 		} else {
 			next.push(...route.ephemeralTail);
 		}
 	}
 
 	return normalizeContext({ messages: next });
+}
+
+const ANTHROPIC_CACHEABLE_BLOCK_TYPES = new Set(["text", "image", "tool_result", "tool_addition", "tool_removal"]);
+
+function countAnthropicTailTurns(tail: string | readonly Message[]): number {
+	if (typeof tail === "string") return tail.length > 0 ? 1 : 0;
+	let count = 0;
+	let inToolResultRun = false;
+	for (const message of tail) {
+		if (message.role === "toolResult") {
+			if (!inToolResultRun) {
+				count++;
+				inToolResultRun = true;
+			}
+			continue;
+		}
+		inToolResultRun = false;
+		count++;
+	}
+	return count;
+}
+
+function isSyntheticAnthropicEffortTurn(message: Record<string, unknown>): boolean {
+	return (
+		message.role === "system" &&
+		Array.isArray(message.content) &&
+		message.content.length === 0 &&
+		"output_config" in message
+	);
+}
+
+/**
+ * Anthropic places a single conversation `cache_control` breakpoint on the last user/system block.
+ * When `ephemeralTail` is present, that default breakpoint lands on the throwaway tail instead of
+ * the canonical prefix, wasting a cache write and missing the cache on the next turn. Relocate that
+ * trailing breakpoint onto the last preceding canonical user/system block without adding extra breakpoints.
+ */
+export function anchorAnthropicCacheBeforeEphemeralTail(
+	payload: unknown,
+	ephemeralTail: string | readonly Message[],
+): unknown {
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+	const record = payload as Record<string, unknown>;
+	if (!Array.isArray(record.messages)) return payload;
+	const tailTurns = countAnthropicTailTurns(ephemeralTail);
+	if (tailTurns <= 0) return payload;
+
+	const rawMessages = record.messages as Array<Record<string, unknown>>;
+	let remainingTailTurns = tailTurns;
+	let canonicalEndIndex = rawMessages.length - 1;
+	while (canonicalEndIndex >= 0 && remainingTailTurns > 0) {
+		const msg = rawMessages[canonicalEndIndex];
+		if (msg && !isSyntheticAnthropicEffortTurn(msg)) {
+			remainingTailTurns--;
+		}
+		canonicalEndIndex--;
+	}
+	if (remainingTailTurns > 0 || canonicalEndIndex < 0) return payload;
+
+	let anchorMsgIndex = -1;
+	let anchorBlockIndex = -1;
+	for (let i = canonicalEndIndex; i >= 0; i--) {
+		const msg = rawMessages[i];
+		if (!msg || isSyntheticAnthropicEffortTurn(msg)) continue;
+		if (msg.role !== "user" && msg.role !== "system") continue;
+		if (typeof msg.content === "string") {
+			anchorMsgIndex = i;
+			break;
+		}
+		if (Array.isArray(msg.content)) {
+			for (let b = msg.content.length - 1; b >= 0; b--) {
+				const block = msg.content[b] as Record<string, unknown> | undefined;
+				if (block && typeof block.type === "string" && ANTHROPIC_CACHEABLE_BLOCK_TYPES.has(block.type)) {
+					anchorMsgIndex = i;
+					anchorBlockIndex = b;
+					break;
+				}
+			}
+			if (anchorMsgIndex !== -1) break;
+		}
+	}
+	if (anchorMsgIndex === -1) return payload;
+
+	let extractedCacheControl: unknown;
+	const nextMessages = rawMessages.slice();
+	for (let i = canonicalEndIndex + 1; i < nextMessages.length; i++) {
+		const msg = nextMessages[i];
+		if (!msg || !Array.isArray(msg.content)) continue;
+		let clonedContent: Array<Record<string, unknown>> | undefined;
+		for (let b = msg.content.length - 1; b >= 0; b--) {
+			const block = msg.content[b] as Record<string, unknown> | undefined;
+			if (!block || block.cache_control === undefined) continue;
+			extractedCacheControl ??= block.cache_control;
+			clonedContent ??= (msg.content as Array<Record<string, unknown>>).slice();
+			const { cache_control: _dropped, ...rest } = block;
+			clonedContent[b] = rest;
+		}
+		if (clonedContent) {
+			nextMessages[i] = { ...msg, content: clonedContent };
+		}
+	}
+	if (extractedCacheControl === undefined) return payload;
+
+	const anchorMsg = nextMessages[anchorMsgIndex]!;
+	if (typeof anchorMsg.content === "string") {
+		nextMessages[anchorMsgIndex] = {
+			...anchorMsg,
+			content: [{ type: "text", text: anchorMsg.content, cache_control: extractedCacheControl }],
+		};
+	} else if (Array.isArray(anchorMsg.content) && anchorBlockIndex >= 0) {
+		const clonedContent = (anchorMsg.content as Array<Record<string, unknown>>).slice();
+		const targetBlock = clonedContent[anchorBlockIndex]!;
+		if (targetBlock.cache_control === undefined) {
+			clonedContent[anchorBlockIndex] = { ...targetBlock, cache_control: extractedCacheControl };
+			nextMessages[anchorMsgIndex] = { ...anchorMsg, content: clonedContent };
+		}
+	}
+
+	return { ...record, messages: nextMessages };
 }
 
 /** Rewrite wire payload when `toolChoice: "required"` targets APIs with vendor-specific syntax. */
@@ -206,12 +342,19 @@ export function buildRoutedStreamOptions(
 	const reasoning = clampedLevel === "off" ? undefined : clampedLevel;
 	const toolChoice: ModelRouteToolChoice | undefined = route.toolChoice;
 	const simpleToolChoice = toolChoice === "auto" || toolChoice === "none" ? toolChoice : baseOptions?.toolChoice;
+	const hasTail = hasNonEmptyEphemeralTail(route.ephemeralTail);
 	const previousOnPayload = baseOptions?.onPayload;
 	const onPayload: SimpleStreamOptions["onPayload"] =
-		toolChoice === "required"
+		toolChoice === "required" || hasTail
 			? async (payload, model) => {
-					const withRequired = applyRequiredToolChoicePayload(payload, model.api);
-					return previousOnPayload ? await previousOnPayload(withRequired, model) : withRequired;
+					let shaped = payload;
+					if (hasTail && route.ephemeralTail !== undefined && model.api === "anthropic-messages") {
+						shaped = anchorAnthropicCacheBeforeEphemeralTail(shaped, route.ephemeralTail);
+					}
+					if (toolChoice === "required") {
+						shaped = applyRequiredToolChoicePayload(shaped, model.api);
+					}
+					return previousOnPayload ? await previousOnPayload(shaped, model) : shaped;
 				}
 			: previousOnPayload;
 
@@ -219,6 +362,8 @@ export function buildRoutedStreamOptions(
 		...baseOptions,
 		...(maxTokens !== undefined ? { maxTokens } : {}),
 		...(route.temperature !== undefined ? { temperature: route.temperature } : {}),
+		...(route.sessionId !== undefined ? { sessionId: route.sessionId } : {}),
+		...(route.disableContinuation !== undefined ? { disableContinuation: route.disableContinuation } : {}),
 		reasoning,
 		...(simpleToolChoice !== undefined ? { toolChoice: simpleToolChoice } : {}),
 		...(onPayload ? { onPayload } : {}),
@@ -235,11 +380,12 @@ function createTimedPhysicalStream(
 	context: TranscriptContext,
 	route: ModelRoute,
 	baseOptions: SimpleStreamOptions | undefined,
+	fallbackTimestamp?: number,
 ): TimedStreamHandle {
-	const projected = projectRoutedTranscript(context, route);
+	const dispatchedAt = Date.now();
+	const projected = projectRoutedTranscript(context, route, fallbackTimestamp ?? dispatchedAt);
 	const options = buildRoutedStreamOptions(baseOptions, route);
 	const outer = createAssistantMessageEventStream();
-	const dispatchedAt = Date.now();
 	let firstContentAt: number | undefined;
 	let finishedAt: number | undefined;
 
@@ -376,6 +522,8 @@ function streamHedgedRoute<TState>(
 		...primaryRoute,
 		model: hedge.model,
 		thinkingLevel: clampThinkingLevel(hedge.model, hedge.thinkingLevel ?? primaryRoute.thinkingLevel),
+		// Never let the concurrent backup leg consume or overwrite the primary stream's server-side thread state.
+		disableContinuation: true,
 		hedge: undefined,
 	};
 
@@ -436,10 +584,16 @@ function streamHedgedRoute<TState>(
 		ownAbort: AbortController,
 		otherAbort: AbortController,
 	) => {
-		const handle = createTimedPhysicalStream(dispatchPhysical, context, route, {
-			...baseOptions,
-			signal: ownAbort.signal,
-		});
+		const handle = createTimedPhysicalStream(
+			dispatchPhysical,
+			context,
+			route,
+			{
+				...baseOptions,
+				signal: ownAbort.signal,
+			},
+			dispatchedAt,
+		);
 		let pendingStart: AssistantMessageEvent | undefined;
 		void (async () => {
 			let resultMessage: AssistantMessage | undefined;
@@ -580,6 +734,8 @@ function streamValidatedRoute<TState>(
 			...(decision.ephemeralTail !== undefined ? { ephemeralTail: decision.ephemeralTail } : {}),
 			...(decision.maxTokens !== undefined ? { maxTokens: decision.maxTokens } : {}),
 			...(decision.temperature !== undefined ? { temperature: decision.temperature } : {}),
+			...(decision.sessionId !== undefined ? { sessionId: decision.sessionId } : {}),
+			...(decision.disableContinuation !== undefined ? { disableContinuation: decision.disableContinuation } : {}),
 			...(decision.state !== undefined ? { state: decision.state } : {}),
 			hedge: undefined,
 			validate: undefined,
