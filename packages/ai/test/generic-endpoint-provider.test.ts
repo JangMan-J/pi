@@ -266,4 +266,52 @@ describe("generic endpoint compatibility defaults", () => {
 		expect(payload).not.toHaveProperty("store");
 		expect(payload).not.toHaveProperty("max_completion_tokens");
 	});
+
+	it("forwards provider compat and headers from models.json and enables promptCache when configured", async () => {
+		stubFetch(() => Response.json({ data: [{ id: "vllm-qwen" }] }));
+		const providers = new Map<string, Provider>();
+		addGenericEndpointProviders(providers, {
+			getProviderIds: () => ["vllm-local"],
+			getProvider: () => ({
+				api: "openai-completions",
+				baseUrl: "https://vllm.example.test/v1",
+				headers: { "x-cluster-lane": "ring1" },
+				compat: {
+					promptCacheKeyMode: "enabled",
+					sendSessionAffinityHeaders: true,
+				},
+			}),
+		});
+
+		const provider = providers.get("vllm-local")!;
+		await provider.refreshModels!(refreshContext());
+		const discovered = provider.getModels()[0] as Model<"openai-completions">;
+		expect(discovered.promptCache).toEqual({ short: 300 });
+		expect(discovered.headers).toEqual({ "x-cluster-lane": "ring1" });
+		expect(discovered.compat).toMatchObject({
+			supportsStore: false,
+			supportsDeveloperRole: false,
+			maxTokensField: "max_tokens",
+			promptCacheKeyMode: "enabled",
+			sendSessionAffinityHeaders: true,
+		});
+
+		let payload: Record<string, unknown> | undefined;
+		await streamCompletions(
+			discovered,
+			normalizeContext({ systemPrompt: "System", messages: [{ role: "user", content: "Hi", timestamp: 0 }] }),
+			{
+				apiKey: "test",
+				sessionId: "shard-key-123",
+				onPayload: (value) => {
+					payload = JSON.parse(JSON.stringify(value));
+					throw new Error("captured");
+				},
+			},
+		).result();
+		expect(payload).toMatchObject({
+			model: "vllm-qwen",
+			prompt_cache_key: "shard-key-123",
+		});
+	});
 });
