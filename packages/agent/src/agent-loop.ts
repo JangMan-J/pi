@@ -249,7 +249,9 @@ async function runLoop(
 			}
 
 			// Stream assistant response
-			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
+			const requestConfig = requestUpdate?.requestOptions ? { ...config, ...requestUpdate.requestOptions } : config;
+			const requestStreamFn = requestUpdate?.streamFn ?? streamFunction;
+			const message = await streamAssistantResponse(currentContext, requestConfig, signal, emit, requestStreamFn);
 			newMessages.push(message);
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
