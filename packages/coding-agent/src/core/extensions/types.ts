@@ -78,6 +78,7 @@ import type {
 	ReadonlySessionManager,
 	SessionEntry,
 	SessionManager,
+	UsageEntry,
 } from "../session-manager.ts";
 import type { Settings } from "../settings-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
@@ -101,7 +102,14 @@ import type {
 	ReadToolInput,
 	WriteToolInput,
 } from "../tools/index.ts";
-import type { ModelRoute, ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
+import type {
+	ModelRoute,
+	ModelRouteCacheSnapshot,
+	ModelRouteOutcome,
+	ModelRouteRequest,
+	VirtualModelDefinition,
+	VirtualStreamRequest,
+} from "../virtual-models.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions, NormalizedBuildSystemPromptOptions } from "../system-prompt.ts";
@@ -358,6 +366,8 @@ export interface ExtensionContext {
 	modelRegistry: ModelRegistry;
 	/** Current model (may be undefined) */
 	model: Model<any> | undefined;
+	/** Under a virtual selection, the active or latest physical model and thinking level. */
+	routedModel?: { model: Model<any>; thinkingLevel?: ThinkingLevel };
 	/** Models scoped to this session (resolved from `--models` /
 	 *  `enabledModels` settings against the available catalogue). Same set
 	 *  the `/scoped-models` command shows. Empty when no scoping is
@@ -379,6 +389,8 @@ export interface ExtensionContext {
 	shutdown(): void;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
+	/** Snapshot unexpired prompt-cache state across physical models on the current session branch. */
+	getRouteCacheSnapshot?(): ModelRouteCacheSnapshot;
 	/** Trigger compaction without awaiting completion. */
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
@@ -1962,6 +1974,12 @@ export interface ExtensionAPI {
 	/** Remove a virtual model registered with `registerVirtualModel()`. */
 	unregisterVirtualModel(provider: string, id: string): void;
 
+	/** Persist updated router state on the current session branch for a virtual model. */
+	setVirtualModelState<TState = unknown>(provider: string, id: string, state: TState): void;
+
+	/** Record sidecar or background helper model usage in the session without adding a conversation message. */
+	appendUsage(kind: string, provider: string, model: string, usage: Usage, note?: string): UsageEntry;
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
 }
@@ -1971,9 +1989,20 @@ export interface ExtensionAPI {
 // ============================================================================
 
 /** Virtual model registered via pi.registerVirtualModel(). */
-export interface ExtensionVirtualModel<TState = unknown> extends Omit<VirtualModelDefinition<TState>, "route"> {
+export interface ExtensionVirtualModel<TState = unknown>
+	extends Omit<VirtualModelDefinition<TState>, "route" | "stream" | "onOutcome"> {
 	/** Like `VirtualModelDefinition.route`, with an extension context. */
 	route(request: ModelRouteRequest<TState>, ctx: ExtensionContext): ModelRoute<TState> | Promise<ModelRoute<TState>>;
+	/** Optional stream-level execution hook with an extension context. */
+	stream?(
+		request: VirtualStreamRequest<TState>,
+		ctx: ExtensionContext,
+	): AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
+	/** Optional closed-loop outcome callback with an extension context. */
+	onOutcome?(
+		outcome: ModelRouteOutcome<TState>,
+		ctx: ExtensionContext,
+	): TState | undefined | void | Promise<TState | undefined> | Promise<void>;
 }
 
 /** Configuration for registering a provider via pi.registerProvider(). */
@@ -2234,6 +2263,8 @@ export interface ExtensionRuntimeState {
 	mcpServers: McpServerRegistry;
 	registerVirtualModel: (definition: VirtualModelDefinition, extensionPath?: string) => void;
 	unregisterVirtualModel: (provider: string, id: string) => void;
+	setVirtualModelState: (provider: string, id: string, state: unknown) => void;
+	appendUsage: (kind: string, provider: string, model: string, usage: Usage, note?: string) => UsageEntry;
 }
 
 /**
@@ -2264,6 +2295,7 @@ export interface ExtensionActions {
  */
 export interface ExtensionContextActions {
 	getModel: () => Model<any> | undefined;
+	getRoutedModel?: () => { model: Model<any>; thinkingLevel?: ThinkingLevel } | undefined;
 	getScopedModels: () => readonly ScopedModel[];
 	isIdle: () => boolean;
 	isProjectTrusted: () => boolean;
@@ -2272,6 +2304,7 @@ export interface ExtensionContextActions {
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
+	getRouteCacheSnapshot?: () => ModelRouteCacheSnapshot;
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
