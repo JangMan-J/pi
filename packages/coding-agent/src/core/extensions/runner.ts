@@ -9,6 +9,7 @@ import {
 	type Model,
 	type Provider,
 	type ProviderHeaders,
+	type Usage,
 } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
@@ -17,7 +18,7 @@ import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
-import type { SessionManager } from "../session-manager.ts";
+import type { SessionManager, UsageEntry } from "../session-manager.ts";
 import {
 	type BuildSystemPromptOptions,
 	buildSystemPrompt,
@@ -25,7 +26,9 @@ import {
 	normalizeBuildSystemPromptOptions,
 } from "../system-prompt.ts";
 import {
+	computeBranchCacheSnapshot,
 	getVirtualModelState,
+	type ModelRouteCacheSnapshot,
 	VIRTUAL_MODEL_STATE_ENTRY,
 	type VirtualModelDefinition,
 	type VirtualModelStateData,
@@ -385,6 +388,10 @@ export class ExtensionRunner {
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+	private getRouteCacheSnapshotFn: () => ModelRouteCacheSnapshot = () =>
+		computeBranchCacheSnapshot(this.sessionManager.getBranch(), (provider, modelId) =>
+			this.modelRegistry.find(provider, modelId),
+		);
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () =>
@@ -434,6 +441,7 @@ export class ExtensionRunner {
 			registerVirtualModel?: (definition: VirtualModelDefinition) => void;
 			unregisterVirtualModel?: (provider: string, id: string) => void;
 			setVirtualModelState?: (provider: string, id: string, state: unknown) => void;
+			appendUsage?: (kind: string, provider: string, model: string, usage: Usage, note?: string) => UsageEntry;
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
@@ -460,6 +468,9 @@ export class ExtensionRunner {
 				const data: VirtualModelStateData = { provider, modelId, state: nextState };
 				this.sessionManager.appendCustomEntry(VIRTUAL_MODEL_STATE_ENTRY, data);
 			});
+		this.runtime.appendUsage =
+			providerActions?.appendUsage ??
+			((kind, provider, model, usage, note) => this.sessionManager.appendUsage(kind, provider, model, usage, note));
 		this.runtime.createContext = () => this.createContext();
 
 		// Context actions (required)
@@ -473,6 +484,12 @@ export class ExtensionRunner {
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
+		this.getRouteCacheSnapshotFn =
+			contextActions.getRouteCacheSnapshot ??
+			(() =>
+				computeBranchCacheSnapshot(this.sessionManager.getBranch(), (provider, modelId) =>
+					this.modelRegistry.find(provider, modelId),
+				));
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn =
@@ -981,6 +998,10 @@ export class ExtensionRunner {
 			getContextUsage: () => {
 				runner.assertActive();
 				return runner.getContextUsageFn();
+			},
+			getRouteCacheSnapshot: () => {
+				runner.assertActive();
+				return runner.getRouteCacheSnapshotFn();
 			},
 			compact: (options) => {
 				runner.assertActive();

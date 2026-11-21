@@ -25,7 +25,11 @@ import {
 	type ModelRouteRequest,
 	VIRTUAL_MODEL_STATE_ENTRY,
 } from "../../src/core/virtual-models.ts";
-import { applyRequiredToolChoicePayload } from "../../src/core/virtual-stream.ts";
+import {
+	anchorAnthropicCacheBeforeEphemeralTail,
+	applyRequiredToolChoicePayload,
+	buildRoutedStreamOptions,
+} from "../../src/core/virtual-stream.ts";
 import { createTestResourceLoader } from "../utilities.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -898,6 +902,200 @@ describe("Virtual model substrate", () => {
 			expect(seen[2].state).toEqual({ tag: "active-policy" });
 			expect(seen[3].state).toEqual({ tag: "active-policy" });
 			expect(seen[4].isSubagent).toBe(true);
+		});
+	});
+
+	describe("7. Extension appendUsage, cache snapshot, and cache-guarded route controls", () => {
+		it("exposes pi.appendUsage and ctx.getRouteCacheSnapshot to extension hooks", async () => {
+			let hookWarmTokens: number | undefined;
+			const harness = await createHarness({
+				models: [{ id: "primary", contextWindow: 120_000, maxTokens: 4_000 }],
+				extensionFactories: [
+					(pi) => {
+						pi.on("message_end", (event) => {
+							if (event.message.role !== "assistant") return;
+							return {
+								message: {
+									...event.message,
+									usage: makeUsage(1_200, 80, 0, 5_000),
+								},
+							};
+						});
+						pi.on("turn_end", (_event, ctx) => {
+							hookWarmTokens = ctx.getRouteCacheSnapshot?.().get("faux", "primary")?.warmTokens;
+							pi.appendUsage("baton", "faux", "primary", makeUsage(800, 120, 4_000, 0), "background baton");
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+
+			harness.setResponses([fauxAssistantMessage("answered")]);
+			await harness.session.prompt("run task");
+
+			expect(hookWarmTokens).toBe(6_200);
+			const usageEntries = harness.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "usage" && entry.kind === "baton");
+			expect(usageEntries).toHaveLength(1);
+			expect(usageEntries[0]).toMatchObject({
+				type: "usage",
+				kind: "baton",
+				provider: "faux",
+				model: "primary",
+				note: "background baton",
+			});
+			const stats = harness.session.getSessionStats();
+			expect(stats.tokens.input).toBe(2_000);
+			expect(stats.tokens.output).toBe(200);
+			expect(stats.tokens.cacheRead).toBe(4_000);
+			expect(stats.tokens.cacheWrite).toBe(5_000);
+		});
+
+		it("forwards sessionId and disableContinuation, and isolates hedged contenders with stable timestamps", async () => {
+			const dispatchedCalls: Array<{
+				modelId: string;
+				sessionId?: string;
+				disableContinuation?: boolean;
+				tailTimestamp?: number;
+			}> = [];
+			const harness = await createHarness({
+				models: [
+					{ id: "slow", contextWindow: 100_000, maxTokens: 4_000 },
+					{ id: "backup", contextWindow: 100_000, maxTokens: 4_000 },
+				],
+				extensionFactories: [
+					(pi) => {
+						pi.registerVirtualModel({
+							provider: "router",
+							id: "hedged",
+							name: "Hedged",
+							thinkingLevels: ["off"],
+							route: (_req, ctx) => ({
+								model: ctx.modelRegistry.find("faux", "slow")!,
+								thinkingLevel: "off",
+								sessionId: "custom-cache-shard",
+								ephemeralTail: "working-set slice",
+								hedge: {
+									afterMs: 15,
+									model: ctx.modelRegistry.find("faux", "backup")!,
+								},
+							}),
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+
+			const runtime = harness.session.modelRuntime;
+			const origStreamSimple = runtime.streamSimple.bind(runtime);
+			vi.spyOn(runtime, "streamSimple").mockImplementation((model, context, options) => {
+				if (model.provider === "faux") {
+					const lastMsg = context.messages[context.messages.length - 1];
+					dispatchedCalls.push({
+						modelId: model.id,
+						sessionId: options?.sessionId,
+						disableContinuation: options?.disableContinuation,
+						tailTimestamp: lastMsg?.timestamp,
+					});
+					if (model.id === "slow") {
+						const stalled = createAssistantMessageEventStream();
+						options?.signal?.addEventListener(
+							"abort",
+							() => {
+								const aborted = fauxAssistantMessage("", { stopReason: "aborted" });
+								aborted.provider = "faux";
+								aborted.model = "slow";
+								stalled.push({ type: "error", reason: "aborted", error: aborted });
+								stalled.end(aborted);
+							},
+							{ once: true },
+						);
+						return stalled;
+					}
+				}
+				return origStreamSimple(model, context, options);
+			});
+
+			harness.session.agent.streamFunction = (model, context, options) =>
+				runtime.streamSimple(model, context, options);
+			await harness.session.setModel(runtime.getModel("router", "hedged")!);
+			harness.setResponses([fauxAssistantMessage("fast backup win")]);
+
+			await harness.session.prompt("check");
+
+			expect(dispatchedCalls).toHaveLength(2);
+			expect(dispatchedCalls[0]).toMatchObject({
+				modelId: "slow",
+				sessionId: "custom-cache-shard",
+				disableContinuation: undefined,
+			});
+			expect(dispatchedCalls[1]).toMatchObject({
+				modelId: "backup",
+				sessionId: "custom-cache-shard",
+				disableContinuation: true,
+			});
+			expect(dispatchedCalls[0].tailTimestamp).toBe(dispatchedCalls[1].tailTimestamp);
+		});
+
+		it("anchors Anthropic cache_control before ephemeralTail instead of caching the throwaway tail", async () => {
+			const cacheControl = { type: "ephemeral" };
+			const rawAnthropicPayload = {
+				model: "claude-sonnet-4-5",
+				messages: [
+					{ role: "user", content: "edit foo.ts" },
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "t1", name: "read", input: { path: "foo.ts" } }],
+					},
+					{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ref:abc123" }] },
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: "<working_set>full 15KB</working_set>", cache_control: cacheControl },
+						],
+					},
+					{ role: "system", content: [], output_config: { effort: "high" } },
+				],
+			};
+
+			const shaped = anchorAnthropicCacheBeforeEphemeralTail(
+				rawAnthropicPayload,
+				"<working_set>full 15KB</working_set>",
+			) as typeof rawAnthropicPayload;
+
+			expect(shaped.messages[2].content).toEqual([
+				{ type: "tool_result", tool_use_id: "t1", content: "ref:abc123", cache_control: cacheControl },
+			]);
+			expect(shaped.messages[3].content).toEqual([{ type: "text", text: "<working_set>full 15KB</working_set>" }]);
+			// Original payload was not mutated in place.
+			expect((rawAnthropicPayload.messages[3].content as Array<Record<string, unknown>>)[0].cache_control).toEqual(
+				cacheControl,
+			);
+
+			// Also verify buildRoutedStreamOptions wires onPayload for Anthropic models when ephemeralTail is set.
+			const anthropicModel = {
+				id: "claude-sonnet-4-5",
+				name: "Claude Sonnet",
+				api: "anthropic-messages" as const,
+				provider: "anthropic",
+				baseUrl: "https://api.anthropic.com",
+				reasoning: true,
+				input: ["text" as const],
+				cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+				contextWindow: 200_000,
+				maxTokens: 8_192,
+			};
+			const opts = buildRoutedStreamOptions(undefined, {
+				model: anthropicModel,
+				thinkingLevel: "high",
+				ephemeralTail: "<working_set>full 15KB</working_set>",
+				disableContinuation: true,
+			});
+			expect(opts.disableContinuation).toBe(true);
+			const viaHook = (await opts.onPayload?.(rawAnthropicPayload, anthropicModel)) as typeof rawAnthropicPayload;
+			expect((viaHook.messages[2].content as Array<Record<string, unknown>>)[0].cache_control).toEqual(cacheControl);
+			expect((viaHook.messages[3].content as Array<Record<string, unknown>>)[0].cache_control).toBeUndefined();
 		});
 	});
 });
