@@ -90,10 +90,12 @@ export default function (pi: ExtensionAPI) {
 | `state` | Next router state (stored when changed on stateful purposes; return `undefined` or `request.state` to keep unchanged) |
 | `messages` | Replacement `Message[]` slice or `(messages) => Message[]` transform for this call |
 | `systemPromptPrefix`, `systemAppend` | Ephemeral text prepended or appended to `system[0]` |
-| `ephemeralTail` | One-shot trailing `string` (sent as a `user` message) or `Message[]` appended to this call only |
+| `ephemeralTail` | One-shot trailing `string` (sent as a `user` message) or `Message[]` appended to this call only (on Anthropic, the conversation `cache_control` breakpoint stays anchored on the preceding canonical block rather than the throwaway tail) |
 | `allowedTools`, `blockedToolReason` | Filters outbound `toolsAdded` declarations and blocks disallowed tool calls in `_beforeToolCall` without mutating `agent.state.tools` |
 | `toolChoice` | `"auto" \| "none" \| "required"` for this call |
 | `maxTokens`, `temperature` | Per-request output token cap and temperature |
+| `sessionId` | Per-request provider session / cache-affinity ID override |
+| `disableContinuation` | Skips server-side thread/WebSocket continuation state for this call (set automatically on hedged backup legs) |
 | `ttfbTimeoutMs` | Aborts stalled providers before first content with a retryable timeout error |
 | `keepCacheWarm` | Set `false` to skip `CacheWarmer` for one-off routes (defaults to `true`) |
 | `statusLabel` | Working indicator message shown while this routed request streams |
@@ -106,3 +108,5 @@ export default function (pi: ExtensionAPI) {
 - **`stream?(request, ctx)`**: Optional full stream-tier hook for custom multi-model racing or speculation. `request.dispatch(route)` runs a physical route through auth and ephemeral projection; `request.recordUsage(kind, provider, modelId, usage, note?)` attributes sidecar tokens without adding messages; `request.setState(state)` persists router state.
 - **`onOutcome?(outcome, ctx)`**: Invoked after every routed physical response (and its tool batch, or error/abort) with `{ virtualModel, route, purpose, turnIndex, message, toolResults, ttfbMs, durationMs, aborted, state }`. Returning a new state persists it on the session branch.
 - **`pi.setVirtualModelState(provider, id, state)`**: Explicitly persists router state from any extension command or hook.
+- **`pi.appendUsage(kind, provider, model, usage, note?)`**: Records background helper or sidecar model usage in the session ledger without adding a conversation message.
+- **`ctx.getRouteCacheSnapshot()`**: Reads unexpired prompt-cache state (`warmTokens`, `expiresAtMs`, `cacheFreeBoundary`) from any extension boundary or hook.
