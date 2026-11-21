@@ -288,8 +288,32 @@ export function anchorAnthropicCacheBeforeEphemeralTail(
 	return { ...record, messages: nextMessages };
 }
 
+function withGeminiAnyToolConfig(target: Record<string, unknown>): Record<string, unknown> {
+	const existingConfig =
+		target.toolConfig && typeof target.toolConfig === "object" && !Array.isArray(target.toolConfig)
+			? (target.toolConfig as Record<string, unknown>)
+			: {};
+	const existingFnConfig =
+		existingConfig.functionCallingConfig &&
+		typeof existingConfig.functionCallingConfig === "object" &&
+		!Array.isArray(existingConfig.functionCallingConfig)
+			? (existingConfig.functionCallingConfig as Record<string, unknown>)
+			: {};
+	return {
+		...target,
+		toolConfig: {
+			...existingConfig,
+			functionCallingConfig: { ...existingFnConfig, mode: "ANY" },
+		},
+	};
+}
+
 /** Rewrite wire payload when `toolChoice: "required"` targets APIs with vendor-specific syntax. */
-export function applyRequiredToolChoicePayload(payload: unknown, api: string): unknown {
+export function applyRequiredToolChoicePayload(
+	payload: unknown,
+	api: string,
+	modelMeta?: { provider?: string; baseUrl?: string },
+): unknown {
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
 	const record = payload as Record<string, unknown>;
 	if (api === "anthropic-messages") {
@@ -297,24 +321,14 @@ export function applyRequiredToolChoicePayload(payload: unknown, api: string): u
 		const { thinking: _thinking, output_config: _outputConfig, ...rest } = record;
 		return { ...rest, tool_choice: { type: "any" } };
 	}
-	if (api === "google-generative-ai" || api === "google-vertex" || api === "antigravity") {
-		const existingConfig =
-			record.toolConfig && typeof record.toolConfig === "object" && !Array.isArray(record.toolConfig)
-				? (record.toolConfig as Record<string, unknown>)
-				: {};
-		const existingFnConfig =
-			existingConfig.functionCallingConfig &&
-			typeof existingConfig.functionCallingConfig === "object" &&
-			!Array.isArray(existingConfig.functionCallingConfig)
-				? (existingConfig.functionCallingConfig as Record<string, unknown>)
-				: {};
-		return {
-			...record,
-			toolConfig: {
-				...existingConfig,
-				functionCallingConfig: { ...existingFnConfig, mode: "ANY" },
-			},
-		};
+	if (api === "antigravity-api" || api === "antigravity") {
+		if (record.request && typeof record.request === "object" && !Array.isArray(record.request)) {
+			return { ...record, request: withGeminiAnyToolConfig(record.request as Record<string, unknown>) };
+		}
+		return withGeminiAnyToolConfig(record);
+	}
+	if (api === "google-generative-ai" || api === "google-vertex") {
+		return withGeminiAnyToolConfig(record);
 	}
 	if (api === "bedrock-converse-stream") {
 		const existingConfig =
@@ -326,6 +340,10 @@ export function applyRequiredToolChoicePayload(payload: unknown, api: string): u
 			...record,
 			toolConfig: { ...existingConfig, toolChoice: { any: {} } },
 		};
+	}
+	if (modelMeta?.provider === "meta" || modelMeta?.baseUrl?.includes("api.meta.ai")) {
+		// Meta's /v1/responses endpoint accepts only "auto" and returns HTTP 400 on "required".
+		return payload;
 	}
 	return { ...record, tool_choice: "required" };
 }
@@ -352,7 +370,7 @@ export function buildRoutedStreamOptions(
 						shaped = anchorAnthropicCacheBeforeEphemeralTail(shaped, route.ephemeralTail);
 					}
 					if (toolChoice === "required") {
-						shaped = applyRequiredToolChoicePayload(shaped, model.api);
+						shaped = applyRequiredToolChoicePayload(shaped, model.api, model);
 					}
 					return previousOnPayload ? await previousOnPayload(shaped, model) : shaped;
 				}
