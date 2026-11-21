@@ -132,6 +132,7 @@ import {
 	type SessionEntry,
 	SessionManager,
 	type SessionProjection,
+	type UsageEntry,
 } from "./session-manager.ts";
 import {
 	applyToolModifiers,
@@ -152,7 +153,13 @@ import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts"
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, combineUsage, createUsageTotals } from "./usage-totals.ts";
-import { findLatestResponse, getBranchSelection, isVirtualModel } from "./virtual-models.ts";
+import {
+	computeBranchCacheSnapshot,
+	findLatestResponse,
+	getBranchSelection,
+	isVirtualModel,
+	type ModelRouteCacheSnapshot,
+} from "./virtual-models.ts";
 import { VirtualRouteController } from "./virtual-route-controller.ts";
 
 /**
@@ -1579,6 +1586,20 @@ export class AgentSession {
 	/** Persist updated router state on the current session branch for a virtual model. */
 	setVirtualModelState<TState = unknown>(provider: string, id: string, state: TState): SessionEntry | undefined {
 		return this._virtualRoutes.setVirtualModelState(provider, id, state);
+	}
+
+	/** Record sidecar or background helper model usage in the session without adding a conversation message. */
+	appendUsage(kind: string, provider: string, model: string, usage: Usage, note?: string): UsageEntry {
+		const entry = this.sessionManager.appendUsage(kind, provider, model, usage, note);
+		this._emit({ type: "entry_appended", entry });
+		return entry;
+	}
+
+	/** Snapshot unexpired prompt-cache state across physical models on the current session branch. */
+	getRouteCacheSnapshot(): ModelRouteCacheSnapshot {
+		return computeBranchCacheSnapshot(this.sessionManager.getBranch(), (provider, modelId) =>
+			this._modelRuntime.getPhysicalModel(provider, modelId),
+		);
 	}
 
 	/** Whether the session is currently processing an agent run or post-run continuation. */
@@ -3663,6 +3684,7 @@ export class AgentSession {
 					this._extensionShutdownHandler?.();
 				},
 				getContextUsage: () => this.getContextUsage(),
+				getRouteCacheSnapshot: () => this.getRouteCacheSnapshot(),
 				compact: (options) => {
 					void (async () => {
 						try {
@@ -3703,6 +3725,7 @@ export class AgentSession {
 				setVirtualModelState: (provider, id, state) => {
 					this.setVirtualModelState(provider, id, state);
 				},
+				appendUsage: (kind, provider, model, usage, note) => this.appendUsage(kind, provider, model, usage, note),
 			},
 		);
 	}

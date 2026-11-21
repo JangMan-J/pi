@@ -78,6 +78,7 @@ import type {
 	ReadonlySessionManager,
 	SessionEntry,
 	SessionManager,
+	UsageEntry,
 } from "../session-manager.ts";
 import type { Settings } from "../settings-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
@@ -103,6 +104,7 @@ import type {
 } from "../tools/index.ts";
 import type {
 	ModelRoute,
+	ModelRouteCacheSnapshot,
 	ModelRouteOutcome,
 	ModelRouteRequest,
 	VirtualModelDefinition,
@@ -392,6 +394,8 @@ export interface ExtensionContext {
 	shutdown(): void;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
+	/** Snapshot unexpired prompt-cache state across physical models on the current session branch. */
+	getRouteCacheSnapshot?(): ModelRouteCacheSnapshot;
 	/** Trigger compaction without awaiting completion. */
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
@@ -1981,6 +1985,9 @@ export interface ExtensionAPI {
 	/** Persist updated router state on the current session branch for a virtual model. */
 	setVirtualModelState<TState = unknown>(provider: string, id: string, state: TState): void;
 
+	/** Record sidecar or background helper model usage in the session without adding a conversation message. */
+	appendUsage(kind: string, provider: string, model: string, usage: Usage, note?: string): UsageEntry;
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
 }
@@ -2265,6 +2272,7 @@ export interface ExtensionRuntimeState {
 	registerVirtualModel: (definition: VirtualModelDefinition, extensionPath?: string) => void;
 	unregisterVirtualModel: (provider: string, id: string) => void;
 	setVirtualModelState: (provider: string, id: string, state: unknown) => void;
+	appendUsage: (kind: string, provider: string, model: string, usage: Usage, note?: string) => UsageEntry;
 }
 
 /**
@@ -2304,6 +2312,7 @@ export interface ExtensionContextActions {
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
+	getRouteCacheSnapshot?: () => ModelRouteCacheSnapshot;
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
