@@ -282,6 +282,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			);
 			const cacheSessionId = options?.cacheRetention === "none" ? undefined : options?.sessionId;
 			const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
+			// Replays such as CacheWarmer, hedged contenders, and cache-guarded forks keep prompt_cache_key
+			// affinity via codexSessionId without consuming or mutating the session's pooled WebSocket state.
+			const continuationSessionId = options?.disableContinuation === true ? undefined : cacheSessionId;
 			let body = buildRequestBody(
 				model,
 				normalizedContext,
@@ -294,7 +297,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			if (nextBody !== undefined) {
 				body = nextBody as RequestBody;
 			}
-			const websocketRequestId = codexSessionId || uuidv7();
+			const websocketRequestId = (options?.disableContinuation === true ? undefined : codexSessionId) || uuidv7();
 			// Codex expects an originator on every request; it is not attribution.
 			const identityHeaders = { originator: "pi", ...getIdentityHeaders(model, options?.identity) };
 			const sseHeaders = buildSSEHeaders(
@@ -318,9 +321,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
 			const transport = options?.transport || "auto";
 			let startEmitted = false;
-			const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(cacheSessionId);
+			const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(continuationSessionId);
 			if (websocketDisabledForSession) {
-				recordWebSocketSseFallback(cacheSessionId);
+				recordWebSocketSseFallback(continuationSessionId);
 			}
 
 			if (transport !== "sse" && !websocketDisabledForSession) {
@@ -346,7 +349,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							},
 							httpTimeoutMs,
 							websocketConnectTimeoutMs,
-							cacheSessionId,
+							continuationSessionId,
 							accountId,
 							grammarToolInputProperties,
 							options,
@@ -388,11 +391,11 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 								requestBytes: new TextEncoder().encode(bodyJson).byteLength,
 							}),
 						);
-						recordWebSocketFailure(cacheSessionId, error);
+						recordWebSocketFailure(continuationSessionId, error);
 						if (websocketStarted) {
 							throw error;
 						}
-						recordWebSocketSseFallback(cacheSessionId);
+						recordWebSocketSseFallback(continuationSessionId);
 						break;
 					}
 				}
@@ -1576,7 +1579,9 @@ async function processWebSocketStream(
 		options?.env,
 	);
 	let keepConnection = true;
-	const useCachedContext = options?.transport === "websocket-cached" || options?.transport === "auto";
+	const useCachedContext =
+		options?.disableContinuation !== true &&
+		(options?.transport === "websocket-cached" || options?.transport === "auto");
 	// ChatGPT Codex Responses rejects `store: true` ("Store must be set to false").
 	// WebSocket continuation still works via connection-scoped previous_response_id state.
 	const fullBody = body;
