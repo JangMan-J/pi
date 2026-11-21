@@ -150,6 +150,8 @@ export type ModelRouteValidationDecision<TState = unknown> =
 			ephemeralTail?: string | readonly Message[];
 			maxTokens?: number;
 			temperature?: number;
+			sessionId?: string;
+			disableContinuation?: boolean;
 			state?: TState;
 	  };
 
@@ -216,6 +218,10 @@ export interface ModelRoute<TState = unknown> {
 	maxTokens?: number;
 	/** Per-request sampling temperature override. */
 	temperature?: number;
+	/** Per-request provider session / cache-affinity ID override (for cache-guarded forks or isolated sidecars). */
+	sessionId?: string;
+	/** Skip server-side thread/WebSocket continuation state for this call so one-off or forked requests never clobber the active thread. */
+	disableContinuation?: boolean;
 	/** Abort the physical request with a retryable timeout error if no content arrives within this many milliseconds. */
 	ttfbTimeoutMs?: number;
 	/** Whether `CacheWarmer` may keep this physical request's prompt cache warm (defaults to true). */
