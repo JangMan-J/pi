@@ -2498,6 +2498,7 @@ export class InteractiveMode {
 				this.shutdownRequested = true;
 			},
 			getContextUsage: () => this.session.getContextUsage(),
+			getRouteCacheSnapshot: () => this.session.getRouteCacheSnapshot(),
 			compact: (options) => {
 				void (async () => {
 					try {
