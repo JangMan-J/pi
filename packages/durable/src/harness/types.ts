@@ -24,6 +24,7 @@ import type { ExecutionEnv, ShellOutputSkip, ShellOutputWindow } from "../env/in
 import type { SignalKey, SignalResult, SignalState, SignalToken } from "../signals.ts";
 import type {
 	CommitOptions,
+	ContextEdit,
 	ConversationId,
 	ConversationOwnership,
 	ConversationRecord,
@@ -662,6 +663,8 @@ export type ConversationStreamOptions = {
 	metadata?: JsonObject;
 	cacheRetention?: CacheRetention;
 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
+	/** Disable WebSocket/response continuation state (`previous_response_id`) when session/history changed. */
+	disableContinuation?: boolean;
 };
 
 /** Durable generation attempt retries; the JSON shape of pi-ai `RetryPolicy`. */
@@ -1094,8 +1097,55 @@ export interface HookApi extends DocumentReader {
 
 export type HookResult<T> = T | undefined | Promise<T | undefined>;
 
+/** Input delivered to `GenerationHooks.beforeAgentStart` once when a run starts. */
+export type BeforeAgentStartEvent = {
+	/** Active model context view (including the newly placed user input that triggered the run). */
+	readonly view: ContextView;
+	/** Active `AgentDoc` snapshot for the conversation. */
+	readonly agent: Agent;
+	/** Host execution environment, when configured. */
+	readonly env?: ExecutionEnv;
+};
+
+/** Context reset requested by `GenerationHooks.beforeAgentStart` (`ResetEntry`). */
+export type BeforeAgentStartReset = {
+	/** First kept entry after the reset; defaults to the run's opening input (`firstPlacedInput`), or `"self"`. */
+	readonly head?: EntryId | "self";
+	/** Synthetic messages placed at the reset boundary (e.g. `[anchorUser0, handoffSummary]` to keep `firstUser` / Anthropic `cch` invariant). */
+	readonly model?: readonly Message[];
+	/** Optional opaque metadata persisted on the `ResetEntry`. */
+	readonly data?: JsonValue;
+};
+
+/** Out-of-band spend incurred by a `beforeAgentStart` helper, recorded in `UsageDoc.sidecars` and `UsageDoc.sidecarContext`. */
+export type BeforeAgentStartSidecarUsage = {
+	/** Bucket prefix in `<kind>:<provider>/<modelId>` (e.g. `"baton_helper"` or `"helper_b"`). */
+	readonly kind: string;
+	readonly provider: string;
+	readonly modelId: string;
+	readonly usage: Usage;
+};
+
+/** Durable mutations committed atomically by `GenerationHooks.beforeAgentStart` before `prepare` plans system entries. */
+export type BeforeAgentStartResult = {
+	/** Targeted in-place entry edits (`ContextEdit`) applied to prior transcript entries. */
+	readonly edits?: readonly ContextEdit[];
+	/** Full context reset (`ResetEntry`) for baton swaps or sliding-window rollovers. */
+	readonly reset?: BeforeAgentStartReset;
+	/** Additional transcript entries appended in the same commit. */
+	readonly entries?: readonly EntryDraft[];
+	/** `AgentDoc` configuration updates (model, thinkingLevel, tools, sections) applied before `prepare`. */
+	readonly agent?: AgentChange;
+	/** Child `HookTask`s (e.g. writing `BatonStateDoc`) awaited before `prepare` proceeds. */
+	readonly tasks?: readonly HookTask[];
+	/** Helper/sidecar model calls to record in `UsageDoc.sidecars` (cumulative) and `UsageDoc.sidecarContext` (latest context fill). */
+	readonly sidecarUsage?: readonly BeforeAgentStartSidecarUsage[];
+};
+
 /** Hooks of the built-in generation task. */
 export interface GenerationHooks {
+	/** Once when a run starts, before preparing system entries and compaction checks. */
+	beforeAgentStart(event: BeforeAgentStartEvent, api: HookApi, context: Context): HookResult<BeforeAgentStartResult>;
 	/** Before every request attempt, including recovery; the result is used for that request only. */
 	beforeRequest(
 		request: { readonly messages: readonly Message[] },

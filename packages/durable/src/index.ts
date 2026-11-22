@@ -80,6 +80,10 @@ export type {
 	AgentChange,
 	AgentState,
 	AnyTask,
+	BeforeAgentStartEvent,
+	BeforeAgentStartReset,
+	BeforeAgentStartResult,
+	BeforeAgentStartSidecarUsage,
 	CompactionHooks,
 	CompactionPolicy,
 	CompactionReason,
@@ -139,7 +143,14 @@ export type {
 	Wrap,
 	YieldDecision,
 } from "./harness/types.ts";
-export { UsageDoc, type UsageState } from "./harness/usage.ts";
+export {
+	addUsage,
+	addUsageState,
+	recordSidecarUsage,
+	recordUsage,
+	UsageDoc,
+	type UsageState,
+} from "./harness/usage.ts";
 export type { ConversationView, ConversationWindow } from "./harness/view.ts";
 export { createSession } from "./session/session.ts";
 export {
