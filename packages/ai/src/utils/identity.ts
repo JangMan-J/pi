@@ -1,4 +1,5 @@
 import type { Models, MutableModels } from "../models.ts";
+import type { VirtualModels } from "../virtual-models-runtime.ts";
 import { PI_AI_VERSION } from "./version.ts";
 
 /**
@@ -151,6 +152,7 @@ function isMutableModels(models: Models): models is MutableModels {
  * field, and it overrides the identity `models` was created with. Everything else is delegated unchanged; a
  * `MutableModels` stays mutable.
  */
+export function withClientIdentity(models: VirtualModels, identity: ClientIdentity): VirtualModels;
 export function withClientIdentity(models: MutableModels, identity: ClientIdentity): MutableModels;
 export function withClientIdentity(models: Models, identity: ClientIdentity): Models;
 export function withClientIdentity(models: Models, identity: ClientIdentity): Models {
@@ -182,12 +184,12 @@ export function withClientIdentity(models: Models, identity: ClientIdentity): Mo
 		generateImages: (model, context, options) => models.generateImages(model, context, withIdentity(options)),
 		classify: (model, context, options) => models.classify(model, context, withIdentity(options)),
 	};
-	if (!isMutableModels(models)) return wrapped;
+	if (!isMutableModels(models)) return "registerVirtualModel" in models ? { ...models, ...wrapped } : wrapped;
 	const mutable: MutableModels = {
 		...wrapped,
 		setProvider: (provider) => models.setProvider(provider),
 		deleteProvider: (id) => models.deleteProvider(id),
 		clearProviders: () => models.clearProviders(),
 	};
-	return mutable;
+	return "registerVirtualModel" in models ? { ...models, ...mutable } : mutable;
 }
