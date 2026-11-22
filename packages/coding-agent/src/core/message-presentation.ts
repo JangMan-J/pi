@@ -2,31 +2,25 @@
  * Presentation-only projection for routed assistant turns that suppress prose and thinking.
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import {
+	isTextSuppressed as isAiTextSuppressed,
+	presentAssistantMessage,
+	suppressAssistantText,
+} from "@earendil-works/pi-ai/virtual-models";
 import type { AgentSessionEvent } from "./agent-session.ts";
 
-/** Session-owned presentation metadata, persisted without changing assistant content. */
-type PresentedAssistantMessage = AssistantMessage & { suppressTextDisplay?: boolean };
-
-/** Mark a routed response as stream-suppressed without replacing its canonical identity. */
-export function suppressAssistantText(message: AssistantMessage): void {
-	(message as PresentedAssistantMessage).suppressTextDisplay = true;
-}
+export { suppressAssistantText };
 
 /** Project a message for display; canonical history and model context stay untouched. */
 export function presentMessage<T extends AgentMessage>(message: T): T {
 	// Every stop reason is filtered: a failed or aborted hidden turn shows only its diagnostic
 	// (`errorMessage`), never its partial prose or thinking.
-	if (message.role !== "assistant" || !(message as PresentedAssistantMessage).suppressTextDisplay) return message;
-	return {
-		...message,
-		content: message.content.filter((block) => block.type !== "text" && block.type !== "thinking"),
-	};
+	return presentAssistantMessage(message as unknown as { role: string }) as unknown as T;
 }
 
 /** True when the message is a routed turn whose prose and thinking never reach presentation surfaces. */
 export function isTextSuppressed(message: AgentMessage): boolean {
-	return message.role === "assistant" && Boolean((message as PresentedAssistantMessage).suppressTextDisplay);
+	return isAiTextSuppressed(message as unknown as { role: string });
 }
 
 /** Remove hidden prose and thinking from every assistant snapshot and delta on the session event surface. */
