@@ -52,10 +52,12 @@
 			"@earendil-works/pi-mcp/testing": ["./packages/mcp/src/testing/index.ts"],
 			"@earendil-works/pi-ai": ["./packages/ai/src/index.ts"],
 			"@earendil-works/pi-ai/oauth": ["./packages/ai/src/oauth.ts"],
+			"@earendil-works/pi-ai/virtual-models": ["./packages/ai/src/virtual-models-entry.ts"],
 			"@earendil-works/pi-ai/*": ["./packages/ai/src/*.ts", "./packages/ai/src/providers/*.ts"],
 			"@earendil-works/pi-ai/dist/*": ["./packages/ai/src/*"],
 			"@earendil-works/pi-durable": ["./packages/durable/src/index.ts"],
 			"@earendil-works/pi-durable/testing": ["./packages/durable/src/testing/index.ts"],
+			"@earendil-works/pi-durable/virtual-models": ["./packages/durable/src/harness/virtual-models.ts"],
 			"@earendil-works/pi-durable/*": [
 				"./packages/durable/src/*.ts",
 				"./packages/durable/src/*/index.ts",
