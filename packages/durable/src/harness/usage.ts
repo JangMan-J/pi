@@ -1,6 +1,7 @@
 import type { Draft } from "@earendil-works/chord/delta";
 import { copyJson, type JsonRepresentation } from "@earendil-works/chord/json";
 import type { Usage } from "@earendil-works/pi-ai";
+import { calculateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { defineDoc } from "../documents.ts";
 import type { ConversationId, Tx } from "../types.ts";
 
@@ -10,6 +11,10 @@ export type UsageState = {
 	models: Record<string, JsonRepresentation<Usage>>;
 	/** Tool results, keyed by tool name; their usage has no model identity. */
 	tools: Record<string, JsonRepresentation<Usage>>;
+	/** Cumulative sidecar / helper spend, keyed `<kind>:<provider>/<modelId>`. */
+	sidecars?: Record<string, JsonRepresentation<Usage>>;
+	/** Latest per-call context window usage of each sidecar / helper model, keyed `<kind>:<provider>/<modelId>`. */
+	sidecarContext?: Record<string, { contextTokens: number; usage: JsonRepresentation<Usage> }>;
 };
 
 export const UsageDoc = defineDoc<UsageState>({
@@ -26,17 +31,38 @@ export const UsageDoc = defineDoc<UsageState>({
 export async function recordUsage(
 	tx: Tx,
 	conversationId: ConversationId,
-	bucket: keyof UsageState,
+	bucket: "models" | "tools" | "sidecars",
 	key: string,
 	usage: Usage,
 ): Promise<void> {
-	const totals = (await tx.doc(UsageDoc, conversationId))[bucket];
+	const state = await tx.doc(UsageDoc, conversationId);
+	if (state[bucket] === undefined) state[bucket] = {};
+	const totals = state[bucket]!;
 	// Own keys only: a tool may be called `toString`.
 	const total = Object.hasOwn(totals, key) ? totals[key] : undefined;
 	// Providers may leave optional counters `undefined`; drafts take strict JSON.
 	if (total === undefined)
 		totals[key] = copyJson(usage, { omitUndefinedProperties: true }) as JsonRepresentation<Usage>;
 	else addUsage(total, usage);
+}
+
+/** Record sidecar / helper spend and update its latest context-window usage in `pi.usage`. */
+export async function recordSidecarUsage(
+	tx: Tx,
+	conversationId: ConversationId,
+	kind: string,
+	provider: string,
+	modelId: string,
+	usage: Usage,
+): Promise<void> {
+	const key = `${kind}:${provider}/${modelId}`;
+	await recordUsage(tx, conversationId, "sidecars", key, usage);
+	const state = await tx.doc(UsageDoc, conversationId);
+	if (state.sidecarContext === undefined) state.sidecarContext = {};
+	state.sidecarContext[key] = {
+		contextTokens: calculateContextTokens(usage),
+		usage: copyJson(usage, { omitUndefinedProperties: true }) as JsonRepresentation<Usage>,
+	};
 }
 
 /** Add every counter of `usage` to `total`; optional counters are added once either side reports them. */
@@ -58,13 +84,17 @@ export function addUsage(total: Draft<Usage> | Usage, usage: Usage): void {
 
 /** Add every bucket of `state` into `sum`. */
 export function addUsageState(sum: UsageState, state: Readonly<UsageState>): void {
-	for (const bucket of ["models", "tools"] as const) {
-		for (const [key, usage] of Object.entries(state[bucket])) {
-			const total = Object.hasOwn(sum[bucket], key) ? sum[bucket][key] : undefined;
+	for (const bucket of ["models", "tools", "sidecars"] as const) {
+		const source = state[bucket];
+		if (source === undefined) continue;
+		if (bucket === "sidecars" && sum.sidecars === undefined) sum.sidecars = {};
+		const target = bucket === "sidecars" ? sum.sidecars! : sum[bucket];
+		for (const [key, usage] of Object.entries(source)) {
+			const total = Object.hasOwn(target, key) ? target[key] : undefined;
 			// Define rather than assign: assigning a tool named `__proto__` would set the prototype.
 			if (total !== undefined) addUsage(total, usage);
 			else
-				Object.defineProperty(sum[bucket], key, {
+				Object.defineProperty(target, key, {
 					value: structuredClone(usage),
 					enumerable: true,
 					writable: true,

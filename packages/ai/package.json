@@ -15,6 +15,10 @@
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
+		"./virtual-models": {
+			"types": "./dist/virtual-models-entry.d.ts",
+			"import": "./dist/virtual-models-entry.js"
+		},
 		"./models": {
 			"types": "./dist/models.d.ts",
 			"import": "./dist/models.js"
