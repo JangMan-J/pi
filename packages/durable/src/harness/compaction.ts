@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { Draft } from "@earendil-works/chord/delta";
-import type { AssistantMessage, Message, ModelThinkingLevel, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, ModelThinkingLevel, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai";
 import { calculateContextTokens, estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai/utils/retry";
 import { CompactionEntry } from "../entries.ts";
@@ -39,7 +39,8 @@ import type {
 	ModelRef,
 	Settings,
 } from "./types.ts";
-import { recordUsage } from "./usage.ts";
+import { recordSidecarUsage, recordUsage } from "./usage.ts";
+import { attachVirtualRequestScope, isVirtualModel, isVirtualModelsRuntime } from "./util.ts";
 
 export type CompactionInput = { reason: CompactionReason; instructions?: string };
 
@@ -148,6 +149,19 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 			});
 			if (decision?.kind === "decline") return complete(runtime, context);
 			if (decision?.kind === "summary") return place(runtime, firstKept, decision.summary, context);
+			let modelMaxTokens = model.maxTokens;
+			if (isVirtualModel(model) && isVirtualModelsRuntime(runtime.models) && modelMaxTokens <= 0) {
+				try {
+					const routed = await runtime.models.resolveModel(model, view.messages.slice(0, cut), {
+						purpose: "compaction",
+						thinkingLevel: agent.thinkingLevel,
+						signal: runtime.signal,
+					});
+					modelMaxTokens = routed.model.maxTokens;
+				} catch {
+					modelMaxTokens = 0;
+				}
+			}
 			const request: SummaryRequest = {
 				attempt: 1,
 				model: ref,
@@ -155,7 +169,7 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				streamOptions: settings.stream,
 				maxTokens: Math.min(
 					Math.floor(0.8 * policy.reserveTokens),
-					model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+					modelMaxTokens > 0 ? modelMaxTokens : Number.POSITIVE_INFINITY,
 				),
 				tail: view.entries.reduce((tail, entry) => (entry.id > tail ? entry.id : tail), firstKept),
 				firstKept,
@@ -181,7 +195,8 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				},
 			];
 			const { deferred: _deferred, ...forwarded } = streamOptions;
-			const options: SimpleStreamOptions = {
+			const sidecars: Array<{ kind: string; provider: string; modelId: string; usage: Usage }> = [];
+			const baseOptions: SimpleStreamOptions = {
 				...forwarded,
 				cacheRetention: "none",
 				maxTokens,
@@ -190,6 +205,14 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				sessionId: await ensureProviderSessionId(runtime, context),
 				...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),
 			};
+			const options: SimpleStreamOptions = isVirtualModel(model)
+				? attachVirtualRequestScope(baseOptions, {
+						purpose: "compaction",
+						onSidecarUsage: (kind, provider, modelId, usage) => {
+							sidecars.push({ kind, provider, modelId, usage });
+						},
+					})
+				: baseOptions;
 			const message = await runtime.models.completeSimple(model, { messages }, options);
 			// An abort mark or close: the abort invocation or the reopened task handles the committed state.
 			runtime.signal.throwIfAborted();
@@ -202,6 +225,16 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				attempt <= policy.maxRetries;
 			const until = retry ? runtime.now() + retryDelayMs(policy, attempt) : 0;
 			await runtime.commit(async (tx, current): Promise<Next> => {
+				for (const sidecar of sidecars) {
+					await recordSidecarUsage(
+						tx,
+						runtime.conversationId,
+						sidecar.kind,
+						sidecar.provider,
+						sidecar.modelId,
+						sidecar.usage,
+					);
+				}
 				await recordUsage(
 					tx,
 					runtime.conversationId,

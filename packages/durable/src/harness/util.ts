@@ -1,4 +1,6 @@
 import type { Context } from "@earendil-works/chord/context";
+import type { Models } from "@earendil-works/pi-ai";
+import type { VirtualModels, VirtualStreamRequestScope } from "@earendil-works/pi-ai/virtual-models";
 import { SessionFailed } from "../errors.ts";
 import type { ConversationId, Cursor, EntryQuery, Page } from "../types.ts";
 
@@ -82,4 +84,35 @@ export function conversationEntries(
 		...(query.maxEntryId === undefined ? {} : { maxEntryId: query.maxEntryId }),
 		...(query.order === undefined ? {} : { order: query.order }),
 	};
+}
+
+const VIRTUAL_REQUEST_SCOPE_SYMBOL = Symbol.for("pi-ai.virtualRequestScope");
+
+/** Lightweight check (type-only import) avoiding transitive graph bloat on built-in entry points. */
+export function isVirtualModel(model: { readonly api: string }): boolean {
+	return model.api === "pi-virtual";
+}
+
+/** Structural type guard matching `@earendil-works/pi-ai/virtual-models`'s `VirtualModels` wrapper. */
+export function isVirtualModelsRuntime(models: Models): models is VirtualModels {
+	return (
+		"prepareVirtualRoute" in models &&
+		typeof (models as VirtualModels).prepareVirtualRoute === "function" &&
+		"registerVirtualModel" in models &&
+		typeof (models as VirtualModels).registerVirtualModel === "function"
+	);
+}
+
+/** Attach virtual request metadata without adding runtime edges from `pi-ai/virtual-models` to core entries. */
+export function attachVirtualRequestScope<TOptions extends object>(
+	options: TOptions,
+	scope: VirtualStreamRequestScope,
+): TOptions {
+	return { ...options, [VIRTUAL_REQUEST_SCOPE_SYMBOL]: scope };
+}
+
+/** Read attached virtual request metadata placed by `attachVirtualRequestScope`. */
+export function getVirtualRequestScope(carrier: object | undefined): VirtualStreamRequestScope | undefined {
+	if (!carrier || typeof carrier !== "object") return undefined;
+	return (carrier as { [VIRTUAL_REQUEST_SCOPE_SYMBOL]?: VirtualStreamRequestScope })[VIRTUAL_REQUEST_SCOPE_SYMBOL];
 }

@@ -10,16 +10,20 @@ import type {
 	ModelThinkingLevel,
 	SimpleStreamOptions,
 	ToolCall,
+	Usage,
 } from "@earendil-works/pi-ai";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai/utils/retry";
 import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
+import type { ModelRoutePurpose, VirtualStreamRequestScope } from "@earendil-works/pi-ai/virtual-models";
 import { AssistantEntry, ResetEntry, SystemEntry, UserEntry } from "../entries.ts";
 import type { ExecutionEnv } from "../env/index.ts";
 import type { TaskCreationOptions } from "../session/transaction.ts";
 import { defineTask } from "../tasks.ts";
 import type {
+	ContextEdit,
 	ConversationId,
+	EntryDraft,
 	EntryId,
 	NextTaskState,
 	SubmissionId,
@@ -30,7 +34,7 @@ import type {
 	Tx,
 	TypedEntry,
 } from "../types.ts";
-import { addTools, agentHooks, sectionExtension } from "./agent.ts";
+import { addTools, agentHooks, configure, sectionExtension } from "./agent.ts";
 import { compactionPolicy, createCompaction, estimateContext, selectCut } from "./compaction.ts";
 import { applyBoundary, type Boundary, hasQueuedReset, prepareBoundary, withdrawQueuedInputs } from "./inbox.ts";
 import {
@@ -52,6 +56,9 @@ import { appendToolResult, harnessError, ToolTask, type ToolTaskResult } from ".
 import type {
 	AfterFailedRun,
 	AfterToolsDecision,
+	Agent,
+	AgentChange,
+	BeforeAgentStartResult,
 	CompactionPolicy,
 	CompactionResult,
 	ContextView,
@@ -64,21 +71,38 @@ import type {
 	ToolControl,
 	UserInput,
 } from "./types.ts";
-import { recordUsage } from "./usage.ts";
-import { optionalExtension } from "./util.ts";
+import { recordSidecarUsage, recordUsage } from "./usage.ts";
+import {
+	attachVirtualRequestScope,
+	getVirtualRequestScope,
+	isVirtualModel,
+	isVirtualModelsRuntime,
+	optionalExtension,
+} from "./util.ts";
 
-export type GenerationInput = Record<string, never>;
+export type GenerationInput = {
+	readonly start?: true;
+	readonly continuation?: true;
+};
 
 export type GenerationCheckpoint =
 	| {
 			phase: "prepare";
 			attempt: number;
+			/** Set once `beforeAgentStart` has committed mutations or waited on child tasks for attempt 1. */
+			started?: true;
 			/** The blocking compaction this generation waited for; it starts no other compaction (spec §8.3). */
 			compacted?: TaskId<CompactionResult>;
 			/** Error text of the overflow that started `compacted`; checked once when `prepare` resumes. */
 			overflow?: string;
 			/** Set when the blocking threshold started `compacted`; its outcome is checked once when `prepare` resumes. */
 			threshold?: true;
+	  }
+	| {
+			/** Waiting on child tasks asked for by `beforeAgentStart` hooks, before preparing the request. */
+			phase: "start";
+			attempt: number;
+			tasks: TaskId[];
 	  }
 	| {
 			phase: "request";
@@ -162,6 +186,13 @@ export type GenerationResult = { entryId: EntryId };
 type Runtime = TaskRuntime<GenerationInput, GenerationCheckpoint, GenerationResult, GenerationHooks>;
 type Next = NextTaskState<GenerationCheckpoint, GenerationResult>;
 
+type SidecarSpend = {
+	readonly kind: string;
+	readonly provider: string;
+	readonly modelId: string;
+	readonly usage: Usage;
+};
+
 /** What classification needs from the request that produced a message. */
 type Request = {
 	readonly attempt: number;
@@ -171,6 +202,8 @@ type Request = {
 	readonly cutoff: EntryId;
 	/** Committed model context through `cutoff`, when the phase already derived it. */
 	readonly messages?: readonly Message[];
+	/** Sidecar spend recorded during virtual routing for the request commit. */
+	readonly sidecars?: readonly SidecarSpend[];
 	/** Set when the message came from polling, so a still deferred result polls strictly later. */
 	readonly pollAt?: number;
 };
@@ -183,11 +216,12 @@ const DEFAULT_POLL_AFTER_MS = 5000;
  */
 export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, GenerationResult, GenerationHooks>({
 	name: "pi.generation",
-	version: 3,
+	version: 4,
 	initial: () => ({ phase: "prepare", attempt: 1 }),
 	// Version 2 leaves calls to tools not offered in a sequential round's `pending`, flagged `unoffered` in their slots.
 	// A version 1 Harness would start their tool tasks unflagged, resolving the name, so it leaves version 2 blocked
-	// instead. Version 3 adds the `afterTools` and `yield` phases. Older checkpoints are kept as they are.
+	// instead. Version 3 adds the `afterTools` and `yield` phases. Version 4 adds the `start` phase for
+	// `beforeAgentStart` hooks. Older checkpoints are kept as they are.
 	migrate: (input, checkpoint) => ({
 		input: input as GenerationInput,
 		checkpoint: checkpoint as GenerationCheckpoint,
@@ -207,7 +241,7 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			const { model, thinkingLevel } = agent;
 			const resolved = model === undefined ? undefined : runtime.models.getModel(model.provider, model.modelId);
 			if (model === undefined || resolved === undefined) return failNoModel(runtime, model, context);
-			const { attempt, compacted, overflow, threshold: blocked } = task.state.checkpoint;
+			const { attempt, compacted, overflow, threshold: blocked, started } = task.state.checkpoint;
 			if (compacted !== undefined && overflow !== undefined) {
 				const [outcome] = await runtime.outcomes([compacted], context);
 				if (outcome?.status !== "completed" || outcome.result.entryId === undefined) {
@@ -223,20 +257,110 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 				}
 			}
 			const view = await runtime.context(conversationId, context);
+			let env: ExecutionEnv | undefined;
+			let readEnv = false;
+			const loadEnv = async (): Promise<ExecutionEnv | undefined> => {
+				if (!readEnv) {
+					readEnv = true;
+					try {
+						env = await runtime.env(context);
+					} catch (error) {
+						if (context.abortSignal?.aborted) throw error;
+						runtime.report(error, { kind: "host", callback: "env" });
+					}
+				}
+				return env;
+			};
+			if (
+				task.input.start === true &&
+				attempt === 1 &&
+				started !== true &&
+				compacted === undefined &&
+				asksBeforeAgentStart(agent)
+			) {
+				const currentEnv = await loadEnv();
+				const edits: ContextEdit[] = [];
+				let reset: BeforeAgentStartResult["reset"];
+				const hookEntries: EntryDraft[] = [];
+				const agentChanges: AgentChange[] = [];
+				const prepared: PreparedTask[] = [];
+				const sidecarUsage: SidecarSpend[] = [];
+				await runtime.hooks.each("beforeAgentStart", async (hook) => {
+					const result = await hook(
+						{ view, agent, ...(currentEnv === undefined ? {} : { env: currentEnv }) },
+						runtime,
+						context,
+					);
+					if (result === undefined) return;
+					if (result.edits !== undefined) edits.push(...result.edits);
+					if (result.reset !== undefined) reset = result.reset;
+					if (result.entries !== undefined) hookEntries.push(...result.entries);
+					if (result.agent !== undefined) agentChanges.push(result.agent);
+					if (result.tasks !== undefined) prepareHookTasks(runtime, result.tasks, prepared);
+					if (result.sidecarUsage !== undefined) sidecarUsage.push(...result.sidecarUsage);
+				});
+				if (
+					edits.length > 0 ||
+					reset !== undefined ||
+					hookEntries.length > 0 ||
+					agentChanges.length > 0 ||
+					prepared.length > 0 ||
+					sidecarUsage.length > 0
+				) {
+					await runtime.commit(async (tx): Promise<Next> => {
+						const live = await tx.doc(LiveDoc, conversationId);
+						if (reset !== undefined) {
+							const resolvedHead = reset.head ?? (await firstPlacedInputEntry(tx, live)) ?? "self";
+							await tx.appendEntry(conversationId, {
+								kind: ResetEntry.kind,
+								head: resolvedHead,
+								...(reset.model === undefined ? {} : { model: reset.model }),
+								...(reset.data === undefined ? {} : { data: reset.data }),
+								...(edits.length === 0 ? {} : { edits }),
+							});
+						} else if (edits.length > 0) {
+							await tx.appendEntry(conversationId, { kind: "pi.context-edits", edits });
+						}
+						for (const entry of hookEntries) await tx.appendEntry(conversationId, entry);
+						for (const change of agentChanges) await configure(tx, conversationId, change);
+						for (const sidecar of sidecarUsage) {
+							await recordSidecarUsage(
+								tx,
+								conversationId,
+								sidecar.kind,
+								sidecar.provider,
+								sidecar.modelId,
+								sidecar.usage,
+							);
+						}
+						if (prepared.length > 0) {
+							const tasks = await createHookTasks(tx, runtime, prepared);
+							return {
+								status: "waiting",
+								checkpoint: { phase: "start", attempt, tasks },
+								on: tasks,
+								policy: "allSettled",
+							};
+						}
+						return { status: "running", checkpoint: { phase: "prepare", attempt, started: true } };
+					}, context);
+					return;
+				}
+			}
 			// The model owes an answer only to a context ending in a user message or tool results; system messages say
 			// nothing it answers. Otherwise, as for a continue after an answer or in an empty conversation, end the run
 			// before any request.
 			const last = view.messages.findLast((message) => message.role !== "system");
 			if (last?.role !== "user" && last?.role !== "toolResult") return failNothingToAnswer(runtime, context);
 			const shown = replaySections(view.messages);
-			let env: ExecutionEnv | undefined;
-			try {
-				env = await runtime.env(context);
-			} catch (error) {
-				if (context.abortSignal?.aborted) throw error;
-				runtime.report(error, { kind: "host", callback: "env" });
-			}
-			const input: PromptInput = { conversationId, agent, env, shown: Object.fromEntries(shown), read: runtime };
+			const resolvedEnv = await loadEnv();
+			const input: PromptInput = {
+				conversationId,
+				agent,
+				env: resolvedEnv,
+				shown: Object.fromEntries(shown),
+				read: runtime,
+			};
 			const desired = await renderSections(
 				agent.sections,
 				input,
@@ -249,14 +373,26 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 				context,
 			);
 			const entries = planSystemEntries(view, desired, agent.tools, runtime.now());
+			let contextWindow = resolved.contextWindow;
+			if (isVirtualModel(resolved) && isVirtualModelsRuntime(runtime.models) && contextWindow <= 0) {
+				const live = await runtime.snapshot(LiveDoc, conversationId, context);
+				const turnIndex = live?.run?.turns ?? 0;
+				const previewMessages = [...view.messages, ...entries.flatMap((entry) => entry.model ?? [])];
+				try {
+					const routed = await runtime.models.resolveModel(resolved, previewMessages, {
+						purpose: requestPurpose(task.input, attempt, turnIndex),
+						turnIndex,
+						thinkingLevel,
+						signal: runtime.signal,
+					});
+					contextWindow = routed.model.contextWindow;
+				} catch {
+					contextWindow = 0;
+				}
+			}
 			const threshold =
 				compacted === undefined
-					? thresholdCompaction(
-							view,
-							entries,
-							resolved.contextWindow,
-							compactionPolicy(settings, model, agent.compaction),
-						)
+					? thresholdCompaction(view, entries, contextWindow, compactionPolicy(settings, model, agent.compaction))
 					: undefined;
 			if (threshold === "blocking") {
 				// Compact first and prepare again; the transcript is unchanged until the compaction appends.
@@ -286,6 +422,14 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 				return { status: "running", checkpoint: { phase: "request", ...request } };
 			}, context);
 		},
+		start: async (task, runtime, context) => {
+			if (cutOffTooOften(task, runtime)) return endCutOff(runtime, task, context);
+			const { attempt } = task.state.checkpoint;
+			await runtime.commit(
+				() => ({ status: "running", checkpoint: { phase: "prepare", attempt, started: true } }),
+				context,
+			);
+		},
 		request: async (task, runtime, context) => {
 			// Charging the attempt may itself be what keeps failing, such as converting a huge partial: the limit ends it.
 			if (cutOffTooOften(task, runtime)) return endCutOff(runtime, task, context);
@@ -307,22 +451,58 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			);
 			const model = runtime.models.getModel(ref.provider, ref.modelId);
 			if (model === undefined) return failNoModel(runtime, ref, context);
+			const live = await runtime.snapshot(LiveDoc, conversationId, context);
+			const turnIndex = live?.run?.turns ?? 0;
 			const view = await runtime.context(conversationId, context, { at: cutoff });
 			let messages = view.messages;
+			let hookScope: VirtualStreamRequestScope | undefined;
 			await runtime.hooks.each("beforeRequest", async (hook) => {
 				const replaced = await hook({ messages }, runtime, context);
-				if (replaced !== undefined) messages = replaced.messages;
+				if (replaced !== undefined) {
+					messages = replaced.messages;
+					const attached = getVirtualRequestScope(replaced);
+					if (attached !== undefined) hookScope = { ...hookScope, ...attached };
+				}
 			});
-			const options: SimpleStreamOptions = {
+			const baseOptions: SimpleStreamOptions = {
 				...streamOptions,
+				...(hookScope?.disableContinuation !== undefined
+					? { disableContinuation: hookScope.disableContinuation }
+					: {}),
 				signal: runtime.signal,
 				telemetry: context.telemetry,
 				sessionId: await ensureProviderSessionId(runtime, context),
 				...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),
-				onPayload: (payload) => providerPayload(runtime, model, payload, context),
+				onPayload: (payload, targetModel) => providerPayload(runtime, targetModel ?? model, payload, context),
 			};
+			const sidecars: SidecarSpend[] = [];
+			let routedThinkingLevel: ModelThinkingLevel | undefined;
+			const options: SimpleStreamOptions = isVirtualModel(model)
+				? attachVirtualRequestScope(baseOptions, {
+						...hookScope,
+						purpose: hookScope?.purpose ?? requestPurpose(task.input, attempt, turnIndex),
+						turnIndex: hookScope?.turnIndex ?? turnIndex,
+						onRouteCommitted: (route) => {
+							routedThinkingLevel = route.thinkingLevel;
+							hookScope?.onRouteCommitted?.(route);
+						},
+						onComplete: hookScope?.onComplete,
+						onSidecarUsage: (kind, provider, modelId, usage, note) => {
+							sidecars.push({ kind, provider, modelId, usage });
+							hookScope?.onSidecarUsage?.(kind, provider, modelId, usage, note);
+						},
+					})
+				: baseOptions;
 			const message = await streamResponse(runtime, model, messages, options, attempt, context);
-			const request = { attempt, compacted, model: ref, thinkingLevel, cutoff, messages: view.messages };
+			const request: Request = {
+				attempt,
+				compacted,
+				model: ref,
+				thinkingLevel: routedThinkingLevel ?? thinkingLevel,
+				cutoff,
+				messages: view.messages,
+				...(sidecars.length === 0 ? {} : { sidecars }),
+			};
 			await classify(runtime, request, message, context);
 		},
 		/** After the backoff's sleep; a run before `until` (an early wake, or a record of an earlier version) sleeps again. */
@@ -836,8 +1016,8 @@ async function classify(
 	runtime.signal.throwIfAborted();
 	const conversationId = runtime.conversationId;
 	const { attempt, compacted, model: ref, thinkingLevel, cutoff } = request;
-	// Record the requested level, as pi-agent-core's agent loop does.
-	if (thinkingLevel !== undefined) message.thinkingLevel = thinkingLevel;
+	// Record the requested level, preserving the physical routed level if the response already set one.
+	if (thinkingLevel !== undefined && message.thinkingLevel === undefined) message.thinkingLevel = thinkingLevel;
 	if (message.stopReason === "deferred" && message.deferred !== undefined) {
 		const handle = message.deferred;
 		const pollAt = Math.max(
@@ -866,7 +1046,7 @@ async function classify(
 		return startToolRound(runtime, request, message, calls, context);
 	}
 	if (message.stopReason === "stop" || message.stopReason === "length" || message.stopReason === "toolUse") {
-		return answer(runtime, message, context);
+		return answer(runtime, message, context, request.sidecars);
 	}
 	// The retry and compaction policies govern the next attempt, so they are read now rather than pinned at preparation.
 	const settings = runtime.settings;
@@ -881,7 +1061,7 @@ async function classify(
 			const text = message.errorMessage ?? "Context overflow";
 			await runtime.commit(async (tx): Promise<Next> => {
 				const live = await tx.doc(LiveDoc, conversationId);
-				await appendAssistant(tx, conversationId, message);
+				await appendAssistant(tx, conversationId, message, request.sidecars);
 				delete live.generation;
 				const child = await createCompaction(tx, conversationId, { reason: "overflow" }, runtime.taskId);
 				const checkpoint = { phase: "prepare", attempt, compacted: child, overflow: text } as const;
@@ -903,7 +1083,7 @@ async function classify(
 		// Read before the first table write; only a failure uses it.
 		const failure = retry ? undefined : await prepareFailure(tx, runtime);
 		const live = await tx.doc(LiveDoc, conversationId);
-		await appendAssistant(tx, conversationId, message);
+		await appendAssistant(tx, conversationId, message, request.sidecars);
 		if (failure === undefined) {
 			live.generation = { attempt, retry: { at: until, error: message.errorMessage ?? "" } };
 			const checkpoint = {
@@ -930,7 +1110,12 @@ async function classify(
  * `afterRun` hooks selected the run waits for the tasks they ask for, in `finish` and `drain`, before the final
  * boundary; without, selected user items start the next run now.
  */
-async function answer(runtime: Runtime, message: AssistantMessage, context: Context): Promise<void> {
+async function answer(
+	runtime: Runtime,
+	message: AssistantMessage,
+	context: Context,
+	sidecars?: readonly SidecarSpend[],
+): Promise<void> {
 	let decided = false;
 	let continuation: UserInput | undefined;
 	const prepared: PreparedTask[] = [];
@@ -947,7 +1132,7 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 		// The answer waits for its deciders: appended, no boundary, the inputs still open.
 		await runtime.commit(async (tx): Promise<Next> => {
 			const live = await tx.doc(LiveDoc, conversationId);
-			const entry = await appendAssistant(tx, conversationId, message);
+			const entry = await appendAssistant(tx, conversationId, message, sidecars);
 			const tasks = await createHookTasks(tx, runtime, prepared);
 			delete live.generation;
 			if (live.run?.taskId === runtime.taskId) live.run.yield = { answer: entry.id, tasks };
@@ -961,7 +1146,7 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 		// Queue modes are read on the Session line, when the boundary is decided.
 		const boundary = await prepareBoundary(tx, conversationId, runtime.settings);
 		const live = await tx.doc(LiveDoc, conversationId);
-		const entry = await appendAssistant(tx, conversationId, message);
+		const entry = await appendAssistant(tx, conversationId, message, sidecars);
 		return concludeAnswer(tx, runtime, live, boundary, entry.id, continuation, afterRun);
 	}, context);
 }
@@ -992,7 +1177,7 @@ async function concludeAnswer(
 		await tx.appendEntry(UserEntry, conversationId, { model: [user] });
 		// The continuation starts the run's turn count over: bounding `onYield` loops is the extension's job.
 		if (live.run?.taskId === runtime.taskId) live.run.turns = 0;
-		handOver(live, runtime.taskId, await createGeneration(tx, conversationId));
+		handOver(live, runtime.taskId, await createGeneration(tx, conversationId, undefined, { continuation: true }));
 		delete live.generation;
 		return result;
 	}
@@ -1030,6 +1215,30 @@ function afterToolsDecision(result: unknown): AfterToolsDecision | undefined {
 
 function isRecord(value: unknown): value is { readonly [key: string]: unknown } {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Whether the phase's agent selects a `beforeAgentStart` hook. */
+function asksBeforeAgentStart(agent: Agent): boolean {
+	const hooks = agentHooks(agent, GenerationTask.definition.name);
+	return hooks.some(({ handlers }) => typeof (handlers as Partial<GenerationHooks>).beforeAgentStart === "function");
+}
+
+/** First placed input submission's entry ID on this run, so `beforeAgentStart` resets keep the run's trigger visible. */
+async function firstPlacedInputEntry(tx: Tx, live: Draft<LiveState>): Promise<EntryId | undefined> {
+	for (const id of live.run?.inputs ?? []) {
+		const record = await tx.submission(id);
+		if (record?.type === "input" && record.status === "placed" && record.entry !== undefined) {
+			return record.entry;
+		}
+	}
+	return undefined;
+}
+
+/** Derive `ModelRoutePurpose` for a generation request attempt. */
+function requestPurpose(input: GenerationInput, attempt: number, turnIndex: number): ModelRoutePurpose {
+	if (attempt > 1) return "retry";
+	if (input.continuation === true || turnIndex > 0) return "continuation";
+	return "prompt";
 }
 
 /** Whether the phase's agent selects an `afterRun` hook, so a run that answers waits for its tasks (spec §8.3). */
@@ -1177,7 +1386,7 @@ async function startToolRound(
 		);
 	await runtime.commit(async (tx): Promise<Next> => {
 		const live = await tx.doc(LiveDoc, conversationId);
-		const entry = await appendAssistant(tx, conversationId, message);
+		const entry = await appendAssistant(tx, conversationId, message, request.sidecars);
 		const slots: ToolSlot[] = [];
 		const tools: TaskId<ToolTaskResult>[] = [];
 		const pending: string[] = [];
@@ -1331,8 +1540,14 @@ async function appendAssistant(
 	tx: Tx,
 	conversationId: ConversationId,
 	message: AssistantMessage,
+	sidecars?: readonly SidecarSpend[],
 ): Promise<TypedEntry<never>> {
 	await recordUsage(tx, conversationId, "models", `${message.provider}/${message.model}`, message.usage);
+	if (sidecars !== undefined) {
+		for (const sidecar of sidecars) {
+			await recordSidecarUsage(tx, conversationId, sidecar.kind, sidecar.provider, sidecar.modelId, sidecar.usage);
+		}
+	}
 	return tx.appendEntry(AssistantEntry, conversationId, { model: [message] });
 }
 
@@ -1349,7 +1564,7 @@ export async function startRun(
 	options?: { readonly keepFailure?: boolean },
 ): Promise<void> {
 	const { inputs, first } = run;
-	const taskId = await createGeneration(tx, conversationId, { submissionIds: inputs });
+	const taskId = await createGeneration(tx, conversationId, { submissionIds: inputs }, { start: true });
 	live.run = { taskId, inputs, turns: 0, ...(first === undefined ? {} : { first }) };
 	if (options?.keepFailure !== true) delete live.runFailure;
 }
@@ -1359,8 +1574,9 @@ function createGeneration(
 	tx: Tx,
 	conversationId: ConversationId,
 	telemetry: Pick<TaskCreationOptions, "submissionIds"> = {},
+	input: GenerationInput = {},
 ): Promise<TaskId<GenerationResult>> {
-	return tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId, ...telemetry });
+	return tx.createTask(GenerationTask, input, { ownership: { kind: "conversation" }, conversationId, ...telemetry });
 }
 
 /** Hand run control from `from` to `to`; the run's inputs move with it. */

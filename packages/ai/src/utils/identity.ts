@@ -1,4 +1,5 @@
 import type { Models, MutableModels } from "../models.ts";
+import type { VirtualModels } from "../virtual-models-runtime.ts";
 import { PI_AI_VERSION } from "./version.ts";
 
 /**
@@ -146,11 +147,21 @@ function isMutableModels(models: Models): models is MutableModels {
 	return "setProvider" in models && "deleteProvider" in models && "clearProviders" in models;
 }
 
+function isVirtualModels(models: Models): models is VirtualModels {
+	return (
+		"prepareVirtualRoute" in models &&
+		typeof (models as VirtualModels).prepareVirtualRoute === "function" &&
+		"registerVirtualModel" in models &&
+		typeof (models as VirtualModels).registerVirtualModel === "function"
+	);
+}
+
 /**
  * `models` with `identity` as the default identity of its requests: a request's `identity` overrides it field by
  * field, and it overrides the identity `models` was created with. Everything else is delegated unchanged; a
- * `MutableModels` stays mutable.
+ * `MutableModels` stays mutable and a `VirtualModels` stays virtual-capable.
  */
+export function withClientIdentity(models: VirtualModels, identity: ClientIdentity): VirtualModels;
 export function withClientIdentity(models: MutableModels, identity: ClientIdentity): MutableModels;
 export function withClientIdentity(models: Models, identity: ClientIdentity): Models;
 export function withClientIdentity(models: Models, identity: ClientIdentity): Models {
@@ -182,12 +193,40 @@ export function withClientIdentity(models: Models, identity: ClientIdentity): Mo
 		generateImages: (model, context, options) => models.generateImages(model, context, withIdentity(options)),
 		classify: (model, context, options) => models.classify(model, context, withIdentity(options)),
 	};
-	if (!isMutableModels(models)) return wrapped;
-	const mutable: MutableModels = {
+	const virtualMethods = isVirtualModels(models)
+		? {
+				registerVirtualModel: (definition: Parameters<VirtualModels["registerVirtualModel"]>[0]) =>
+					models.registerVirtualModel(definition),
+				unregisterVirtualModel: (providerId: string, modelId: string) =>
+					models.unregisterVirtualModel(providerId, modelId),
+				getVirtualModelDefinition: (providerId: string, modelId: string) =>
+					models.getVirtualModelDefinition(providerId, modelId),
+				getPhysicalModel: (providerId: string, modelId: string) => models.getPhysicalModel(providerId, modelId),
+				resolveModel: (
+					model: Parameters<VirtualModels["resolveModel"]>[0],
+					messages: Parameters<VirtualModels["resolveModel"]>[1],
+					options: Parameters<VirtualModels["resolveModel"]>[2],
+				) => models.resolveModel(model, messages, options),
+				prepareVirtualRoute: (
+					model: Parameters<VirtualModels["prepareVirtualRoute"]>[0],
+					messages: Parameters<VirtualModels["prepareVirtualRoute"]>[1],
+					options: Parameters<VirtualModels["prepareVirtualRoute"]>[2],
+				) => models.prepareVirtualRoute(model, messages, options),
+				requirePhysicalTarget: (virtualName: string, providerId: string, modelId: string) =>
+					models.requirePhysicalTarget(virtualName, providerId, modelId),
+			}
+		: undefined;
+	const mutableMethods = isMutableModels(models)
+		? {
+				setProvider: (provider: Parameters<MutableModels["setProvider"]>[0]) => models.setProvider(provider),
+				deleteProvider: (id: string) => models.deleteProvider(id),
+				clearProviders: () => models.clearProviders(),
+			}
+		: undefined;
+	if (!virtualMethods && !mutableMethods) return wrapped;
+	return {
 		...wrapped,
-		setProvider: (provider) => models.setProvider(provider),
-		deleteProvider: (id) => models.deleteProvider(id),
-		clearProviders: () => models.clearProviders(),
+		...virtualMethods,
+		...mutableMethods,
 	};
-	return mutable;
 }

@@ -24,6 +24,7 @@ import type { ExecutionEnv, ShellOutputSkip, ShellOutputWindow } from "../env/in
 import type { SignalKey, SignalResult, SignalState, SignalToken } from "../signals.ts";
 import type {
 	CommitOptions,
+	ContextEdit,
 	ConversationId,
 	ConversationOwnership,
 	ConversationRecord,
@@ -662,6 +663,8 @@ export type ConversationStreamOptions = {
 	metadata?: JsonObject;
 	cacheRetention?: CacheRetention;
 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
+	/** Disable WebSocket/response continuation state (`previous_response_id`) when session/history changed. */
+	disableContinuation?: boolean;
 };
 
 /** Durable generation attempt retries; the JSON shape of pi-ai `RetryPolicy`. */
@@ -1094,8 +1097,43 @@ export interface HookApi extends DocumentReader {
 
 export type HookResult<T> = T | undefined | Promise<T | undefined>;
 
+/** Input delivered to `GenerationHooks.beforeAgentStart` once when a run starts. */
+export type BeforeAgentStartEvent = {
+	readonly view: ContextView;
+	readonly agent: Agent;
+	readonly env?: ExecutionEnv;
+};
+
+/** Context reset requested by `GenerationHooks.beforeAgentStart` (`ResetEntry`). */
+export type BeforeAgentStartReset = {
+	/** Default keeps the run's opening input visible (`firstPlacedInput`), or `"self"` when absent. */
+	readonly head?: EntryId | "self";
+	readonly model?: readonly Message[];
+	readonly data?: JsonValue;
+};
+
+/** Out-of-band spend incurred by a `beforeAgentStart` helper (e.g. baton summarizer), stored in `pi.usage.sidecars`. */
+export type BeforeAgentStartSidecarUsage = {
+	readonly kind: string;
+	readonly provider: string;
+	readonly modelId: string;
+	readonly usage: Usage;
+};
+
+/** Durable mutations requested by `GenerationHooks.beforeAgentStart` ahead of `prepare`. */
+export type BeforeAgentStartResult = {
+	readonly edits?: readonly ContextEdit[];
+	readonly reset?: BeforeAgentStartReset;
+	readonly entries?: readonly EntryDraft[];
+	readonly agent?: AgentChange;
+	readonly tasks?: readonly HookTask[];
+	readonly sidecarUsage?: readonly BeforeAgentStartSidecarUsage[];
+};
+
 /** Hooks of the built-in generation task. */
 export interface GenerationHooks {
+	/** Once when a run starts, before preparing system entries and compaction checks. */
+	beforeAgentStart(event: BeforeAgentStartEvent, api: HookApi, context: Context): HookResult<BeforeAgentStartResult>;
 	/** Before every request attempt, including recovery; the result is used for that request only. */
 	beforeRequest(
 		request: { readonly messages: readonly Message[] },
