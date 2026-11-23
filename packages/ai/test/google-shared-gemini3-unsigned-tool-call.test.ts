@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { convertMessages, requiresToolCallId } from "../src/api/google-shared.ts";
+import { convertMessages, requiresFunctionCallThoughtSignature, requiresToolCallId } from "../src/api/google-shared.ts";
 import type { Context, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
+
+const OMITTED_CALL = "[Earlier tool call omitted because its signature is unavailable.]";
+const HISTORY_NOTE =
+	'[History note: Earlier "[Observation from ...]" blocks are historical tool results, not a format to imitate. To use a tool now, emit a real functionCall.]';
+// What a turn without a usable signature becomes: the calls are dropped and their results are user text.
+const OBSERVED_CONTENTS = [
+	{ role: "user", parts: [{ text: "Hi" }] },
+	{ role: "model", parts: [{ text: OMITTED_CALL }] },
+	{
+		role: "user",
+		parts: [
+			{ text: '[Observation from `bash` ({"command":"echo hi"}):\nhi]' },
+			{ text: '[Observation from `bash` ({"command":"ls -la"}):\nfiles]' },
+			{ text: HISTORY_NOTE },
+		],
+	},
+];
 
 function makeGemini3Model<TApi extends "google-generative-ai" | "google-vertex">(
 	api: TApi,
@@ -83,8 +100,8 @@ describe("google-shared convertMessages — Gemini 3 unsigned tool calls", () =>
 		makeGemini3Model("google-generative-ai", "google"),
 		makeGemini3Model("google-generative-ai", "google", "gemini-3.6-flash"),
 		makeGemini3Model("google-vertex", "google-vertex"),
-	])("preserves tool call IDs for $id via $api history", (model) => {
-		const context = makeContext(model);
+	])("preserves tool call IDs for signed $id via $api history", (model) => {
+		const context = makeContext(model, "AAAAAAAAAAAAAAAAAAAAAA==");
 		const contents = convertMessages(model, normalizeContext(context));
 		const functionCallIds = contents
 			.flatMap((content) => content.parts ?? [])
@@ -97,34 +114,169 @@ describe("google-shared convertMessages — Gemini 3 unsigned tool calls", () =>
 		expect(functionResponseIds).toEqual(["call_1", "call_2"]);
 	});
 
-	it("does not add skip_thought_signature_validator for unsigned Google Gen AI tool calls", () => {
-		const model = makeGemini3Model("google-generative-ai", "google");
-		const contents = convertMessages(model, normalizeContext(makeContext({ ...model, id: "other-model" })));
+	// Live 2026-11-17, gemini-4-hydrogen (Vertex and AI Studio), snoop cap_01a1e9f9-3c22-7123-8b55-4adff028a8d5:
+	// history replayed as functionCall parts with the skip_thought_signature_validator bypass made the next
+	// response end in MALFORMED_RESPONSE (the call is written into the thinking and an empty call is emitted)
+	// or return a call with a placeholder signature and no thought. The same history as observations: STOP
+	// with a thought and a real signature, every time.
+	it.each([
+		["another model on Google Gen AI", makeGemini3Model("google-generative-ai", "google"), undefined],
+		["an unsigned Vertex turn", makeGemini3Model("google-vertex", "google-vertex"), undefined],
+		[
+			"gemini-4-hydrogen on Vertex",
+			makeGemini3Model("google-vertex", "google-vertex", "gemini-4-hydrogen"),
+			undefined,
+		],
+		[
+			"a non-Gemini source model's signature",
+			makeGemini3Model("google-vertex", "google-vertex", "gemini-3.6-flash"),
+			{ api: "google-vertex", provider: "google-vertex", id: "gemma-4-31b-it" },
+		],
+		[
+			"a foreign provider's signature",
+			makeGemini3Model("google-vertex", "google-vertex", "gemini-4-carbon"),
+			{ api: "google-generative-ai", provider: "antigravity", id: "gemini-4-carbon" },
+		],
+	] as const)("replays %s as observations, not function calls", (_name, model, source) => {
+		const context = source
+			? makeContext(source, "AAAAAAAAAAAAAAAAAAAAAA==")
+			: makeContext({ ...model, id: model.id === "gemini-4-hydrogen" ? "claude-opus-4-5" : "other-model" });
+		const contents = convertMessages(model, normalizeContext(context));
 
-		const modelTurn = contents.find((c) => c.role === "model");
-		expect(modelTurn).toBeTruthy();
-
-		const functionCallParts = modelTurn?.parts?.filter((p) => p.functionCall !== undefined) ?? [];
-		expect(functionCallParts).toHaveLength(2);
-		expect(functionCallParts[0]?.thoughtSignature).toBeUndefined();
-		expect(functionCallParts[1]?.thoughtSignature).toBeUndefined();
-		expect(JSON.stringify(modelTurn)).not.toContain("skip_thought_signature_validator");
-
-		const textParts = modelTurn?.parts?.filter((p) => p.text !== undefined) ?? [];
-		const historicalText = textParts.filter((p) => p.text?.includes("Historical context"));
-		expect(historicalText).toHaveLength(0);
+		expect(contents).toEqual(OBSERVED_CONTENTS);
+		// No bypass signature in any form: raw (broke Vertex in #4032) or base64.
+		expect(JSON.stringify(contents)).not.toContain("skip_thought_signature_validator");
+		expect(JSON.stringify(contents)).not.toContain("c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=");
 	});
 
-	it("does not add skip_thought_signature_validator for unsigned Vertex tool calls", () => {
+	it("replays the batch as observations if only a later parallel call has a signature", () => {
+		const model = makeGemini3Model("google-vertex", "google-vertex", "gemini-4-hydrogen");
+		const signature = "AAAAAAAAAAAAAAAAAAAAAA==";
+		const context = makeContext(model, signature);
+		const assistant = context.messages[1];
+		if (assistant.role !== "assistant") throw new Error("expected the assistant turn");
+		const [first, second] = assistant.content;
+		if (first.type !== "toolCall" || second.type !== "toolCall") throw new Error("expected parallel tool calls");
+		delete first.thoughtSignature;
+		second.thoughtSignature = signature;
+
+		expect(convertMessages(model, normalizeContext(context))).toEqual(OBSERVED_CONTENTS);
+	});
+
+	it("labels a failed unsigned result in observation text without sending a function response", () => {
+		const model = makeGemini3Model("google-generative-ai", "google", "gemini-4-hydrogen");
+		const context = makeContext(model);
+		const failed = context.messages[2];
+		if (failed.role !== "toolResult") throw new Error("expected a tool result");
+		failed.isError = true;
+		failed.content = [{ type: "text", text: "permission denied" }];
+
+		expect(convertMessages(model, normalizeContext(context)).at(-1)).toEqual({
+			role: "user",
+			parts: [
+				{ text: '[Observation from `bash` ({"command":"echo hi"}):\nTool failed: permission denied]' },
+				{ text: '[Observation from `bash` ({"command":"ls -la"}):\nfiles]' },
+				{ text: HISTORY_NOTE },
+			],
+		});
+	});
+
+	it("keeps the text of an unsigned turn and drops only its calls", () => {
+		const model = makeGemini3Model("google-vertex", "google-vertex", "gemini-4-hydrogen");
+		const context = makeContext({ api: "anthropic-messages", provider: "anthropic", id: "claude-opus-4-5" });
+		const assistant = context.messages[1];
+		if (assistant.role !== "assistant") throw new Error("expected the assistant turn");
+		assistant.content.unshift({ type: "text", text: "Checking the tree." });
+		const contents = convertMessages(model, normalizeContext(context));
+
+		expect(contents[1]).toEqual({ role: "model", parts: [{ text: "Checking the tree." }] });
+		expect(contents[2]).toEqual(OBSERVED_CONTENTS[2]);
+	});
+
+	it("labels an observation without arguments by tool name only and keeps images after it", () => {
+		const model = {
+			...makeGemini3Model("google-vertex", "google-vertex", "gemini-4-hydrogen"),
+			input: ["text", "image"],
+		};
+		const now = Date.now();
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "Hi", timestamp: now },
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call_1", name: "screenshot", arguments: {} }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-opus-4-5",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "toolUse",
+					timestamp: now,
+				},
+				{
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "screenshot",
+					content: [{ type: "image", mimeType: "image/png", data: "aGk=" }],
+					isError: false,
+					timestamp: now,
+				},
+				{ role: "user", content: "What is on it?", timestamp: now },
+			],
+		};
+		const contents = convertMessages(model as Model<"google-vertex">, normalizeContext(context));
+
+		expect(contents.slice(2)).toEqual([
+			{
+				role: "user",
+				parts: [
+					{ text: "[Observation from `screenshot`:\n(see attached image)]" },
+					{ inlineData: { mimeType: "image/png", data: "aGk=" } },
+					{ text: HISTORY_NOTE },
+				],
+			},
+			{ role: "user", parts: [{ text: "What is on it?" }] },
+		]);
+	});
+
+	// Live Vertex 2026-11-17: a text part after functionResponse parts in one user turn -> 400 "Requests
+	// ending with a model turn are not supported", so the note stays with the observations.
+	it("keeps signed turns as function calls next to observed ones and puts the note in the last observation turn", () => {
+		const model = makeGemini3Model("google-vertex", "google-vertex", "gemini-4-hydrogen");
+		const foreign = makeContext({ api: "anthropic-messages", provider: "anthropic", id: "claude-opus-4-5" });
+		const own = makeContext(model, "AAAAAAAAAAAAAAAAAAAAAA==");
+		const contents = convertMessages(model, normalizeContext({ messages: [...foreign.messages, ...own.messages] }));
+
+		expect(contents.slice(0, 3)).toEqual(OBSERVED_CONTENTS);
+		expect(contents[4].parts?.map((part) => part.functionCall?.id)).toEqual(["call_1", "call_2"]);
+		expect(contents[4].parts?.map((part) => part.thoughtSignature)).toEqual(["AAAAAAAAAAAAAAAAAAAAAA==", undefined]);
+		expect(contents[5].parts?.map((part) => part.functionResponse?.id ?? part.text)).toEqual(["call_1", "call_2"]);
+		expect(JSON.stringify(contents).split(HISTORY_NOTE.slice(0, 20)).length - 1).toBe(1);
+	});
+
+	it("adds no history note when every turn is replayed as function calls", () => {
 		const model = makeGemini3Model("google-vertex", "google-vertex");
-		const contents = convertMessages(model, normalizeContext(makeContext(model)));
+		const contents = convertMessages(model, normalizeContext(makeContext(model, "AAAAAAAAAAAAAAAAAAAAAA==")));
+
+		expect(JSON.stringify(contents)).not.toContain("History note");
+	});
+
+	// agy (Antigravity's client) replays a gemini-3.7-flash signature verbatim on gemini-3.6-flash; Vertex accepts it.
+	it("keeps another Gemini model's signature from the same provider", () => {
+		const model = makeGemini3Model("google-vertex", "google-vertex", "gemini-3.6-flash");
+		const source = { api: "google-vertex", provider: "google-vertex", id: "gemini-3.7-flash" };
+		const signature = "AY89a1AAAAAAAAAAAAAAAA==";
+		const contents = convertMessages(model, normalizeContext(makeContext(source, signature)));
 		const modelTurn = contents.find((c) => c.role === "model");
 		const functionCallParts = modelTurn?.parts?.filter((p) => p.functionCall !== undefined) ?? [];
 
-		expect(functionCallParts).toHaveLength(2);
-		expect(functionCallParts[0]?.thoughtSignature).toBeUndefined();
-		expect(functionCallParts[1]?.thoughtSignature).toBeUndefined();
-		expect(JSON.stringify(modelTurn)).not.toContain("skip_thought_signature_validator");
+		expect(functionCallParts.map((p) => p.thoughtSignature)).toEqual([signature, undefined]);
 	});
 
 	it("preserves valid thoughtSignature when present for the same provider and model", () => {
@@ -139,7 +291,7 @@ describe("google-shared convertMessages — Gemini 3 unsigned tool calls", () =>
 		expect(functionCallParts[1]?.thoughtSignature).toBeUndefined();
 	});
 
-	it("does not add a thoughtSignature for non-Gemini-3 models", () => {
+	it("replays unsigned calls as function calls for non-Gemini-3 models", () => {
 		const model = makeGemini3Model("google-generative-ai", "google", "gemini-2.5-flash");
 		const contents = convertMessages(model, normalizeContext(makeContext({ ...model, id: "other-model" })));
 		const modelTurn = contents.find((c) => c.role === "model");
@@ -153,6 +305,19 @@ describe("google-shared convertMessages — Gemini 3 unsigned tool calls", () =>
 		expect(functionCallParts.every((part) => part.thoughtSignature === undefined)).toBe(true);
 		expect(functionResponseParts).toHaveLength(2);
 		expect(functionResponseParts.every((part) => part.functionResponse?.id === undefined)).toBe(true);
+		expect(JSON.stringify(contents)).not.toContain("Observation from");
+	});
+});
+
+describe("requiresFunctionCallThoughtSignature", () => {
+	it.each([
+		[false, "gemini-2.5-flash"],
+		[true, "gemini-3-flash-preview"],
+		[true, "gemini-3.8-flash"],
+		[true, "gemini-4-carbon"],
+		[false, "claude-sonnet-4-5"],
+	] as const)("returns %s for %s", (expected, modelId) => {
+		expect(requiresFunctionCallThoughtSignature(modelId)).toBe(expected);
 	});
 });
 
