@@ -195,6 +195,17 @@ function lastReportedTokens(messages: readonly Message[]): number | undefined {
 	return undefined;
 }
 
+function resolveDeterministicTimestamp(messages: readonly Message[], fallbackMessages?: readonly Message[]): number {
+	for (const list of [messages, fallbackMessages]) {
+		if (!list) continue;
+		for (let i = list.length - 1; i >= 0; i--) {
+			const ts = list[i]?.timestamp;
+			if (typeof ts === "number" && Number.isFinite(ts)) return ts;
+		}
+	}
+	return 0;
+}
+
 const MAX_FORK_ENABLED_HINTS = 1024;
 const forkEnabledHints = new Map<string, boolean>();
 
@@ -336,6 +347,7 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 		ModelRouteRequest,
 		{ readonly definition: VirtualModelDefinition; readonly innerRequest: ModelRouteRequest }
 	>();
+	const routedRequestMeta = new WeakMap<object, { readonly purpose: ModelRoutePurpose; readonly turnIndex: number }>();
 	let globalEnabledOverride: boolean | undefined;
 	let boundModels: Models | undefined;
 	let ownStore: SlidingWindowArtifactStore | undefined;
@@ -497,6 +509,9 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 						innerState?: unknown;
 				  }
 				| undefined;
+			if (reqState && typeof reqState === "object") {
+				routedRequestMeta.set(reqState, { purpose: req.purpose, turnIndex: req.turnIndex });
+			}
 			const tail = reqState?.narrowTail;
 			const turn =
 				req.purpose === "prompt" ||
@@ -530,7 +545,17 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 					? innerRoute.ephemeralTail
 						? typeof innerRoute.ephemeralTail === "string"
 							? `${innerRoute.ephemeralTail}\n\n${tail}`
-							: [...innerRoute.ephemeralTail, { role: "user" as const, content: tail!, timestamp: Date.now() }]
+							: [
+									...innerRoute.ephemeralTail,
+									{
+										role: "user" as const,
+										content: tail!,
+										timestamp: resolveDeterministicTimestamp(
+											Array.isArray(innerRoute.messages) ? innerRoute.messages : req.messages,
+											innerRoute.ephemeralTail,
+										),
+									},
+								]
 						: tail
 					: innerRoute.ephemeralTail;
 				const baseRoute: ModelRoute = {
@@ -1385,18 +1410,19 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 							{ now: api.now() },
 						);
 						const innerState = c.pendingInnerState !== undefined ? c.pendingInnerState : vmState?.routeState;
+						const scopeState = {
+							...(tail ? { narrowTail: tail } : {}),
+							...(guard ? { guard } : {}),
+							innerDef: resolved.definition,
+							innerModel: resolved.model,
+							innerState,
+						};
 						return attachVirtualRequestScope(
 							{ messages },
 							{
 								cache,
 								deferOutcomeToHost: true,
-								state: {
-									...(tail ? { narrowTail: tail } : {}),
-									...(guard ? { guard } : {}),
-									innerDef: resolved.definition,
-									innerModel: resolved.model,
-									innerState,
-								},
+								state: scopeState,
 								...(disableContinuation !== undefined ? { disableContinuation } : {}),
 								onStateChange: (nextState) => {
 									c.pendingInnerState = nextState;
@@ -1406,12 +1432,13 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 									if (!isVirtualModel(route.model)) c.lastPhysicalModel = route.model;
 								},
 								onComplete: (completion) => {
+									const meta = routedRequestMeta.get(scopeState);
 									c.pendingCompletion = {
 										innerDef: resolved.definition,
 										innerModel: resolved.model,
-										innerState,
-										purpose: "prompt",
-										turnIndex: c.ledger.turnCount,
+										innerState: c.pendingInnerState !== undefined ? c.pendingInnerState : innerState,
+										purpose: completion.purpose ?? meta?.purpose ?? "prompt",
+										turnIndex: completion.turnIndex ?? meta?.turnIndex ?? c.ledger.turnCount,
 										completion,
 									};
 								},
@@ -1433,7 +1460,9 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 				},
 				afterResponse: async (message, api) => {
 					const c = conv(String(api.conversationId));
-					if (message.stopReason !== "toolUse" && c.pendingCompletion) {
+					const hasToolCalls =
+						message.stopReason === "toolUse" && message.content.some((b) => b.type === "toolCall");
+					if (!hasToolCalls && c.pendingCompletion) {
 						const pending = c.pendingCompletion;
 						c.pendingCompletion = undefined;
 						if (pending.innerDef.onOutcome) {
