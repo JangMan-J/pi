@@ -1142,6 +1142,22 @@ describe("openai-codex streaming", () => {
 		expect(summarizeInput(requestBodies[0])).toEqual(["user", "configuration_update:none"]);
 	});
 
+	it("omits reasoning and configuration_update when off maps to null", async () => {
+		const token = mockToken();
+		const requestBodies = captureSSERequestBodies();
+		const model = buildCodexModel("gpt-6.1-sol", { supportsMidConvoEffort: true }, { off: null });
+
+		const result = await streamSimpleOpenAICodexResponses(
+			model,
+			normalizeContext({ messages: [{ role: "user", content: "Say hello", timestamp: 1 }] }),
+			{ apiKey: token, transport: "sse" },
+		).result();
+
+		expect(result.providerThinkingLevel).toBeUndefined();
+		expect(requestBodies[0]).not.toHaveProperty("reasoning");
+		expect(summarizeInput(requestBodies[0])).toEqual(["user"]);
+	});
+
 	it("sends thinking levels as reasoning.effort without supportsMidConvoEffort", async () => {
 		const token = mockToken();
 		const requestBodies = captureSSERequestBodies();
@@ -1354,16 +1370,19 @@ describe("openai-codex streaming", () => {
 	});
 
 	it.each([
-		["gpt-5.1-codex", "flex", 0.5],
-		["gpt-5.1-codex", "priority", 2],
-		["gpt-5.5", "flex", 0.5],
-		["gpt-5.5", "priority", 2.5],
+		["gpt-5.1-codex", "flex", "flex", 0.5],
+		["gpt-5.1-codex", "priority", "priority", 2],
+		["gpt-5.5", "flex", "flex", 0.5],
+		["gpt-5.5", "priority", "priority", 2.5],
+		["gpt-6.1-sol", "fast", "priority", 2],
+		["gpt-6.1-sol", "ultrafast", "ultrafast", 6],
 	] as const)(
-		"uses the client-sent %s service tier for %s when Codex echoes default",
-		async (modelId, serviceTier, multiplier) => {
+		"uses the client-sent %s service tier for %s (wire %s) when Codex echoes default",
+		async (modelId, serviceTier, expectedWireTier, multiplier) => {
 			const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
 			process.env.PI_CODING_AGENT_DIR = tempDir;
 			const token = mockToken();
+			let capturedPayload: { service_tier?: string } | undefined;
 			const sse = `${[
 				`data: ${JSON.stringify({
 					type: "response.output_item.added",
@@ -1424,7 +1443,7 @@ describe("openai-codex streaming", () => {
 
 			const model: Model<"openai-codex-responses"> = {
 				id: modelId,
-				name: modelId === "gpt-5.5" ? "GPT-5.5" : "GPT-5.1 Codex",
+				name: modelId,
 				api: "openai-codex-responses",
 				provider: "openai-codex",
 				baseUrl: "https://chatgpt.com/backend-api",
@@ -1444,8 +1463,13 @@ describe("openai-codex streaming", () => {
 				apiKey: token,
 				serviceTier,
 				transport: "sse",
+				onPayload: (payload) => {
+					capturedPayload = payload as { service_tier?: string };
+					return undefined;
+				},
 			}).result();
 
+			expect(capturedPayload?.service_tier).toBe(expectedWireTier);
 			expect(result.usage.cost.input).toBe(1 * multiplier);
 			expect(result.usage.cost.output).toBe(2 * multiplier);
 			expect(result.usage.cost.total).toBe(3 * multiplier);
@@ -3186,5 +3210,136 @@ describe("openai-codex streaming", () => {
 		const result = await resultPromise;
 		expect(result.content.find((content) => content.type === "text")?.text).toBe("Hello");
 		expect(codexRequests).toBe(4);
+	});
+
+	it("preserves pooled websocket previous_response_id state when a disableContinuation request shares sessionId", async () => {
+		const token = mockToken();
+		let connections = 0;
+		const sentBodies: Array<{
+			connectionId: number;
+			previous_response_id?: string;
+			prompt_cache_key?: string;
+			max_output_tokens?: number;
+		}> = [];
+		vi.stubGlobal("fetch", vi.fn());
+
+		class MockWebSocket extends EventTarget {
+			private readonly connectionId = ++connections;
+			readyState = 1;
+
+			constructor() {
+				super();
+				queueMicrotask(() => this.dispatchEvent(new Event("open")));
+			}
+
+			send(data: string): void {
+				const parsed = JSON.parse(data) as {
+					previous_response_id?: string;
+					prompt_cache_key?: string;
+					max_output_tokens?: number;
+				};
+				sentBodies.push({ connectionId: this.connectionId, ...parsed });
+				const callNum = sentBodies.length;
+				const respId = `resp_${callNum}`;
+				const msgId = `msg_${callNum}`;
+				const replyText = `reply ${callNum}`;
+				for (const frame of [
+					{ type: "response.created", response: { id: respId } },
+					{
+						type: "response.output_item.added",
+						item: { type: "message", id: msgId, role: "assistant", content: [] },
+					},
+					{
+						type: "response.output_item.done",
+						item: {
+							type: "message",
+							id: msgId,
+							role: "assistant",
+							content: [{ type: "output_text", text: replyText }],
+						},
+					},
+					{
+						type: "response.completed",
+						response: {
+							id: respId,
+							status: "completed",
+							output: [
+								{
+									type: "message",
+									id: msgId,
+									role: "assistant",
+									content: [{ type: "output_text", text: replyText }],
+								},
+							],
+							usage: { input_tokens: 50, output_tokens: 5, total_tokens: 55 },
+						},
+					},
+				]) {
+					queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) })));
+				}
+			}
+
+			close(): void {
+				this.readyState = 3;
+			}
+		}
+
+		vi.stubGlobal("WebSocket", MockWebSocket);
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+
+		const user1 = { role: "user" as const, content: "Turn 1", timestamp: 1000 };
+		const turn1 = await streamOpenAICodexResponses(
+			model,
+			normalizeContext({ systemPrompt: "System", messages: [user1] }),
+			{ apiKey: token, sessionId: "codex-warm-guard", transport: "websocket-cached" },
+		).result();
+
+		// A CacheWarmer / cache-guarded fork request with disableContinuation: true and maxTokens: 1
+		// keeps prompt_cache_key affinity on a separate socket without wiping connection 1's continuation.
+		await streamOpenAICodexResponses(model, normalizeContext({ systemPrompt: "System", messages: [user1] }), {
+			apiKey: token,
+			sessionId: "codex-warm-guard",
+			transport: "websocket-cached",
+			maxTokens: 1,
+			disableContinuation: true,
+		}).result();
+
+		// Turn 2 on the main conversation still continues cleanly from resp_1 on connection 1.
+		const user2 = { role: "user" as const, content: "Turn 2", timestamp: 2000 };
+		await streamOpenAICodexResponses(
+			model,
+			normalizeContext({ systemPrompt: "System", messages: [user1, turn1, user2] }),
+			{ apiKey: token, sessionId: "codex-warm-guard", transport: "websocket-cached" },
+		).result();
+
+		expect(sentBodies).toHaveLength(3);
+		expect(sentBodies[0].previous_response_id).toBeUndefined();
+		expect(sentBodies[0]).toMatchObject({
+			connectionId: 1,
+			prompt_cache_key: "codex-warm-guard",
+		});
+		expect(sentBodies[1].previous_response_id).toBeUndefined();
+		expect(sentBodies[1]).toMatchObject({
+			connectionId: 2,
+			prompt_cache_key: "codex-warm-guard",
+			max_output_tokens: 16,
+		});
+		expect(sentBodies[2]).toMatchObject({
+			connectionId: 1,
+			previous_response_id: "resp_1",
+			prompt_cache_key: "codex-warm-guard",
+		});
 	});
 });
