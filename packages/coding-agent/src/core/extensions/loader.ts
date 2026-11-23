@@ -20,7 +20,12 @@ import { type McpServerConfig, McpServerRegistry, validateMcpServerConfig } from
 import { readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.ts";
 import { time } from "../timings.ts";
-import type { ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
+import type {
+	ModelRouteOutcome,
+	ModelRouteRequest,
+	VirtualModelDefinition,
+	VirtualStreamRequest,
+} from "../virtual-models.ts";
 import type {
 	EntryRenderer,
 	Extension,
@@ -102,6 +107,10 @@ function getAliases(): Record<string, string> {
 		"ai/dist/providers/all.js",
 		"@earendil-works/pi-ai/providers/all",
 	);
+	const piAiVirtualModelsEntry = resolveWorkspaceOrImport(
+		"ai/dist/virtual-models-entry.js",
+		"@earendil-works/pi-ai/virtual-models",
+	);
 
 	_aliases = {
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
@@ -111,6 +120,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-ai/compat": piAiCompatEntry,
 		"@earendil-works/pi-ai/models": piAiModelsEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
+		"@earendil-works/pi-ai/virtual-models": piAiVirtualModelsEntry,
 		"@earendil-works/pi-ai": piAiCompatEntry,
 		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
@@ -119,6 +129,7 @@ function getAliases(): Record<string, string> {
 		"@mariozechner/pi-ai/compat": piAiCompatEntry,
 		"@mariozechner/pi-ai/models": piAiModelsEntry,
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
+		"@mariozechner/pi-ai/virtual-models": piAiVirtualModelsEntry,
 		"@mariozechner/pi-ai": piAiCompatEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,
@@ -240,6 +251,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 				({ definition }) => definition.provider !== provider || definition.id !== id,
 			);
 		},
+		setVirtualModelState: notInitialized,
+		appendUsage: notInitialized,
 	};
 
 	return runtime;
@@ -515,9 +528,21 @@ function createExtensionAPI(
 			assertActive();
 			// Routing runs after the runner binds, so the context is created per request. The state
 			// comes from the session branch that this router wrote.
+			const { route: extRoute, stream: extStream, onOutcome: extOnOutcome, ...base } = model;
 			const definition: VirtualModelDefinition = {
-				...model,
-				route: (request) => model.route(request as ModelRouteRequest<TState>, runtime.createContext()),
+				...base,
+				route: (request) => extRoute(request as ModelRouteRequest<TState>, runtime.createContext()),
+				...(extStream
+					? {
+							stream: (request) => extStream(request as VirtualStreamRequest<TState>, runtime.createContext()),
+						}
+					: {}),
+				...(extOnOutcome
+					? {
+							onOutcome: (outcome) =>
+								extOnOutcome(outcome as ModelRouteOutcome<TState>, runtime.createContext()),
+						}
+					: {}),
 			};
 			applyRuntimeChange(() => runtime.registerVirtualModel(definition, extension.path));
 		},
@@ -525,6 +550,16 @@ function createExtensionAPI(
 		unregisterVirtualModel(provider: string, id: string) {
 			assertActive();
 			applyRuntimeChange(() => runtime.unregisterVirtualModel(provider, id));
+		},
+
+		setVirtualModelState<TState>(provider: string, id: string, nextState: TState) {
+			assertActive();
+			runtime.setVirtualModelState(provider, id, nextState);
+		},
+
+		appendUsage(kind, provider, model, usage, note) {
+			assertActive();
+			return runtime.appendUsage(kind, provider, model, usage, note);
 		},
 
 		events: {
