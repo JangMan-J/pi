@@ -1076,6 +1076,8 @@ export interface HookApi extends DocumentReader {
 	readonly conversationId: ConversationId;
 	/** The current `HarnessOptions.models`, read at each access. */
 	readonly models: Models;
+	/** Calls `HarnessOptions.env` for the task's conversation, when provided by the runtime. */
+	env?(context: Context): Promise<ExecutionEnv | undefined>;
 	memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
 	memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
 	/** A signal key's committed state in the asking task, as `TaskRuntime.readSignal()`. */

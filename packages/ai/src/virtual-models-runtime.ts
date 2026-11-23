@@ -129,6 +129,7 @@ export interface WithVirtualModelRoutingOptions {
 export interface VirtualModels extends Models {
 	registerVirtualModel(definition: VirtualModelDefinition): void;
 	unregisterVirtualModel(providerId: string, modelId: string): boolean;
+	getDefinition(provider: string, id: string): VirtualModelDefinition | undefined;
 	getVirtualModelDefinition(providerId: string, modelId: string): VirtualModelDefinition | undefined;
 	getPhysicalModel(providerId: string, modelId: string): Model<Api> | undefined;
 	resolveModel(
@@ -366,6 +367,7 @@ export function withVirtualModelRouting(base: Models, options: WithVirtualModelR
 	const wrapped: VirtualModels = {
 		registerVirtualModel,
 		unregisterVirtualModel,
+		getDefinition: (provider, id) => registry.get(provider)?.get(id)?.definition,
 		getVirtualModelDefinition: (providerId, modelId) => registry.get(providerId)?.get(modelId)?.definition,
 		getPhysicalModel,
 		resolveModel: async (model, messages, routeOpts) => (await prepareVirtualRoute(model, messages, routeOpts)).route,
