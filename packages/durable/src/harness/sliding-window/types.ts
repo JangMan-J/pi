@@ -14,6 +14,8 @@ export interface PutArtifactOptions {
 	readonly cwd?: string;
 	readonly label?: string;
 	readonly nowMs?: number;
+	/** When false, store the blob for recall without binding `artifact_sources` / `sourceSha256`. Default: true. */
+	readonly bindSource?: boolean;
 }
 
 export type ArtifactMeta = {
