@@ -1,8 +1,87 @@
+import type { ContextView } from "../types.ts";
 import { formatBytes, formatTokens, isReadToolName } from "./bounds.ts";
 import type { ArtifactMeta, MechanicalLedger, RawTurn } from "./types.ts";
 
 export function createEmptyLedger(): MechanicalLedger {
 	return { epoch: 0, turnCount: 0, filesRead: [], filesEdited: [], recentRefs: [], recentErrors: [] };
+}
+
+/** Deterministically reconstruct a MechanicalLedger by folding entries/contributions in a ContextView. */
+export function reconstructLedgerFromView(view: ContextView): MechanicalLedger {
+	let ledger = createEmptyLedger();
+	if (view.head && typeof view.head.data === "object" && view.head.data !== null && !Array.isArray(view.head.data)) {
+		const epoch = (view.head.data as Record<string, unknown>).epoch;
+		if (typeof epoch === "number" && Number.isFinite(epoch)) {
+			ledger = { ...ledger, epoch };
+		}
+	}
+	const calls = new Map<string, { name: string; args: Record<string, unknown> }>();
+	for (let i = 0; i < view.entries.length; i++) {
+		if (view.head !== undefined && i === 0) continue;
+		const msgs = view.contributions[i] ?? [];
+		for (const msg of msgs) {
+			if (msg.role === "assistant") {
+				ledger = { ...ledger, turnCount: ledger.turnCount + 1 };
+				for (const block of msg.content) {
+					if (block.type === "toolCall") {
+						calls.set(block.id, {
+							name: block.name,
+							args: (block.arguments ?? {}) as Record<string, unknown>,
+						});
+					}
+				}
+			} else if (msg.role === "toolResult") {
+				const paired = calls.get(msg.toolCallId);
+				const toolName = paired?.name ?? msg.toolName;
+				const args = paired?.args;
+				const details =
+					msg.details && typeof msg.details === "object" && !Array.isArray(msg.details)
+						? (msg.details as Record<string, unknown>)
+						: undefined;
+				const sw =
+					details?.slidingWindow && typeof swRecord(details.slidingWindow) === "object"
+						? swRecord(details.slidingWindow)
+						: undefined;
+				const sourcePath =
+					typeof args?.path === "string"
+						? args.path
+						: typeof args?.file_path === "string"
+							? args.file_path
+							: typeof args?.filePath === "string"
+								? args.filePath
+								: undefined;
+				const spilled: ArtifactMeta | undefined =
+					sw && typeof sw.ref === "string"
+						? {
+								ref: sw.ref,
+								sha256: typeof sw.sha256 === "string" ? sw.sha256 : "",
+								toolName,
+								byteLen: typeof sw.bytes === "number" ? sw.bytes : 0,
+								lineCount: typeof sw.lines === "number" ? sw.lines : 0,
+								...(sourcePath ? { sourcePath } : {}),
+								...(typeof sw.sourceSha256 === "string" ? { sourceSha256: sw.sourceSha256 } : {}),
+								createdAtMs: msg.timestamp,
+							}
+						: undefined;
+				const errorText = msg.isError
+					? msg.content
+							.filter((b): b is { type: "text"; text: string } => b.type === "text")
+							.map((b) => b.text)
+							.join("\n")
+					: undefined;
+				ledger = recordToolResult(ledger, toolName, args, {
+					isError: msg.isError,
+					...(spilled ? { spilled } : {}),
+					...(errorText ? { errorText } : {}),
+				});
+			}
+		}
+	}
+	return ledger;
+}
+
+function swRecord(v: unknown): Record<string, unknown> | undefined {
+	return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
 }
 
 function clip(text: string, max: number): string {
@@ -14,7 +93,7 @@ export function recordToolResult(
 	ledger: MechanicalLedger,
 	toolName: string,
 	args: Record<string, unknown> | undefined,
-	opts: { isError: boolean; spilled?: ArtifactMeta; errorText?: string },
+	opts: { isError: boolean; spilled?: ArtifactMeta; sourceSha256?: string; errorText?: string },
 ): MechanicalLedger {
 	let filesRead = [...ledger.filesRead];
 	let filesEdited = [...ledger.filesEdited];
@@ -22,15 +101,23 @@ export function recordToolResult(
 	const recentErrors = [...ledger.recentErrors];
 	const lower = toolName.toLowerCase();
 	const path =
-		typeof args?.path === "string" ? args.path : typeof args?.file_path === "string" ? args.file_path : undefined;
+		typeof args?.path === "string"
+			? args.path
+			: typeof args?.file_path === "string"
+				? args.file_path
+				: typeof args?.filePath === "string"
+					? args.filePath
+					: undefined;
 
 	if (!opts.isError && isReadToolName(toolName) && path) {
+		const effectiveSourceSha = opts.spilled?.sourceSha256 ?? opts.sourceSha256;
 		filesRead = filesRead.filter((r) => r.path !== path);
 		filesRead.push({
 			path,
+			turn: ledger.turnCount,
 			lastTurn: ledger.turnCount,
 			...(opts.spilled ? { ref: opts.spilled.ref, lines: opts.spilled.lineCount } : {}),
-			...(opts.spilled?.sourceSha256 ? { sha256: opts.spilled.sourceSha256 } : {}),
+			...(effectiveSourceSha ? { sha256: effectiveSourceSha, sourceSha256: effectiveSourceSha } : {}),
 		});
 		if (filesRead.length > 24) filesRead.shift();
 	}

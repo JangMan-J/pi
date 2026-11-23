@@ -86,12 +86,11 @@ function hasNonEmptyEphemeralTail(tail: ModelRoute["ephemeralTail"]): tail is st
 }
 
 function resolveStableTimestamp(messages: readonly Message[], fallbackTimestamp?: number): number {
-	if (fallbackTimestamp !== undefined) return fallbackTimestamp;
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const ts = messages[i]?.timestamp;
 		if (typeof ts === "number" && Number.isFinite(ts)) return ts;
 	}
-	return Date.now();
+	return fallbackTimestamp ?? Date.now();
 }
 
 function projectSystemHead(
@@ -851,6 +850,32 @@ export function executeRoutedStream<TState = unknown>(
 		return dispatchSingleOrHedged(route);
 	};
 
+	const seenToolCallStartIndices = new Set<number>();
+	const notifyToolCallStart = (event: AssistantMessageEvent): void => {
+		if (event.type !== "toolcall_start" || !params.definition.onToolCallStart) return;
+		if (seenToolCallStartIndices.has(event.contentIndex)) return;
+		const block = event.partial.content[event.contentIndex];
+		if (!block || block.type !== "toolCall" || !block.name) return;
+		seenToolCallStartIndices.add(event.contentIndex);
+		try {
+			const maybePromise = params.definition.onToolCallStart({
+				toolName: block.name,
+				turnIndex: params.request.turnIndex,
+				request: params.request,
+			}) as unknown;
+			if (
+				maybePromise !== null &&
+				typeof maybePromise === "object" &&
+				"then" in maybePromise &&
+				typeof (maybePromise as PromiseLike<void>).then === "function"
+			) {
+				Promise.resolve(maybePromise).catch(() => {});
+			}
+		} catch {
+			// Pre-warm/telemetry hooks must never abort or stall the active stream.
+		}
+	};
+
 	if (params.definition.stream) {
 		const outer = createAssistantMessageEventStream();
 		const dispatchedAt = Date.now();
@@ -884,6 +909,7 @@ export function executeRoutedStream<TState = unknown>(
 					if (firstContentAt === undefined && isContentEvent(event)) {
 						firstContentAt = Date.now();
 					}
+					notifyToolCallStart(event);
 					if (event.type === "done") finalMessage = event.message;
 					else if (event.type === "error") finalMessage = event.error;
 					outer.push(event);
@@ -932,6 +958,7 @@ export function executeRoutedStream<TState = unknown>(
 	void (async () => {
 		let finalMessage: AssistantMessage | undefined;
 		for await (const event of handle.stream) {
+			notifyToolCallStart(event);
 			if (event.type === "done") finalMessage = event.message;
 			else if (event.type === "error") finalMessage = event.error;
 			outer.push(event);
