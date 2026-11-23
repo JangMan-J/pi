@@ -14,6 +14,9 @@ export default defineConfig({
 		alias: [
 			{ find: /^@earendil-works\/pi-durable$/, replacement: source("../src/index.ts") },
 			{ find: /^@earendil-works\/pi-durable\/testing$/, replacement: source("../src/testing/index.ts") },
+			{ find: /^@earendil-works\/pi-durable\/virtual-models$/, replacement: source("../src/harness/virtual-models.ts") },
+			{ find: /^@earendil-works\/pi-durable\/sliding-window$/, replacement: source("../src/harness/sliding-window.ts") },
+			{ find: /^@earendil-works\/pi-ai\/virtual-models$/, replacement: source("../../ai/src/virtual-models-entry.ts") },
 			{
 				find: /^@earendil-works\/pi-durable\/storage\/sqlite\/cloudflare$/,
 				replacement: source("../src/storage/sqlite/cloudflare.ts"),

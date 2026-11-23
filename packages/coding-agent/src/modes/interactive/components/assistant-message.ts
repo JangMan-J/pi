@@ -9,6 +9,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
+import { presentMessage } from "../../../core/message-presentation.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
@@ -121,6 +122,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
+		message = presentMessage(message);
 		this.lastMessage = message;
 		this.isStreaming = isStreaming;
 
