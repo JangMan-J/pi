@@ -7,13 +7,13 @@
 #   install-tests.sh --no-run   setup only
 #
 # Options:
-#   --dir DIR    checkout directory   PI_DIR    default ~/pi
+#   --dir DIR    checkout directory   PI_DIR    default ~/Projects/pi
 #   --repo URL   fork to clone        PI_REPO   default https://github.com/JangMan-J/pi.git
 #
 # Needs cargo for packages/env (install with https://rustup.rs).
 set -euo pipefail
 
-dir="${PI_DIR:-$HOME/pi}"
+dir="${PI_DIR:-$HOME/Projects/pi}"
 repo="${PI_REPO:-https://github.com/JangMan-J/pi.git}"
 mode="focused"
 
