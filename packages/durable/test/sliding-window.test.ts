@@ -776,4 +776,217 @@ describe("sliding-window Harness integration", () => {
 		await sw.close();
 		await harness.close(context);
 	});
+
+	it("falls back to createEmptyLedger when BatonStateDoc.data holds non-MechanicalLedger JSON", async () => {
+		const mainProv = fauxProvider({
+			provider: "anthropic",
+			models: [{ id: "claude-sonnet", contextWindow: 200_000, maxTokens: 4096 }],
+		});
+		const models = createModels();
+		models.setProvider(mainProv.provider);
+
+		const bigFile = Array.from({ length: 60 }, (_, i) => `export const item_${i + 1} = ${i + 1};`).join("\n");
+		const readTool = defineTool({
+			name: "read",
+			description: "Read a file",
+			parameters: obj({ path: str() }),
+			execute: async () => ({ output: [{ type: "text", text: bigFile }] }),
+		});
+
+		const store = new MemorySlidingWindowArtifactStore();
+		const sw = createSlidingWindow({
+			target: models.getModel("anthropic", "claude-sonnet")!,
+			readSpillThresholdBytes: 128,
+			artifactStore: store,
+		});
+		const routed = sw.wrapModels(models);
+		const registry = createRegistry();
+		registry.install(sw.extension);
+		registry.install(defineExtension({ name: "app-tools", tools: [readTool] }));
+
+		mainProv.setResponses([
+			() => fauxAssistantMessage([fauxToolCall("read", { path: "src/non-ledger.ts" })], { stopReason: "toolUse" }),
+			() => fauxAssistantMessage("Completed after non-ledger baton hydration."),
+		]);
+
+		const harness = await Harness.open(new MemoryStorage(), { models: routed, registry }, context);
+		harness.resume();
+		const root = await harness.root(context, { agent: { model: sw.selection } });
+
+		await root.commit(async (tx) => {
+			const baton = await tx.doc(BatonStateDoc, root.id);
+			baton.epoch = 2;
+			baton.data = { customKey: "not-a-ledger", nested: { turnCount: "bad" } };
+		}, context);
+
+		await (await root.submit({ type: "input", content: "Read src/non-ledger.ts" }, context)).wait(context);
+		await root.waitForIdle(context);
+
+		const toolResults = (await allEntries(root)).filter((e) => ToolResultEntry.is(e));
+		expect(toolResults).toHaveLength(1);
+		expect(textOf(toolResults[0]?.model?.[0])).toContain("Outline:");
+		expect(textOf(toolResults[0]?.model?.[0])).toContain("ref:");
+
+		const inspected = sw.inspect(root.id);
+		expect(Number.isFinite(inspected.ledger.turnCount)).toBe(true);
+		expect(inspected.ledger.turnCount).toBe(2);
+		expect(inspected.ledger.epoch).toBe(2);
+		expect(inspected.ledger.filesRead.map((r) => r.path)).toContain("src/non-ledger.ts");
+
+		await sw.close();
+		await harness.close(context);
+	});
+
+	it("reflects fork slidingWindow=false in inspect() before any turn and prevents global setEnabled(true) from overriding it", async () => {
+		const prov = fauxProvider({
+			provider: "anthropic",
+			models: [{ id: "claude-sonnet", contextWindow: 100_000, maxTokens: 4096 }],
+		});
+		const models = createModels();
+		models.setProvider(prov.provider);
+
+		const sw = createSlidingWindow({
+			target: models.getModel("anthropic", "claude-sonnet")!,
+			readSpillThresholdBytes: 128,
+		});
+		const routed = sw.wrapModels(models);
+
+		const readTool = defineTool({
+			name: "read",
+			description: "Read",
+			parameters: obj({ path: str() }),
+			execute: async () => ({ output: [{ type: "text", text: "raw line\n".repeat(40) }] }),
+		});
+
+		const registry = createRegistry();
+		registry.install(sw.extension);
+		registry.install(defineExtension({ name: "app-tools", tools: [readTool] }));
+
+		prov.setResponses([
+			() => fauxAssistantMessage("Root turn done."),
+			() => fauxAssistantMessage([fauxToolCall("read", { path: "src/fork.ts" })], { stopReason: "toolUse" }),
+			() => fauxAssistantMessage("Fork turn done."),
+		]);
+
+		const harness = await Harness.open(new MemoryStorage(), { models: routed, registry }, context);
+		harness.resume();
+		const root = await harness.root(context, { agent: { model: sw.selection } });
+
+		await (await root.submit({ type: "input", content: "Root prompt" }, context)).wait(context);
+		await root.waitForIdle(context);
+
+		const ansId = (await allEntries(root)).findLast((e) => AssistantEntry.is(e))!.id;
+		const fork = await createSlidingWindowFork(
+			root,
+			ansId,
+			{
+				ownership: { kind: "ownerless" },
+				slidingWindow: false,
+			},
+			context,
+		);
+
+		// Immediately before any turn runs on the fork, inspect() must reflect slidingWindow: false.
+		expect(sw.inspect(fork.id).enabled).toBe(false);
+
+		// Calling global setEnabled(true) must NOT override the fork's explicit slidingWindow: false.
+		sw.setEnabled(true);
+		expect(sw.inspect(fork.id).enabled).toBe(false);
+
+		await (await fork.submit({ type: "input", content: "Read on disabled fork" }, context)).wait(context);
+		await fork.waitForIdle(context);
+
+		const forkToolResults = (await allEntries(fork)).filter((e) => ToolResultEntry.is(e));
+		expect(forkToolResults).toHaveLength(1);
+		expect(textOf(forkToolResults[0]?.model?.[0])).toContain("raw line\nraw line");
+		expect(sw.inspect(fork.id).enabled).toBe(false);
+
+		// Explicit per-conversation setEnabled(true, fork.id) can still re-enable the fork.
+		sw.setEnabled(true, fork.id);
+		expect(sw.inspect(fork.id).enabled).toBe(true);
+
+		await sw.close();
+		await harness.close(context);
+	});
+
+	it("rescales inspect().bounds synchronously when options.target switches to an unregistered custom Model and caches it in beforeRequest even at 0 usage tokens", async () => {
+		const prov = fauxProvider({
+			provider: "meta",
+			models: [{ id: "model-200k", contextWindow: 200_000, maxTokens: 4096 }],
+		});
+		const models = createModels();
+		models.setProvider(prov.provider);
+
+		const registered200k = models.getModel("meta", "model-200k")!;
+		const unregisteredCustom32k: Model<typeof registered200k.api> = {
+			...registered200k,
+			id: "custom-unregistered-32k",
+			name: "Custom Unregistered 32k",
+			contextWindow: 32_000,
+			maxTokens: 4096,
+		};
+
+		let currentTarget: Model<typeof registered200k.api> | undefined = registered200k;
+		const sw = createSlidingWindow({
+			target: () => currentTarget,
+			softCeilingTokens: 200_000,
+			hardCeilingTokens: 200_000,
+			keepRecentTokens: 50_000,
+			softCeilingRatio: 0.5,
+			hardCeilingRatio: 0.75,
+			keepRecentRatio: 0.15,
+		});
+		const routed = sw.wrapModels(models);
+		const registry = createRegistry();
+		registry.install(sw.extension);
+
+		let seenOutboundModelId: string | undefined;
+		prov.setResponses([
+			(_ctx, _opts, _state, model) => {
+				seenOutboundModelId = model.id;
+				// Error stopReason keeps prompt usage at 0 / lastUsageTokens unset so beforeAgentStart & afterResponse skip.
+				return fauxAssistantMessage("zero-usage error", { stopReason: "error", errorMessage: "simulated error" });
+			},
+		]);
+
+		const harness = await Harness.open(new MemoryStorage(), { models: routed, registry }, context);
+		harness.resume();
+		// Use registered physical model on AgentDoc so faux provider executes while options.target returns unregisteredCustom32k.
+		const root = await harness.root(context, { agent: { model: { provider: "meta", modelId: "model-200k" } } });
+
+		// Initial 200k bounds before any turn
+		expect(sw.inspect(root.id).bounds).toEqual({
+			softCeilingTokens: 100_000,
+			hardCeilingTokens: 150_000,
+			keepRecentTokens: 30_000,
+		});
+
+		// Switch target callback to unregistered custom 32k model before any turn runs
+		currentTarget = unregisteredCustom32k;
+		expect(sw.inspect(root.id).bounds).toEqual({
+			softCeilingTokens: 16_000,
+			hardCeilingTokens: 24_000,
+			keepRecentTokens: 4_800,
+		});
+
+		// Run a turn with 0 reported usage tokens; beforeRequest still caches lastPhysicalModel = unregisteredCustom32k
+		await (await root.submit({ type: "input", content: "Trigger beforeRequest on 32k custom model" }, context)).wait(
+			context,
+		);
+		await root.waitForIdle(context);
+
+		expect(seenOutboundModelId).toBe("model-200k");
+		expect(sw.inspect(root.id).lastUsageTokens).toBeUndefined();
+
+		// Even if options.target subsequently returns undefined, cached lastPhysicalModel preserves 32k bounds
+		currentTarget = undefined;
+		expect(sw.inspect(root.id).bounds).toEqual({
+			softCeilingTokens: 16_000,
+			hardCeilingTokens: 24_000,
+			keepRecentTokens: 4_800,
+		});
+
+		await sw.close();
+		await harness.close(context);
+	});
 });
