@@ -40,6 +40,7 @@ import type {
 	Settings,
 } from "./types.ts";
 import { recordUsage } from "./usage.ts";
+import { appendRequestSidecars, bindCompactionRequest, resolveCompactionMaxTokens } from "./util.ts";
 
 export type CompactionInput = { reason: CompactionReason; instructions?: string };
 
@@ -155,7 +156,7 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				streamOptions: settings.stream,
 				maxTokens: Math.min(
 					Math.floor(0.8 * policy.reserveTokens),
-					model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+					await resolveCompactionMaxTokens(model, runtime, view.messages.slice(0, cut), agent.thinkingLevel),
 				),
 				tail: view.entries.reduce((tail, entry) => (entry.id > tail ? entry.id : tail), firstKept),
 				firstKept,
@@ -190,7 +191,8 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				sessionId: await ensureProviderSessionId(runtime, context),
 				...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),
 			};
-			const message = await runtime.models.completeSimple(model, { messages }, options);
+			const bound = bindCompactionRequest(model, options);
+			const message = await runtime.models.completeSimple(model, { messages }, bound.options);
 			// An abort mark or close: the abort invocation or the reopened task handles the committed state.
 			runtime.signal.throwIfAborted();
 			const summary = summaryText(message);
@@ -202,6 +204,7 @@ export const CompactionTask = defineTask<CompactionInput, CompactionCheckpoint, 
 				attempt <= policy.maxRetries;
 			const until = retry ? runtime.now() + retryDelayMs(policy, attempt) : 0;
 			await runtime.commit(async (tx, current): Promise<Next> => {
+				await appendRequestSidecars(tx, runtime.conversationId, bound.sidecars);
 				await recordUsage(
 					tx,
 					runtime.conversationId,
