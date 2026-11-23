@@ -64,11 +64,6 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// "Provider returned error" responses (#2264) and gateway wording such as
 	// "The upstream provider returned an error" (#10842).
 	"provider.?returned.?(?:an.?)?error",
-	// Anthropic's internal error, which it sends as HTTP 500 before streaming and as an event
-	// without a status once the stream has started, e.g. {"type":"error","error":{"type":
-	// "api_error","message":"Unable to complete this request right now. Please try again."}}.
-	// Gateways that copy Anthropic's format use it for their own upstream failures as well.
-	'"type"\\s*:\\s*"api_error"',
 	"exceeded request buffer limit while retrying upstream",
 	// Gateway failure relaying the upstream response stream, sent as an OpenAI
 	// Responses `response.failed` event without an error code (#10920).
