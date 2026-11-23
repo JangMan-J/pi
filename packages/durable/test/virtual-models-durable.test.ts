@@ -754,4 +754,65 @@ describe("durable virtual-models substrate seams", () => {
 
 		await harness.close(context);
 	});
+
+	it("Tier 5 Finding #10: skips resolveContextWindow (and eager virtualModel.route) when compaction.enabled === false", async () => {
+		const prov = fauxProvider({
+			provider: "f10-prov",
+			models: [{ id: "f10-1", contextWindow: 16_000, maxTokens: 512 }],
+		});
+		const models = createModels();
+		models.setProvider(prov.provider);
+
+		const routeCalls: Array<{ purpose: string; state: unknown }> = [];
+		const routedModels = withVirtualModelRouting(models, {
+			models: [
+				{
+					provider: "router",
+					id: "no-eager-route",
+					name: "No Eager Route",
+					route(req) {
+						routeCalls.push({ purpose: req.purpose, state: req.state });
+						return {
+							model: models.getModel("f10-prov", "f10-1")!,
+							thinkingLevel: "off",
+						};
+					},
+				},
+			],
+		});
+
+		prov.setResponses([fauxAssistantMessage("Single route call.")]);
+
+		const harness = await Harness.open(
+			new MemoryStorage(),
+			{
+				models: routedModels,
+				registry: createRegistry(),
+				settings: { compaction: { enabled: false } },
+			},
+			context,
+		);
+		harness.resume();
+		const root = await harness.root(context, {
+			agent: { model: { provider: "router", modelId: "no-eager-route" } },
+		});
+
+		await (await root.submit({ type: "input", content: "Hello" }, context)).wait(context);
+		await root.waitForIdle(context);
+
+		expect(routeCalls).toHaveLength(1);
+		expect(routeCalls[0]?.purpose).toBe("prompt");
+
+		// When compaction.enabled === true, resolveContextWindow still calls route() so threshold compaction works
+		routeCalls.length = 0;
+		prov.setResponses([fauxAssistantMessage("With compaction enabled.")]);
+		await root.commit(async (tx) => {
+			(await tx.doc(AgentDoc, root.id)).compaction = { enabled: true };
+		}, context);
+		await (await root.submit({ type: "input", content: "Second" }, context)).wait(context);
+		await root.waitForIdle(context);
+		expect(routeCalls.length).toBeGreaterThanOrEqual(2);
+
+		await harness.close(context);
+	});
 });
