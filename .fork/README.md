@@ -40,7 +40,7 @@ chmod +x install-tests.sh
 ./install-tests.sh
 ```
 
-`install-tests.sh` sets up a development checkout: it clones `~/pi` if missing (`PI_DIR` overrides),
+`install-tests.sh` sets up a development checkout: it clones `~/Projects/pi` if missing (`PI_DIR` overrides),
 installs dependencies and the pre-commit hook, builds, builds the pi-env daemon, aligns the branches with
 origin, writes agent pointers, and runs `check.sh focused` (`--all` for the full suite, `--no-run` for setup
 only). It also converts an older checkout that mounted the retired `fork-sync` branch at `.fork/`. It does
