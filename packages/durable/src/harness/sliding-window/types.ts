@@ -16,7 +16,7 @@ export interface PutArtifactOptions {
 	readonly nowMs?: number;
 }
 
-export interface ArtifactMeta {
+export type ArtifactMeta = {
 	readonly ref: string;
 	readonly sha256: string;
 	readonly toolName: string;
@@ -26,7 +26,7 @@ export interface ArtifactMeta {
 	readonly sourceSha256?: string;
 	readonly label?: string;
 	readonly createdAtMs: number;
-}
+};
 
 export interface RecallOptions {
 	readonly ref: string;
@@ -50,30 +50,51 @@ export interface RecallResult {
 	readonly returnedLines: number;
 }
 
+export interface StoredArtifactEntry {
+	readonly meta: ArtifactMeta;
+	readonly text: string;
+}
+
+export interface LiveFileSnapshot {
+	readonly text: string;
+	readonly sha256: string;
+}
+
 export interface SlidingWindowArtifactStore {
 	put(rawText: string, options: PutArtifactOptions): ArtifactMeta | Promise<ArtifactMeta>;
 	recall(options: RecallOptions): RecallResult | Promise<RecallResult>;
 	getMeta?(rawRef: string): ArtifactMeta | undefined | Promise<ArtifactMeta | undefined>;
 	listRecent?(limit?: number): ArtifactMeta[] | Promise<ArtifactMeta[]>;
+	readFullText?(rawRef: string): string | undefined | Promise<string | undefined>;
+	getLatestBySourcePath?(
+		sourcePath: string,
+		cwd?: string,
+	): StoredArtifactEntry | undefined | Promise<StoredArtifactEntry | undefined>;
+	readLiveFile?(
+		sourcePath: string,
+		cwd?: string,
+	): LiveFileSnapshot | undefined | Promise<LiveFileSnapshot | undefined>;
 	close?(): void | Promise<void>;
 }
 
-export interface ReadRecord {
+export type ReadRecord = {
 	readonly path: string;
 	readonly ref?: string;
 	readonly sha256?: string;
+	readonly sourceSha256?: string;
 	readonly lines?: number;
+	readonly turn?: number;
 	readonly lastTurn: number;
-}
+};
 
-export interface EditRecord {
+export type EditRecord = {
 	readonly path: string;
 	readonly op: "edit" | "write";
 	readonly lastTurn: number;
-}
+};
 
 /** Zero-LLM facts, updated deterministically after every tool call. */
-export interface MechanicalLedger {
+export type MechanicalLedger = {
 	readonly epoch: number;
 	readonly turnCount: number;
 	readonly filesRead: ReadRecord[];
@@ -81,7 +102,7 @@ export interface MechanicalLedger {
 	readonly recentRefs: ArtifactMeta[];
 	readonly recentErrors: string[];
 	readonly lastProseDigest?: string;
-}
+};
 
 export interface RawTurn {
 	readonly id: string;
@@ -243,6 +264,9 @@ export interface SlidingWindowOptions {
 	readonly sliceTtlTurns?: number;
 	readonly artifactStore?: SlidingWindowArtifactStore;
 
+	/** Maximum number of per-conversation in-memory states to retain in LRU order. Default: 256. */
+	readonly maxTrackedConversations?: number;
+
 	// Generic extensibility hooks
 	readonly renderExtraSections?: (
 		ctx: SlidingWindowSectionContext,
@@ -252,6 +276,16 @@ export interface SlidingWindowOptions {
 	) => SlidingWindowBeforeSwapResult | undefined | Promise<SlidingWindowBeforeSwapResult | undefined>;
 	readonly previewToolOutput?: (ctx: SlidingWindowPreviewContext) => string | undefined | Promise<string | undefined>;
 }
+
+export type SlidingWindowHydratePolicy = {
+	allowedPaths: string[];
+	hydratedPaths: string[];
+	maxHydrateBytes?: number;
+};
+
+export type SlidingWindowTargetValue = {
+	target?: ModelRef;
+};
 
 export interface SlidingWindowInspection {
 	readonly enabled: boolean;
@@ -272,6 +306,7 @@ export interface SlidingWindowHandle {
 	wrapModels<TModels extends Models>(models: TModels): VirtualModels;
 	inspect(conversationId: ConversationId | string): SlidingWindowInspection;
 	setEnabled(enabled: boolean, conversationId?: ConversationId | string): void;
+	release(conversationId: ConversationId | string): void;
 	close(): Promise<void>;
 }
 
@@ -284,6 +319,8 @@ export interface SlidingWindowForkOptions extends CacheGuardedForkOptions {
 	readonly inheritBatonState?: boolean;
 	/** Enable or disable sliding-window management on the fork (written to SlidingWindowStateDoc, fork: "initial"). */
 	readonly slidingWindow?: boolean;
+	/** Optional initial per-conversation target override written to SlidingWindowTargetDoc on the fork. */
+	readonly target?: ModelRef;
 }
 
 export interface BatonResult {

@@ -1,10 +1,13 @@
 import { utf8ByteLength } from "@earendil-works/chord/output";
+import { normalizeSliceKey } from "./staging.ts";
 import type {
 	ArtifactMeta,
+	LiveFileSnapshot,
 	PutArtifactOptions,
 	RecallOptions,
 	RecallResult,
 	SlidingWindowArtifactStore,
+	StoredArtifactEntry,
 } from "./types.ts";
 
 const DEFAULT_MAX_RECALL_LINES = 140;
@@ -124,12 +127,30 @@ function queryTokens(query: string): string[] {
 export class MemorySlidingWindowArtifactStore implements SlidingWindowArtifactStore {
 	private readonly byRef = new Map<string, { meta: ArtifactMeta; rawText: string; lines: string[] }>();
 	private readonly refBySha = new Map<string, string>();
+	private readonly bySourceKey = new Map<
+		string,
+		{ ref: string; sourcePath: string; sourceSha256: string; updatedAtMs: number }
+	>();
 
 	put(rawText: string, options: PutArtifactOptions): ArtifactMeta {
 		const sha256 = portableSha256Hex(rawText);
+		const nowMs = options.nowMs ?? Date.now();
 		const existingRef = this.refBySha.get(sha256);
 		if (existingRef !== undefined) {
-			return this.byRef.get(existingRef)!.meta;
+			const existing = this.byRef.get(existingRef)!;
+			if (options.sourcePath) {
+				const key = `${options.cwd ?? ""}\0${normalizeSliceKey(options.sourcePath, options.cwd)}`;
+				this.bySourceKey.set(key, {
+					ref: existing.meta.ref,
+					sourcePath: options.sourcePath,
+					sourceSha256: sha256,
+					updatedAtMs: nowMs,
+				});
+			}
+			return {
+				...existing.meta,
+				...(options.sourcePath ? { sourcePath: options.sourcePath, sourceSha256: sha256 } : {}),
+			};
 		}
 		let prefixLen = 12;
 		let ref = sha256.slice(0, prefixLen);
@@ -144,12 +165,21 @@ export class MemorySlidingWindowArtifactStore implements SlidingWindowArtifactSt
 			toolName: options.toolName,
 			byteLen: utf8ByteLength(rawText),
 			lineCount: lines.length,
-			...(options.sourcePath ? { sourcePath: options.sourcePath } : {}),
+			...(options.sourcePath ? { sourcePath: options.sourcePath, sourceSha256: sha256 } : {}),
 			...((options.label ?? options.sourcePath) ? { label: options.label ?? options.sourcePath } : {}),
-			createdAtMs: options.nowMs ?? Date.now(),
+			createdAtMs: nowMs,
 		};
 		this.byRef.set(ref, { meta, rawText, lines });
 		this.refBySha.set(sha256, ref);
+		if (options.sourcePath) {
+			const key = `${options.cwd ?? ""}\0${normalizeSliceKey(options.sourcePath, options.cwd)}`;
+			this.bySourceKey.set(key, {
+				ref,
+				sourcePath: options.sourcePath,
+				sourceSha256: sha256,
+				updatedAtMs: nowMs,
+			});
+		}
 		return meta;
 	}
 
@@ -159,6 +189,38 @@ export class MemorySlidingWindowArtifactStore implements SlidingWindowArtifactSt
 		if (direct) return direct.meta;
 		const mapped = this.refBySha.get(ref);
 		return mapped ? this.byRef.get(mapped)?.meta : undefined;
+	}
+
+	readFullText(rawRef: string): string | undefined {
+		const ref = normalizeRefId(rawRef);
+		const direct = this.byRef.get(ref);
+		if (direct) return direct.rawText;
+		const mapped = this.refBySha.get(ref);
+		return mapped ? this.byRef.get(mapped)?.rawText : undefined;
+	}
+
+	getLatestBySourcePath(sourcePath: string, cwd?: string): StoredArtifactEntry | undefined {
+		const norm = normalizeSliceKey(sourcePath, cwd);
+		const exactKey = `${cwd ?? ""}\0${norm}`;
+		let source = this.bySourceKey.get(exactKey);
+		if (!source) {
+			for (const entry of this.bySourceKey.values()) {
+				if (normalizeSliceKey(entry.sourcePath, cwd) === norm) {
+					if (!source || entry.updatedAtMs >= source.updatedAtMs) source = entry;
+				}
+			}
+		}
+		if (!source) return undefined;
+		const stored = this.byRef.get(source.ref);
+		if (!stored) return undefined;
+		return {
+			meta: {
+				...stored.meta,
+				sourcePath: source.sourcePath,
+				sourceSha256: source.sourceSha256,
+			},
+			text: stored.rawText,
+		};
 	}
 
 	listRecent(limit = 50): ArtifactMeta[] {
@@ -260,5 +322,88 @@ export class MemorySlidingWindowArtifactStore implements SlidingWindowArtifactSt
 	close(): void {
 		this.byRef.clear();
 		this.refBySha.clear();
+		this.bySourceKey.clear();
 	}
+}
+
+/**
+ * Layer a writable scratch artifact store in front of zero or more read-only fallback stores
+ * (e.g. parent session `.artifacts.sqlite` opened with `{ readOnly: true }`).
+ * All writes (`put`) go strictly to `writable`; reads search `writable` first, then fallbacks in order.
+ */
+export function createLayeredArtifactStore(
+	writable: SlidingWindowArtifactStore,
+	readOnlyFallbacks: readonly SlidingWindowArtifactStore[],
+): SlidingWindowArtifactStore {
+	const allStores = [writable, ...readOnlyFallbacks];
+	return {
+		put(rawText: string, options: PutArtifactOptions): ArtifactMeta | Promise<ArtifactMeta> {
+			return writable.put(rawText, options);
+		},
+		async recall(options: RecallOptions): Promise<RecallResult> {
+			let lastResult: RecallResult | undefined;
+			for (const store of allStores) {
+				const res = await store.recall(options);
+				if (res.found) return res;
+				lastResult = res;
+			}
+			return (
+				lastResult ?? {
+					found: false,
+					text: `[sliding-window recall] Unknown artifact ref:${normalizeRefId(options.ref)}.`,
+					returnedLines: 0,
+				}
+			);
+		},
+		async getMeta(rawRef: string): Promise<ArtifactMeta | undefined> {
+			for (const store of allStores) {
+				if (!store.getMeta) continue;
+				const meta = await store.getMeta(rawRef);
+				if (meta) return meta;
+			}
+			return undefined;
+		},
+		async readFullText(rawRef: string): Promise<string | undefined> {
+			for (const store of allStores) {
+				if (store.readFullText) {
+					const text = await store.readFullText(rawRef);
+					if (text !== undefined) return text;
+				}
+			}
+			return undefined;
+		},
+		async getLatestBySourcePath(sourcePath: string, cwd?: string): Promise<StoredArtifactEntry | undefined> {
+			for (const store of allStores) {
+				if (!store.getLatestBySourcePath) continue;
+				const hit = await store.getLatestBySourcePath(sourcePath, cwd);
+				if (hit) return hit;
+			}
+			return undefined;
+		},
+		async readLiveFile(sourcePath: string, cwd?: string): Promise<LiveFileSnapshot | undefined> {
+			for (const store of allStores) {
+				if (!store.readLiveFile) continue;
+				const hit = await store.readLiveFile(sourcePath, cwd);
+				if (hit) return hit;
+			}
+			return undefined;
+		},
+		async listRecent(limit = 50): Promise<ArtifactMeta[]> {
+			const byRef = new Map<string, ArtifactMeta>();
+			for (const store of allStores) {
+				if (!store.listRecent) continue;
+				const items = await store.listRecent(limit);
+				for (const item of items) {
+					const prev = byRef.get(item.ref);
+					if (!prev || item.createdAtMs > prev.createdAtMs) byRef.set(item.ref, item);
+				}
+			}
+			return [...byRef.values()].sort((a, b) => b.createdAtMs - a.createdAtMs).slice(0, Math.max(1, limit));
+		},
+		async close(): Promise<void> {
+			for (const store of allStores) {
+				await store.close?.();
+			}
+		},
+	};
 }
