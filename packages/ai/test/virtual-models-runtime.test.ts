@@ -1,27 +1,34 @@
 import {
+	type AssistantMessage,
 	type Context,
 	createModels,
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxToolCall,
 	getCurrentTools,
+	type JsonObject,
 	type Message,
 	type TranscriptContext,
 	type Usage,
 } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { transformMessages } from "../src/api/transform-messages.ts";
 import { PI_ATTRIBUTION, withClientIdentity } from "../src/utils/identity.ts";
 import {
 	anchorAnthropicCacheBeforeEphemeralTail,
 	applyRequiredToolChoicePayload,
 	attachVirtualRequestScope,
 	createVirtualModel,
+	ENCRYPTED_REASONING_COMMENTARY_PROMPT,
+	harvestPostReadStudyNotes,
 	isVirtualModel,
 	isVirtualModelsRuntime,
 	type ModelRouteOutcome,
 	presentAssistantMessage,
 	projectRoutedTranscript,
+	type StudyNoteHarvestOptions,
 	suppressAssistantText,
+	type ToolCallStartEvent,
 	withVirtualModelRouting,
 } from "../src/virtual-models-entry.ts";
 
@@ -338,5 +345,381 @@ describe("@earendil-works/pi-ai/virtual-models", () => {
 		);
 		expect(reply.model).toBe("fast-1");
 		expect(completed).toBe(true);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("harvests post-read study notes across all 8 model families with bold-heading stripping, tail caps, commentary fallback, path matching, and fence escaping", () => {
+		expect(ENCRYPTED_REASONING_COMMENTARY_PROMPT).toContain("2-3 concise sentences");
+
+		const commentarySig = (id: string) => JSON.stringify({ v: 1, id, phase: "commentary" });
+		const finalSig = (id: string) => JSON.stringify({ v: 1, id, phase: "final_answer" });
+		const longDeepSeekSuffix = "DEEPSEEK_TAIL_MARKER_999";
+		const deepSeekThinking = `${"A".repeat(1200)}\n${"B".repeat(700)} ${longDeepSeekSuffix}`;
+
+		const makeReadExchange = (
+			callId: string,
+			toolName: string,
+			args: JsonObject,
+			assistantBlock: AssistantMessage["content"],
+			options?: { isError?: boolean; includeSystemBetween?: boolean; stopReason?: "toolUse" | "stop" | "error" },
+		): Message[] => [
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: callId, name: toolName, arguments: args }],
+				api: "anthropic-messages",
+				provider: "p",
+				model: "m",
+				usage: makeUsage(1, 1),
+				stopReason: "toolUse",
+				timestamp: 10,
+			},
+			{
+				role: "toolResult",
+				toolCallId: callId,
+				toolName,
+				content: [{ type: "text", text: "file body" }],
+				isError: options?.isError ?? false,
+				timestamp: 11,
+			},
+			...(options?.includeSystemBetween
+				? ([{ role: "system", content: "status ping", timestamp: 12 }] satisfies Message[])
+				: []),
+			{
+				role: "assistant",
+				content: assistantBlock,
+				api: "anthropic-messages",
+				provider: "p",
+				model: "m",
+				usage: makeUsage(1, 1),
+				stopReason: options?.stopReason ?? "toolUse",
+				timestamp: 13,
+			} as Message,
+		];
+
+		// 1-6: Native thinking families + bold heading stripping + DeepSeek tail cap
+		const messages: Message[] = [
+			...makeReadExchange("c1", "read", { path: "packages/ai/src/a.ts" }, [
+				{
+					type: "thinking",
+					thinking:
+						"**Checking types**\nAntigravity Gemini verified that virtual-stream preserves timestamps across sibling forks.",
+				},
+				fauxToolCall("edit", { path: "packages/ai/src/a.ts" }),
+			]),
+			...makeReadExchange("c2", "tool_read", { file_path: "packages/ai/src/b.ts" }, [
+				{
+					type: "thinking",
+					thinking:
+						"**Invariant**: Anthropic Opus verified cache_control stays ahead of ephemeralTail across turns and preserves stable KV prefix.",
+				},
+				fauxToolCall("edit", { path: "packages/ai/src/b.ts" }),
+			]),
+			...makeReadExchange(
+				"c3",
+				"read",
+				{ path: "packages/ai/src/c.ts" },
+				[
+					{
+						type: "thinking",
+						thinking: `GLM 5.3 + Kimi K3.1 + Grok 4.7 shared note: ${"X".repeat(80)} preserved cleanly.`,
+					},
+					fauxToolCall("edit", { path: "packages/ai/src/c.ts" }),
+				],
+				{ includeSystemBetween: true },
+			),
+			...makeReadExchange("c4", "read", { path: "packages/ai/src/deepseek.ts" }, [
+				{ type: "thinking", thinking: deepSeekThinking },
+				fauxToolCall("edit", { path: "packages/ai/src/deepseek.ts" }),
+			]),
+			// 7: OpenAI GPT-6.2-sol (bold-only summary < minThinkingChars -> falls back to commentary)
+			...makeReadExchange("c5", "read", { path: "packages/ai/src/openai.ts" }, [
+				{ type: "thinking", thinking: "**Inspecting schema**" },
+				{
+					type: "text",
+					text: "GPT-6.2-sol commentary: schema requires strict non-empty tool names.",
+					textSignature: commentarySig("msg_1"),
+				},
+				fauxToolCall("edit", { path: "packages/ai/src/openai.ts" }),
+			]),
+			// 8: Meta Muse-Wonder (redacted thinking -> falls back to commentary, skips final_answer)
+			...makeReadExchange("c6", "read", { filePath: "packages/ai/src/meta.ts" }, [
+				{ type: "thinking", thinking: "[Reasoning redacted]", redacted: true },
+				{
+					type: "text",
+					text: "Muse-Wonder commentary: tool declarations stay frozen for shapeMetaWireTools.",
+					textSignature: commentarySig("msg_2"),
+				},
+				{
+					type: "text",
+					text: "Should be ignored final_answer",
+					textSignature: finalSig("msg_3"),
+				},
+				fauxToolCall("edit", { path: "packages/ai/src/meta.ts" }),
+			]),
+			// Non-tool stop turn must NOT fall back to text
+			...makeReadExchange(
+				"c7",
+				"read",
+				{ path: "packages/ai/src/ignored-stop.ts" },
+				[
+					{ type: "thinking", thinking: "**Short**" },
+					{ type: "text", text: "Final reply to user should never be harvested." },
+				],
+				{ stopReason: "stop" },
+			),
+			// Non-read tool (grep) and errored read must be ignored
+			...makeReadExchange("c8", "grep", { path: "packages/ai/src/grep.ts" }, [
+				{ type: "thinking", thinking: "Grep thinking ".repeat(15) },
+				fauxToolCall("edit", { path: "packages/ai/src/grep.ts" }),
+			]),
+			...makeReadExchange(
+				"c9",
+				"read",
+				{ path: "packages/ai/src/err.ts" },
+				[
+					{ type: "thinking", thinking: "Error recovery thinking ".repeat(15) },
+					fauxToolCall("edit", { path: "packages/ai/src/err.ts" }),
+				],
+				{ isError: true },
+			),
+		];
+
+		const harvested = harvestPostReadStudyNotes(messages);
+		expect(harvested).toBeDefined();
+		expect(harvested).toContain("<study_notes>");
+		expect(harvested).toContain("</study_notes>");
+		expect(harvested).not.toContain("**Checking types**");
+		expect(harvested).toContain("**Invariant**: Anthropic Opus");
+		expect(harvested).toContain(longDeepSeekSuffix);
+		expect(harvested).not.toContain("A".repeat(800));
+		expect(harvested).toContain("GPT-6.2-sol commentary");
+		expect(harvested).toContain("Muse-Wonder commentary");
+		expect(harvested).not.toContain("Should be ignored final_answer");
+		expect(harvested).not.toContain("Final reply to user");
+		expect(harvested).not.toContain("Grep thinking");
+		expect(harvested).not.toContain("Error recovery thinking");
+
+		// Path/glob filtering + directory boundary (src/a must NOT match src/ab/x.ts) + fence escaping
+		const pathMessages: Message[] = [
+			...makeReadExchange("p1", "read", { path: "/workspace/src/ab/x.ts" }, [
+				{ type: "thinking", thinking: "Wrong directory ab ".repeat(10) },
+				fauxToolCall("edit", { path: "/workspace/src/ab/x.ts" }),
+			]),
+			...makeReadExchange("p2", "read", { path: "/workspace/src/a/ok.ts" }, [
+				{
+					type: "thinking",
+					thinking: `${"Right directory note ".repeat(8)} contains </study_notes> breakout attempt.`,
+				},
+				fauxToolCall("edit", { path: "/workspace/src/a/ok.ts" }),
+			]),
+		];
+		const filtered = harvestPostReadStudyNotes(pathMessages, {
+			relevantPaths: ["src/a"],
+		} satisfies StudyNoteHarvestOptions);
+		expect(filtered).toBeDefined();
+		expect(filtered).not.toContain("Wrong directory ab");
+		expect(filtered).toContain("Right directory note");
+		expect(filtered).toContain("<\\/study_notes>");
+		expect(filtered!.match(/<\/study_notes>/g)).toHaveLength(1);
+		expect(harvestPostReadStudyNotes(pathMessages, { relevantPaths: ["**/*.py"] })).toBeUndefined();
+		expect(harvestPostReadStudyNotes(pathMessages, { relevantPaths: [] })).toBeUndefined();
+	});
+
+	it("preserves deterministic timestamps in projectRoutedTranscript, completeSimple, and transformMessages", async () => {
+		vi.useFakeTimers();
+		const { fast, models } = setupModels();
+		const seenContexts: TranscriptContext[] = [];
+		fast.setResponses([
+			(ctx) => {
+				seenContexts.push(ctx);
+				return fauxAssistantMessage("fork 1");
+			},
+			(ctx) => {
+				seenContexts.push(ctx);
+				return fauxAssistantMessage("fork 2");
+			},
+		]);
+
+		const routed = withVirtualModelRouting(models, {
+			models: [
+				{
+					provider: "router",
+					id: "frozen-ts",
+					name: "Frozen TS",
+					route: () => ({
+						model: models.getModel("fast-prov", "fast-1")!,
+						thinkingLevel: "off",
+						systemAppend: "Append directive",
+						ephemeralTail: "<working_slice>frozen</working_slice>",
+					}),
+				},
+			],
+		});
+
+		const vm = routed.getModel("router", "frozen-ts")!;
+		const baseMessages: Message[] = [{ role: "user", content: "Shared checkpoint prompt", timestamp: 42_000 }];
+
+		vi.setSystemTime(100_000);
+		await routed.completeSimple(vm, { messages: baseMessages });
+		const direct1 = projectRoutedTranscript(
+			{ messages: baseMessages } as TranscriptContext,
+			{
+				model: models.getModel("fast-prov", "fast-1")!,
+				thinkingLevel: "off",
+				systemAppend: "Dir",
+				ephemeralTail: "Tail",
+			},
+			Date.now(),
+		);
+
+		vi.setSystemTime(999_000);
+		await routed.completeSimple(vm, { messages: baseMessages });
+		const direct2 = projectRoutedTranscript(
+			{ messages: baseMessages } as TranscriptContext,
+			{
+				model: models.getModel("fast-prov", "fast-1")!,
+				thinkingLevel: "off",
+				systemAppend: "Dir",
+				ephemeralTail: "Tail",
+			},
+			Date.now(),
+		);
+
+		expect(seenContexts[0]).toStrictEqual(seenContexts[1]);
+		expect(seenContexts[0]?.messages[0]?.timestamp).toBe(42_000);
+		expect(seenContexts[0]?.messages.at(-1)?.timestamp).toBe(42_000);
+		expect(direct1).toStrictEqual(direct2);
+		expect(direct1.messages[0]?.timestamp).toBe(42_000);
+
+		const targetModel = models.getModel("fast-prov", "fast-1")!;
+		const orphanTranscript: Message[] = [
+			{
+				role: "assistant",
+				content: [fauxToolCall("read", { path: "a.ts" })],
+				api: targetModel.api,
+				provider: targetModel.provider,
+				model: targetModel.id,
+				usage: makeUsage(1, 1),
+				stopReason: "toolUse",
+				timestamp: 77_777,
+			},
+		];
+		vi.setSystemTime(111_000);
+		const t1 = transformMessages(orphanTranscript, targetModel);
+		vi.setSystemTime(888_000);
+		const t2 = transformMessages(orphanTranscript, targetModel);
+		expect(t1).toStrictEqual(t2);
+		expect(t1[1]?.timestamp).toBe(77_777);
+	});
+
+	it("exposes getDefinition on VirtualModels and fires deduplicated error-safe onToolCallStart hooks", async () => {
+		const { fast, deep, models } = setupModels();
+		const callEvents: ToolCallStartEvent[] = [];
+
+		let mode: "multi" | "hedge" | "throwSync" | "rejectAsync" = "multi";
+		const routed = withVirtualModelRouting(models, {
+			models: [
+				{
+					provider: "router",
+					id: "prewarm",
+					name: "Prewarm",
+					route: () =>
+						mode === "hedge"
+							? {
+									model: models.getModel("fast-prov", "fast-1")!,
+									thinkingLevel: "off",
+									hedge: { afterMs: 5, model: models.getModel("deep-prov", "deep-1")!, thinkingLevel: "low" },
+								}
+							: { model: models.getModel("fast-prov", "fast-1")!, thinkingLevel: "off" },
+					onToolCallStart(event) {
+						callEvents.push(event);
+						if (mode === "throwSync") throw new Error("sync prewarm boom");
+						if (mode === "rejectAsync")
+							return Promise.reject(new Error("async prewarm boom")) as unknown as undefined;
+					},
+				},
+			],
+		});
+
+		expect(routed.getDefinition("router", "prewarm")).toBe(routed.getVirtualModelDefinition("router", "prewarm"));
+		expect(routed.getDefinition("fast-prov", "fast-1")).toBeUndefined();
+		const wrapped = withClientIdentity(routed, { attribution: PI_ATTRIBUTION });
+		expect(wrapped.getDefinition("router", "prewarm")).toBe(routed.getDefinition("router", "prewarm"));
+
+		const vm = routed.getModel("router", "prewarm")!;
+		fast.setResponses([
+			fauxAssistantMessage([fauxToolCall("read", { path: "a.ts" }), fauxToolCall("grep", { query: "b" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage([fauxToolCall("write", { path: "c.ts" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("edit", { path: "d.ts" })], { stopReason: "toolUse" }),
+			async () => {
+				await new Promise((r) => setTimeout(r, 40));
+				return fauxAssistantMessage([fauxToolCall("loser_tool", { x: 1 })], { stopReason: "toolUse" });
+			},
+		]);
+		deep.setResponses([
+			fauxAssistantMessage([fauxToolCall("winner_tool", { y: 2 })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("custom_tool", { z: 3 })], { stopReason: "toolUse" }),
+		]);
+
+		mode = "multi";
+		const res1 = await routed.completeSimple(
+			vm,
+			{ messages: [{ role: "user", content: "go", timestamp: 1 }] },
+			attachVirtualRequestScope({}, { turnIndex: 3 }),
+		);
+		expect(res1.stopReason).toBe("toolUse");
+		expect(callEvents.map((e) => [e.toolName, e.turnIndex])).toEqual([
+			["read", 3],
+			["grep", 3],
+		]);
+
+		mode = "throwSync";
+		const res2 = await routed.completeSimple(vm, { messages: [{ role: "user", content: "go", timestamp: 2 }] });
+		expect(res2.stopReason).toBe("toolUse");
+
+		mode = "rejectAsync";
+		const res3 = await routed.completeSimple(vm, { messages: [{ role: "user", content: "go", timestamp: 3 }] });
+		expect(res3.stopReason).toBe("toolUse");
+
+		// Hedge: primary takes 40ms before emitting, so deep-1 (afterMs: 5) wins and loser_tool never fires onToolCallStart
+		const callCountBeforeHedge = callEvents.length;
+		mode = "hedge";
+		const res4 = await routed.completeSimple(
+			vm,
+			{ messages: [{ role: "user", content: "hedge", timestamp: 4 }] },
+			attachVirtualRequestScope({}, { turnIndex: 5 }),
+		);
+		expect(res4.provider).toBe("deep-prov");
+		expect(callEvents.slice(callCountBeforeHedge).map((e) => [e.toolName, e.turnIndex])).toEqual([
+			["winner_tool", 5],
+		]);
+
+		// Custom definition.stream also fires onToolCallStart
+		const customRouted = withVirtualModelRouting(models, {
+			models: [
+				{
+					provider: "router",
+					id: "custom-stream",
+					name: "Custom",
+					route: () => ({ model: models.getModel("deep-prov", "deep-1")!, thinkingLevel: "off" }),
+					stream: (req) => req.dispatch({ model: models.getModel("deep-prov", "deep-1")!, thinkingLevel: "off" }),
+					onToolCallStart(event) {
+						callEvents.push(event);
+					},
+				},
+			],
+		});
+		await customRouted.completeSimple(
+			customRouted.getModel("router", "custom-stream")!,
+			{ messages: [{ role: "user", content: "custom", timestamp: 5 }] },
+			attachVirtualRequestScope({}, { turnIndex: 7 }),
+		);
+		expect(callEvents.at(-1)?.toolName).toBe("custom_tool");
+		expect(callEvents.at(-1)?.turnIndex).toBe(7);
 	});
 });
