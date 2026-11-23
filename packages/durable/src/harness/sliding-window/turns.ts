@@ -146,16 +146,21 @@ export function chooseKeepFrom(o: {
 			idx = o.turns[at + 1]!.role === "toolResult" ? at : at + 1;
 		}
 	}
+	const preparedIdx =
+		o.stagedFirstKeptId === null && o.preparedThroughId ? o.turns.findIndex((t) => t.id === o.preparedThroughId) : -1;
 	if (o.midRun) {
-		// Never clamp to index 0 (root anchorUser0 is already preserved); only clamp to a later safe user turn (> 0).
+		// Never clamp to index 0 (anchorUser0 is preserved), and only pull back to lastUser > 0 if
+		// that user turn arrived after preparedThroughId (unsummarized) or is already inside the kept tail.
 		const lastUser = o.turns.findLastIndex((t) => t.role === "user");
-		if (lastUser > 0) {
+		if (lastUser > 0 && ((preparedIdx >= 0 && lastUser > preparedIdx) || (idx !== undefined && lastUser >= idx))) {
 			idx = idx === undefined ? lastUser : Math.min(idx, lastUser);
-			while (idx > 0 && (o.turns[idx]!.role === "toolResult" || !o.turns[idx]!.safeCutPoint)) {
-				idx -= 1;
-			}
-			if (idx === 0) idx = undefined;
 		}
+	}
+	if (idx !== undefined) {
+		while (idx > 0 && (o.turns[idx]!.role === "toolResult" || !o.turns[idx]!.safeCutPoint)) {
+			idx -= 1;
+		}
+		if (idx === 0) idx = undefined;
 	}
 	return idx === undefined ? null : o.turns[idx]!.id;
 }
