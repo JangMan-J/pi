@@ -310,6 +310,7 @@ export {
 	type SessionTreeNode,
 	sessionEntryToContextMessages,
 	type ThinkingLevelChangeEntry,
+	type UsageEntry,
 } from "./core/session-manager.ts";
 export {
 	type CacheWarmingMode,
@@ -404,12 +405,25 @@ export {
 	type ProjectTrustUpdate,
 } from "./core/trust-manager.ts";
 export {
+	computeBranchCacheSnapshot,
+	EMPTY_ROUTE_CACHE_SNAPSHOT,
+	isStatefulRoutePurpose,
+	isStreamSuppressedRoute,
 	type ModelRoute,
+	type ModelRouteCacheSnapshot,
+	type ModelRouteHedge,
+	type ModelRouteOutcome,
+	type ModelRoutePurpose,
 	type ModelRouteReason,
 	type ModelRouteRequest,
+	type ModelRouteToolChoice,
+	type ModelRouteValidationDecision,
+	purposeToReason,
 	VIRTUAL_MODEL_STATE_ENTRY,
 	type VirtualModelDefinition,
 	type VirtualModelStateData,
+	type VirtualStreamRequest,
+	type WarmCacheEntry,
 } from "./core/virtual-models.ts";
 // Built-in extensions. The CLI loads them; SDK sessions add them to their extension factories.
 export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extensions/codemode/index.ts";

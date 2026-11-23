@@ -2,13 +2,14 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
 	getCurrentSystemMessage,
 	type ImageContent,
 	type Model,
 	type Provider,
 	type ProviderHeaders,
+	type Usage,
 } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
@@ -17,14 +18,21 @@ import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
-import type { SessionManager } from "../session-manager.ts";
+import type { SessionManager, UsageEntry } from "../session-manager.ts";
 import {
 	type BuildSystemPromptOptions,
 	buildSystemPrompt,
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "../system-prompt.ts";
-import type { VirtualModelDefinition } from "../virtual-models.ts";
+import {
+	computeBranchCacheSnapshot,
+	getVirtualModelState,
+	type ModelRouteCacheSnapshot,
+	VIRTUAL_MODEL_STATE_ENTRY,
+	type VirtualModelDefinition,
+	type VirtualModelStateData,
+} from "../virtual-models.ts";
 import type {
 	AgentBeforeSettleEvent,
 	BeforeAgentStartCustomEvent,
@@ -371,6 +379,7 @@ export class ExtensionRunner {
 	private modelRegistry: ModelRegistry;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
+	private getRoutedModel: () => { model: Model<any>; thinkingLevel?: ThinkingLevel } | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
 	private isProjectTrustedFn: () => boolean = () => true;
@@ -379,6 +388,10 @@ export class ExtensionRunner {
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+	private getRouteCacheSnapshotFn: () => ModelRouteCacheSnapshot = () =>
+		computeBranchCacheSnapshot(this.sessionManager.getBranch(), (provider, modelId) =>
+			this.modelRegistry.find(provider, modelId),
+		);
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () =>
@@ -427,6 +440,8 @@ export class ExtensionRunner {
 			unregisterProvider?: (name: string) => void;
 			registerVirtualModel?: (definition: VirtualModelDefinition) => void;
 			unregisterVirtualModel?: (provider: string, id: string) => void;
+			setVirtualModelState?: (provider: string, id: string, state: unknown) => void;
+			appendUsage?: (kind: string, provider: string, model: string, usage: Usage, note?: string) => UsageEntry;
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
@@ -445,10 +460,22 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.setVirtualModelState =
+			providerActions?.setVirtualModelState ??
+			((provider, modelId, nextState) => {
+				const currentState = getVirtualModelState(this.sessionManager.getBranch(), provider, modelId);
+				if (nextState === undefined || nextState === currentState) return;
+				const data: VirtualModelStateData = { provider, modelId, state: nextState };
+				this.sessionManager.appendCustomEntry(VIRTUAL_MODEL_STATE_ENTRY, data);
+			});
+		this.runtime.appendUsage =
+			providerActions?.appendUsage ??
+			((kind, provider, model, usage, note) => this.sessionManager.appendUsage(kind, provider, model, usage, note));
 		this.runtime.createContext = () => this.createContext();
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
+		this.getRoutedModel = contextActions.getRoutedModel ?? (() => undefined);
 		this.getScopedModels = contextActions.getScopedModels;
 		this.isIdleFn = contextActions.isIdle;
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
@@ -457,6 +484,12 @@ export class ExtensionRunner {
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
+		this.getRouteCacheSnapshotFn =
+			contextActions.getRouteCacheSnapshot ??
+			(() =>
+				computeBranchCacheSnapshot(this.sessionManager.getBranch(), (provider, modelId) =>
+					this.modelRegistry.find(provider, modelId),
+				));
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn =
@@ -895,6 +928,7 @@ export class ExtensionRunner {
 	createContext(): ExtensionContext {
 		const runner = this;
 		const getModel = this.getModel;
+		const getRoutedModel = this.getRoutedModel;
 		const getScopedModels = this.getScopedModels;
 		return {
 			get ui() {
@@ -924,6 +958,10 @@ export class ExtensionRunner {
 			get model() {
 				runner.assertActive();
 				return getModel();
+			},
+			get routedModel() {
+				runner.assertActive();
+				return getRoutedModel();
 			},
 			get scopedModels() {
 				runner.assertActive();
@@ -960,6 +998,10 @@ export class ExtensionRunner {
 			getContextUsage: () => {
 				runner.assertActive();
 				return runner.getContextUsageFn();
+			},
+			getRouteCacheSnapshot: () => {
+				runner.assertActive();
+				return runner.getRouteCacheSnapshotFn();
 			},
 			compact: (options) => {
 				runner.assertActive();
