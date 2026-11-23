@@ -135,10 +135,11 @@ export class MemorySlidingWindowArtifactStore implements SlidingWindowArtifactSt
 	put(rawText: string, options: PutArtifactOptions): ArtifactMeta {
 		const sha256 = portableSha256Hex(rawText);
 		const nowMs = options.nowMs ?? Date.now();
+		const canBindSource = options.bindSource !== false && Boolean(options.sourcePath);
 		const existingRef = this.refBySha.get(sha256);
 		if (existingRef !== undefined) {
 			const existing = this.byRef.get(existingRef)!;
-			if (options.sourcePath) {
+			if (canBindSource && options.sourcePath) {
 				const key = `${options.cwd ?? ""}\0${normalizeSliceKey(options.sourcePath, options.cwd)}`;
 				this.bySourceKey.set(key, {
 					ref: existing.meta.ref,
@@ -146,6 +147,13 @@ export class MemorySlidingWindowArtifactStore implements SlidingWindowArtifactSt
 					sourceSha256: sha256,
 					updatedAtMs: nowMs,
 				});
+			}
+			if (!canBindSource) {
+				const { sourcePath: _sp, sourceSha256: _ss, ...rest } = existing.meta;
+				return {
+					...rest,
+					...((options.label ?? existing.meta.label) ? { label: options.label ?? existing.meta.label } : {}),
+				};
 			}
 			return {
 				...existing.meta,
@@ -165,13 +173,15 @@ export class MemorySlidingWindowArtifactStore implements SlidingWindowArtifactSt
 			toolName: options.toolName,
 			byteLen: utf8ByteLength(rawText),
 			lineCount: lines.length,
-			...(options.sourcePath ? { sourcePath: options.sourcePath, sourceSha256: sha256 } : {}),
-			...((options.label ?? options.sourcePath) ? { label: options.label ?? options.sourcePath } : {}),
+			...(canBindSource && options.sourcePath ? { sourcePath: options.sourcePath, sourceSha256: sha256 } : {}),
+			...((options.label ?? (canBindSource ? options.sourcePath : undefined))
+				? { label: options.label ?? options.sourcePath }
+				: {}),
 			createdAtMs: nowMs,
 		};
 		this.byRef.set(ref, { meta, rawText, lines });
 		this.refBySha.set(sha256, ref);
-		if (options.sourcePath) {
+		if (canBindSource && options.sourcePath) {
 			const key = `${options.cwd ?? ""}\0${normalizeSliceKey(options.sourcePath, options.cwd)}`;
 			this.bySourceKey.set(key, {
 				ref,
