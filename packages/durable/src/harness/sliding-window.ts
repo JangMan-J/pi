@@ -14,6 +14,7 @@ import {
 	type RoutedStreamCompletion,
 	type VirtualModelDefinition,
 	type VirtualModels,
+	type VirtualStreamRequest,
 	withVirtualModelRouting,
 } from "@earendil-works/pi-ai/virtual-models";
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
@@ -343,10 +344,18 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 
 	const states = new Map<string, ConvState>();
 	const enabledOverrides = new Map<string, boolean>();
+	interface ActiveVirtualRoute {
+		readonly composedRoute: ModelRoute;
+		readonly innerDef?: VirtualModelDefinition;
+		readonly innerRequest?: ModelRouteRequest;
+		readonly mergeRoute: (route: ModelRoute) => ModelRoute;
+	}
 	const activeInnerCalls = new WeakMap<
 		ModelRouteRequest,
 		{ readonly definition: VirtualModelDefinition; readonly innerRequest: ModelRouteRequest }
 	>();
+	const activeRoutesByState = new WeakMap<object, ActiveVirtualRoute>();
+	const activeRoutesByMessages = new WeakMap<readonly Message[], ActiveVirtualRoute>();
 	const routedRequestMeta = new WeakMap<object, { readonly purpose: ModelRoutePurpose; readonly turnIndex: number }>();
 	let globalEnabledOverride: boolean | undefined;
 	let boundModels: Models | undefined;
@@ -533,6 +542,39 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 				}
 			}
 
+			const mergeRoute = (candidateRoute: ModelRoute): ModelRoute => {
+				const mergedTail = attachTail
+					? candidateRoute.ephemeralTail
+						? typeof candidateRoute.ephemeralTail === "string"
+							? `${candidateRoute.ephemeralTail}\n\n${tail}`
+							: [
+									...candidateRoute.ephemeralTail,
+									{
+										role: "user" as const,
+										content: tail!,
+										timestamp: resolveDeterministicTimestamp(
+											Array.isArray(candidateRoute.messages) ? candidateRoute.messages : req.messages,
+											candidateRoute.ephemeralTail,
+										),
+									},
+								]
+						: tail
+					: candidateRoute.ephemeralTail;
+				const baseRoute: ModelRoute = {
+					...candidateRoute,
+					...(mergedTail !== undefined ? { ephemeralTail: mergedTail } : {}),
+					...(attachTail ? { disableContinuation: true } : {}),
+				};
+				return reqState?.guard ? applyForkGuardToRoute(baseRoute, reqState.guard) : baseRoute;
+			};
+
+			const rememberActiveRoute = (active: ActiveVirtualRoute) => {
+				if (reqState && typeof reqState === "object") {
+					activeRoutesByState.set(reqState, active);
+				}
+				activeRoutesByMessages.set(req.messages, active);
+			};
+
 			if (innerDef && innerModel) {
 				const innerReq: ModelRouteRequest = {
 					...req,
@@ -541,29 +583,14 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 				};
 				activeInnerCalls.set(req, { definition: innerDef, innerRequest: innerReq });
 				const innerRoute = await innerDef.route(innerReq);
-				const mergedTail = attachTail
-					? innerRoute.ephemeralTail
-						? typeof innerRoute.ephemeralTail === "string"
-							? `${innerRoute.ephemeralTail}\n\n${tail}`
-							: [
-									...innerRoute.ephemeralTail,
-									{
-										role: "user" as const,
-										content: tail!,
-										timestamp: resolveDeterministicTimestamp(
-											Array.isArray(innerRoute.messages) ? innerRoute.messages : req.messages,
-											innerRoute.ephemeralTail,
-										),
-									},
-								]
-						: tail
-					: innerRoute.ephemeralTail;
-				const baseRoute: ModelRoute = {
-					...innerRoute,
-					...(mergedTail !== undefined ? { ephemeralTail: mergedTail } : {}),
-					...(attachTail ? { disableContinuation: true } : {}),
-				};
-				return reqState?.guard ? applyForkGuardToRoute(baseRoute, reqState.guard) : baseRoute;
+				const composedRoute = mergeRoute(innerRoute);
+				rememberActiveRoute({
+					composedRoute,
+					innerDef,
+					innerRequest: innerReq,
+					mergeRoute,
+				});
+				return composedRoute;
 			}
 
 			if (!physicalTarget) {
@@ -571,12 +598,39 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 					`Sliding window virtual model ${vProvider}/${vId} requires a physical target model (pass options.target, SlidingWindowTargetDoc, or configure AgentDoc.model)`,
 				);
 			}
-			const baseRoute: ModelRoute = {
+			const composedRoute = mergeRoute({
 				model: physicalTarget,
 				thinkingLevel: req.thinkingLevel,
-				...(attachTail ? { ephemeralTail: tail, disableContinuation: true } : {}),
-			};
-			return reqState?.guard ? applyForkGuardToRoute(baseRoute, reqState.guard) : baseRoute;
+			});
+			rememberActiveRoute({
+				composedRoute,
+				mergeRoute,
+			});
+			return composedRoute;
+		},
+		async stream(streamReq: VirtualStreamRequest) {
+			const reqState = streamReq.state;
+			const active =
+				(reqState && typeof reqState === "object" ? activeRoutesByState.get(reqState) : undefined) ??
+				activeRoutesByMessages.get(streamReq.messages);
+			if (reqState && typeof reqState === "object") activeRoutesByState.delete(reqState);
+			activeRoutesByMessages.delete(streamReq.messages);
+
+			if (active?.innerDef?.stream && active.innerRequest) {
+				const innerStreamReq: VirtualStreamRequest = {
+					...active.innerRequest,
+					dispatch: (candidateRoute) => streamReq.dispatch(active.mergeRoute(candidateRoute)),
+					recordUsage: streamReq.recordUsage,
+					setState: streamReq.setState,
+					setStatus: streamReq.setStatus,
+				};
+				return await active.innerDef.stream(innerStreamReq);
+			}
+			if (active) {
+				return streamReq.dispatch(active.composedRoute);
+			}
+			const fallbackRoute = await virtualModel.route(streamReq);
+			return streamReq.dispatch(fallbackRoute);
 		},
 		onToolCallStart(event) {
 			const active = activeInnerCalls.get(event.request);
@@ -1328,7 +1382,7 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 					const effectiveCwd = agentState?.cwd ?? options.cwd;
 
 					// B3: Scoped HydratePolicy (read via api.env or store.readLiveFile / store.getLatestBySourcePath, zero node:*).
-					if (enabled && swState?.hydrate?.allowedPaths?.length) {
+					if (enabled && config.stageReadSlices && swState?.hydrate?.allowedPaths?.length) {
 						const store = getStore();
 						const hydratedSet = new Set(
 							[...swState.hydrate.hydratedPaths, ...c.pendingHydratedPaths].map((p) =>
@@ -1336,7 +1390,12 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 							),
 						);
 						const maxHydrateBytes = swState.hydrate.maxHydrateBytes ?? config.maxStageBytes;
+						const effectiveHydrateBudget = Math.min(maxHydrateBytes, config.maxStageBytes);
+						const pendingKeySet = new Set(c.pendingHydratedPaths.map((p) => normalizeSliceKey(p, effectiveCwd)));
 						let usedHydrateBytes = 0;
+						for (const s of c.stage.list()) {
+							if (pendingKeySet.has(s.key)) usedHydrateBytes += s.bytes;
+						}
 						const env = await api.env?.(ctx).catch(() => undefined);
 
 						for (const relPath of swState.hydrate.allowedPaths) {
@@ -1397,13 +1456,22 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 
 							if (text === undefined || ref === undefined) continue;
 							const bytes = utf8ByteLength(text);
-							if (usedHydrateBytes + bytes > maxHydrateBytes) continue;
+							if (usedHydrateBytes + bytes > effectiveHydrateBudget) continue;
 							if (c.stage.stage({ path: relPath, ...(effectiveCwd ? { cwd: effectiveCwd } : {}), ref, text })) {
 								usedHydrateBytes += bytes;
 								c.pendingHydratedPaths.push(relPath);
 								hydratedSet.add(normKey);
 							}
 						}
+					}
+
+					if (!enabled || !config.stageReadSlices) {
+						c.pendingHydratedPaths = [];
+					} else if (c.pendingHydratedPaths.length > 0) {
+						const survivingKeys = new Set(c.stage.list().map((s) => s.key));
+						c.pendingHydratedPaths = c.pendingHydratedPaths.filter((p) =>
+							survivingKeys.has(normalizeSliceKey(p, effectiveCwd)),
+						);
 					}
 
 					const tail = enabled && config.stageReadSlices ? c.stage.render() : undefined;
