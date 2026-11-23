@@ -3,7 +3,7 @@ import { copyJson, type JsonRepresentation } from "@earendil-works/chord/json";
 import type { AssistantMessage, Models, ModelThinkingLevel, Tool, Usage, UserMessage } from "@earendil-works/pi-ai";
 import { toToolDeclaration } from "@earendil-works/pi-ai/utils/transcript";
 import { harvestPostReadStudyNotes } from "@earendil-works/pi-ai/virtual-models";
-import { type AnyDocDefinition, materializeDocument } from "../../documents.ts";
+import { type AnyDocToken, materializeDocument } from "../../documents.ts";
 import { AssistantEntry, SystemEntry, UserEntry } from "../../entries.ts";
 import type { Cursor, EntryId, Seq, Storage } from "../../types.ts";
 import { AgentDoc } from "../agent.ts";
@@ -94,10 +94,11 @@ function wrapNonClosingStorage(storage: Storage, closeUnderlying: boolean): Stor
 async function readConversationDocAsOf<T>(
 	storage: Storage,
 	conversationId: Conversation["id"],
-	def: AnyDocDefinition,
+	token: AnyDocToken,
 	at: Seq | "current",
 	context: Context,
 ): Promise<T | undefined> {
+	const def = token.definition;
 	let cursor: Cursor | undefined;
 	do {
 		const page = await storage.scanDocuments(
@@ -160,39 +161,49 @@ export async function exportCheckpointedForkToStorage(
 			parentAgentState = await readConversationDocAsOf<AgentState>(
 				options.parentStorage,
 				sourceConvId,
-				AgentDoc as unknown as AnyDocDefinition,
+				AgentDoc,
 				atSeq,
 				context,
 			);
 			parentBaton = await readConversationDocAsOf<BatonStateValue>(
 				options.parentStorage,
 				sourceConvId,
-				BatonStateDoc as unknown as AnyDocDefinition,
+				BatonStateDoc,
 				atSeq,
 				context,
 			);
 			parentLedger = await readConversationDocAsOf<MechanicalLedger>(
 				options.parentStorage,
 				sourceConvId,
-				SlidingWindowLedgerDoc as unknown as AnyDocDefinition,
+				SlidingWindowLedgerDoc,
 				atSeq,
 				context,
 			);
 			parentVmState = await readConversationDocAsOf<VirtualModelStateValue>(
 				options.parentStorage,
 				sourceConvId,
-				VirtualModelStateDoc as unknown as AnyDocDefinition,
+				VirtualModelStateDoc,
 				atSeq,
 				context,
 			);
 			const providerDoc = await readConversationDocAsOf<{ sessionId?: string }>(
 				options.parentStorage,
 				options.parent.id,
-				ProviderDoc as unknown as AnyDocDefinition,
+				ProviderDoc,
 				"current",
 				context,
 			);
 			parentSessionId = providerDoc?.sessionId;
+			if (parentSessionId === undefined && sourceConvId !== options.parent.id) {
+				const sourceProviderDoc = await readConversationDocAsOf<{ sessionId?: string }>(
+					options.parentStorage,
+					sourceConvId,
+					ProviderDoc,
+					"current",
+					context,
+				);
+				parentSessionId = sourceProviderDoc?.sessionId;
+			}
 		}
 	}
 
@@ -207,7 +218,11 @@ export async function exportCheckpointedForkToStorage(
 	const viewLedger = reconstructLedgerFromView(view);
 	const effectiveLedger: MechanicalLedger =
 		parentLedger &&
-		(parentLedger.turnCount > 0 || parentLedger.filesRead.length > 0 || parentLedger.filesEdited.length > 0)
+		(parentLedger.epoch > 0 ||
+			parentLedger.turnCount > 0 ||
+			parentLedger.filesRead.length > 0 ||
+			parentLedger.filesEdited.length > 0 ||
+			parentLedger.recentRefs.length > 0)
 			? parentLedger
 			: viewLedger;
 
@@ -215,11 +230,40 @@ export async function exportCheckpointedForkToStorage(
 	const lastAssistantMsg = view.messages.findLast((m): m is AssistantMessage => m.role === "assistant");
 	const lastMsg = view.messages.at(-1);
 
-	const anchorRaw =
-		parentBaton?.anchorUser0?.timestamp ?? firstUserMsg?.timestamp ?? view.entries[0]?.model?.[0]?.timestamp;
-	const anchorTimestamp = typeof anchorRaw === "number" && Number.isFinite(anchorRaw) ? anchorRaw : Date.now();
-	const atRaw = lastAssistantMsg?.timestamp ?? lastMsg?.timestamp ?? anchorTimestamp;
-	const atTimestamp = typeof atRaw === "number" && Number.isFinite(atRaw) ? atRaw : anchorTimestamp;
+	const isFiniteTimestamp = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+	const findFirstFiniteTimestamp = (): number | undefined => {
+		if (isFiniteTimestamp(parentBaton?.anchorUser0?.timestamp)) return parentBaton.anchorUser0.timestamp;
+		if (isFiniteTimestamp(firstUserMsg?.timestamp)) return firstUserMsg.timestamp;
+		for (const msg of view.messages) {
+			if (isFiniteTimestamp(msg.timestamp)) return msg.timestamp;
+		}
+		for (const entry of view.entries) {
+			for (const msg of entry.model ?? []) {
+				if (isFiniteTimestamp(msg.timestamp)) return msg.timestamp;
+			}
+		}
+		return undefined;
+	};
+	const anchorTimestamp = findFirstFiniteTimestamp() ?? 0;
+
+	const findLastFiniteTimestamp = (): number | undefined => {
+		if (isFiniteTimestamp(lastAssistantMsg?.timestamp)) return lastAssistantMsg.timestamp;
+		if (isFiniteTimestamp(lastMsg?.timestamp)) return lastMsg.timestamp;
+		for (let i = view.messages.length - 1; i >= 0; i--) {
+			const ts = view.messages[i]?.timestamp;
+			if (isFiniteTimestamp(ts)) return ts;
+		}
+		for (let i = view.entries.length - 1; i >= 0; i--) {
+			const modelMsgs = view.entries[i]?.model;
+			if (!modelMsgs) continue;
+			for (let j = modelMsgs.length - 1; j >= 0; j--) {
+				const ts = modelMsgs[j]?.timestamp;
+				if (isFiniteTimestamp(ts)) return ts;
+			}
+		}
+		return undefined;
+	};
+	const atTimestamp = findLastFiniteTimestamp() ?? anchorTimestamp;
 
 	const harvested =
 		options.studyNotes !== undefined
@@ -235,7 +279,9 @@ export async function exportCheckpointedForkToStorage(
 	const toolDecls: Tool[] = options.tools
 		? options.tools.map(toToolDeclaration)
 		: parentAgent.tools.map(toToolDeclaration);
-	const childToolNames = options.tools ? options.tools.map((t) => t.name) : parentAgentState?.tools;
+	const childToolNames = options.tools
+		? options.tools.map((t) => t.name)
+		: (parentAgentState?.tools ?? parentAgent.tools.map((t) => t.name));
 
 	const compactOutlines = formatCompactLedgerOutlines(effectiveLedger);
 	const userContent = compactOutlines ? `${options.taskPrompt}\n\n${compactOutlines}` : options.taskPrompt;
@@ -243,7 +289,7 @@ export async function exportCheckpointedForkToStorage(
 		options.dispatchSummary?.trim() || "Checkpoint exported. Executing scoped task directly on hydrated context.";
 	const assistantText = finalStudyNotes ? `${finalStudyNotes}\n\n${dispatchSummary}` : dispatchSummary;
 
-	const targetRef = options.targetModel ?? parentAgent.model;
+	const targetRef = options.targetModel ?? parentAgentState?.model ?? parentAgent.model;
 	const physicalTarget =
 		targetRef && !isVirtualRef(targetRef, options.models)
 			? options.models.getModel(targetRef.provider, targetRef.modelId)
@@ -259,16 +305,17 @@ export async function exportCheckpointedForkToStorage(
 	const preserveToolDeclarations = options.preserveToolDeclarations ?? true;
 	const preserveThinkingLevel = options.preserveThinkingLevel ?? true;
 	const slidingWindowEnabled = options.slidingWindow ?? true;
-	const epochLevel = options.parentThinkingLevel ?? parentAgent.thinkingLevel;
+	const epochLevel = options.parentThinkingLevel ?? parentAgentState?.thinkingLevel ?? parentAgent.thinkingLevel;
 	const effectiveAllowFlip = options.allowThinkingEpochFlip === true || preserveThinkingLevel === false;
 	const guardedLevel =
 		!effectiveAllowFlip && epochLevel !== undefined && epochLevel !== "off"
 			? (options.preservedThinkingLevel ?? epochLevel)
 			: undefined;
-	const requestedThinking = options.thinkingLevel ?? parentAgent.thinkingLevel ?? "off";
+	const requestedThinking =
+		options.thinkingLevel ?? parentAgentState?.thinkingLevel ?? parentAgent.thinkingLevel ?? "off";
 	const finalThinkingLevel =
 		guardedLevel !== undefined && requestedThinking === "off" ? guardedLevel : requestedThinking;
-	const effectiveCwd = options.cwd ?? parentAgent.cwd;
+	const effectiveCwd = options.cwd ?? parentAgentState?.cwd ?? parentAgent.cwd;
 
 	const storage = wrapNonClosingStorage(options.targetStorage, options.closeTargetStorage ?? false);
 	const childHarness = await Harness.open(
