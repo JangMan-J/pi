@@ -85,7 +85,10 @@ export class EphemeralSliceStage {
 	render(): string | undefined {
 		if (this.slices.size === 0) return undefined;
 		return [...this.slices.values()]
-			.map((s) => `<working_slice path="${s.path}" ref="${s.ref}" ephemeral="true">\n${s.text}\n</working_slice>`)
+			.map((s) => {
+				const safeText = s.text.replace(/<\/working_slice/gi, "<\\/working_slice");
+				return `<working_slice path=${JSON.stringify(s.path)} ref=${JSON.stringify(s.ref)} ephemeral="true">\n${safeText}\n</working_slice>`;
+			})
 			.join("\n\n");
 	}
 

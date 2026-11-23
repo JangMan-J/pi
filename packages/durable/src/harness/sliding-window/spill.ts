@@ -22,6 +22,8 @@ export interface SpillInput {
 	/** Called only once an output is over its threshold, so the store opens on the first real spill. */
 	readonly store: () => SlidingWindowArtifactStore;
 	readonly stage: EphemeralSliceStage;
+	/** Whether the active model routes through sliding-window so staged slices will actually be attached. Default: true. */
+	readonly canStageSlices?: boolean;
 	readonly previewToolOutput?: (ctx: SlidingWindowPreviewContext) => string | undefined | Promise<string | undefined>;
 }
 
@@ -54,7 +56,7 @@ export async function spillToolOutput(i: SpillInput): Promise<SpillOutput | unde
 		...(isRead && path ? { sourcePath: path, ...(i.cwd ? { cwd: i.cwd } : {}) } : {}),
 	});
 	const staged =
-		isRead && !i.isError && i.config.stageReadSlices && path
+		(i.canStageSlices ?? true) && isRead && !i.isError && i.config.stageReadSlices && path
 			? i.stage.stage({ path, ...(i.cwd ? { cwd: i.cwd } : {}), ref: meta.ref, text: i.rawText })
 			: false;
 	const customPreview = i.previewToolOutput
