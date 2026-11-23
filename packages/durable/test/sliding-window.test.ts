@@ -2360,4 +2360,357 @@ describe("sliding-window Harness integration", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("Tier 5 Finding #1: does not poison artifact_sources on partial read spills (sourceSha256 mismatch or partial: true) and hydrates full live file", async () => {
+		const mainProv = fauxProvider({
+			provider: "f1-prov",
+			models: [{ id: "f1-model", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const models = createModels();
+		models.setProvider(mainProv.provider);
+
+		const dir = mkdtempSync(join(tmpdir(), "sw-f1-partial-"));
+		const parentArtifactsPath = join(dir, "parent.artifacts.sqlite");
+		const childArtifactsPath = join(dir, "child.artifacts.sqlite");
+		const exportDbPath = join(dir, "fork.sqlite");
+		try {
+			const lines = Array.from({ length: 200 }, (_, i) => `export const line_${i + 1} = ${i + 1};`);
+			lines[199] = 'export const SECRET_TAIL_MARKER = "tail-ok";';
+			const fullFile = `${lines.join("\n")}\n`;
+			const partialSlice = lines.slice(0, 80).join("\n");
+			const filePath = join(dir, "big.ts");
+			writeFileSync(filePath, fullFile, "utf8");
+			const fullSha = createHash("sha256").update(fullFile, "utf8").digest("hex");
+
+			// Direct NodeSlidingWindowArtifactStore check: partial text != fullFile on disk must NOT bind artifact_sources
+			const directStore = openNodeSlidingWindowArtifactStore(join(dir, "direct.artifacts.sqlite"));
+			const directMeta = directStore.put(partialSlice, { toolName: "read", sourcePath: "big.ts", cwd: dir });
+			expect(directMeta.sourceSha256).toBeUndefined();
+			expect(directMeta.sourcePath).toBeUndefined();
+			expect(directStore.getLatestBySourcePath("big.ts", dir)).toBeUndefined();
+			expect(directStore.recall({ ref: directMeta.ref, startLine: 1, endLine: 3 }).text).toContain("line_1");
+
+			// Prior full read followed by partial read must NOT overwrite artifact_sources
+			const fullMeta = directStore.put(fullFile, { toolName: "read", sourcePath: "big.ts", cwd: dir });
+			expect(fullMeta.sourceSha256).toBe(fullSha);
+			const partialAfterFull = directStore.put(partialSlice, { toolName: "read", sourcePath: "big.ts", cwd: dir });
+			expect(partialAfterFull.sourceSha256).toBeUndefined();
+			expect(directStore.getLatestBySourcePath("big.ts", dir)?.meta.ref).toBe(fullMeta.ref);
+			directStore.close();
+
+			// Harness test: partial read with details.artifact = { sourcePath, sourceSha256: fullSha } AND partial: true
+			const parentStore = openNodeSlidingWindowArtifactStore(parentArtifactsPath);
+			const sw = createSlidingWindow({
+				cwd: dir,
+				readSpillThresholdBytes: 256,
+				artifactStore: parentStore,
+			});
+			const routed = sw.wrapModels(models);
+
+			let readMode: "sha-mismatch" | "explicit-partial" = "sha-mismatch";
+			const readTool = defineTool({
+				name: "read",
+				description: "Read file",
+				parameters: obj({ path: str() }),
+				execute: async () => {
+					const artifact: { sourcePath: string; sourceSha256: string; partial?: boolean } =
+						readMode === "sha-mismatch"
+							? { sourcePath: filePath, sourceSha256: fullSha }
+							: { sourcePath: filePath, sourceSha256: fullSha, partial: true };
+					return {
+						output: [{ type: "text", text: partialSlice }],
+						details: { artifact },
+					};
+				},
+			});
+
+			const reg = createRegistry();
+			reg.install(defineExtension({ name: "test.f1", tools: [readTool] }));
+			reg.install(sw.extension);
+
+			mainProv.setResponses([
+				fauxAssistantMessage([fauxToolCall("read", { path: "big.ts" })], { stopReason: "toolUse" }),
+				() => {
+					readMode = "explicit-partial";
+					return fauxAssistantMessage([fauxToolCall("read", { path: "big.ts" })], { stopReason: "toolUse" });
+				},
+				fauxAssistantMessage("Done partial reads.", { timestamp: 42_000 }),
+			]);
+
+			const parentHarness = await Harness.open(new MemoryStorage(), { models: routed, registry: reg }, context);
+			parentHarness.resume();
+			const parent = await parentHarness.root(context, { agent: { model: sw.selection, cwd: dir } });
+			await parent.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, parent.id)).target = { provider: "f1-prov", modelId: "f1-model" };
+			}, context);
+
+			await (await parent.submit({ type: "input", content: "Partial read big.ts" }, context)).wait(context);
+			await parent.waitForIdle(context);
+
+			expect(parentStore.getLatestBySourcePath("big.ts", dir)).toBeUndefined();
+
+			// Also verify explicit partial: true with matching content hash does not bind artifact_sources
+			const partialWithFlag = openNodeSlidingWindowArtifactStore(join(dir, "partial-flag.artifacts.sqlite"));
+			const stageDummy = new EphemeralSliceStage({ maxTotalBytes: 100_000, ttlTurns: 2 });
+			const { spillToolOutput } = await import("../src/harness/sliding-window/spill.ts");
+			const { normalizeSlidingWindowConfig } = await import("../src/harness/sliding-window/bounds.ts");
+			const spillPartialFlag = await spillToolOutput({
+				toolName: "read",
+				input: { path: "big.ts" },
+				rawText: partialSlice,
+				isError: false,
+				cwd: dir,
+				details: { artifact: { sourcePath: filePath, partial: true } },
+				config: normalizeSlidingWindowConfig({ readSpillThresholdBytes: 256 }),
+				store: () => partialWithFlag,
+				stage: stageDummy,
+			});
+			expect(spillPartialFlag).toBeDefined();
+			expect(spillPartialFlag?.meta.sourceSha256).toBeUndefined();
+			expect(partialWithFlag.getLatestBySourcePath("big.ts", dir)).toBeUndefined();
+			partialWithFlag.close();
+
+			const atEntry = (await allEntries(parent)).findLast((e) => AssistantEntry.is(e))!.id;
+			await exportCheckpointedFork(
+				{
+					parent,
+					parentHarness,
+					at: atEntry,
+					targetDbPath: exportDbPath,
+					owner: "cellar",
+					models: routed,
+					registry: reg,
+					systemPrompt: "Child sys",
+					tools: [readTool, sw.recallTool],
+					taskPrompt: "Inspect full big.ts",
+					targetModel: { provider: "f1-prov", modelId: "f1-model" },
+					allowedPaths: ["big.ts"],
+					cwd: dir,
+				},
+				context,
+			);
+
+			await sw.close();
+			await parentHarness.close(context);
+
+			// Child opens parent store readOnly via layered store and hydrates big.ts
+			const roParentStore = openNodeSlidingWindowArtifactStore(parentArtifactsPath, { readOnly: true });
+			const writableChildStore = openNodeSlidingWindowArtifactStore(childArtifactsPath);
+			const layeredStore = createLayeredArtifactStore(writableChildStore, [roParentStore]);
+			const childSw = createSlidingWindow({ cwd: dir, artifactStore: layeredStore });
+			const childRouted = childSw.wrapModels(models);
+			const childReg = createRegistry();
+			childReg.install(defineExtension({ name: "test.f1", tools: [readTool] }));
+			childReg.install(childSw.extension);
+
+			let childTail = "";
+			mainProv.setResponses([
+				(ctx) => {
+					childTail = String(ctx.messages.at(-1)?.content ?? "");
+					return fauxAssistantMessage("Hydrated full live file.");
+				},
+			]);
+
+			const childDb = await openNodeSqliteDatabase(exportDbPath);
+			const childStorage = await StoreStorage.open(
+				await openStore(sqliteBackend(childDb), context),
+				"cellar",
+				context,
+			);
+			const childHarness = await Harness.open(
+				childStorage,
+				{
+					models: childRouted,
+					registry: childReg,
+					env: async () =>
+						({
+							readTextFile: async (p: string) => {
+								const { readFileSync } = await import("node:fs");
+								return { ok: true as const, value: readFileSync(p, "utf8") };
+							},
+						}) as never,
+				},
+				context,
+			);
+			childHarness.resume();
+			const childRoot = await childHarness.root(context);
+			await (await childRoot.submit({ type: "input", content: "Check hydrated slice" }, context)).wait(context);
+			await childRoot.waitForIdle(context);
+
+			expect(childTail).toContain("export const line_1 = 1;");
+			expect(childTail).toContain('export const SECRET_TAIL_MARKER = "tail-ok";');
+
+			await childSw.close();
+			await childHarness.close(context);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("Tier 5 Finding #4: afterTool resolves AgentDoc.cwd for stage.evict and spillToolOutput when AgentDoc.cwd !== options.cwd", async () => {
+		const mainProv = fauxProvider({
+			provider: "f4-prov",
+			models: [{ id: "f4-model", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const models = createModels();
+		models.setProvider(mainProv.provider);
+
+		const launchDir = mkdtempSync(join(tmpdir(), "sw-f4-launch-"));
+		const agentDir = mkdtempSync(join(tmpdir(), "sw-f4-agent-"));
+		try {
+			const oldContent = `OLD_UNEDITED_TARGET_CONTENT\n${"// pad\n".repeat(40)}`;
+			const newContent = `NEW_EDITED_TARGET_CONTENT\n${"// pad\n".repeat(40)}`;
+			writeFileSync(join(agentDir, "target.ts"), oldContent, "utf8");
+
+			const store = openNodeSlidingWindowArtifactStore(join(agentDir, "artifacts.sqlite"));
+			const sw = createSlidingWindow({
+				cwd: launchDir,
+				readSpillThresholdBytes: 128,
+				artifactStore: store,
+			});
+			const routed = sw.wrapModels(models);
+
+			const readTool = defineTool({
+				name: "read",
+				description: "Read",
+				parameters: obj({ path: str() }),
+				execute: async () => ({ output: [{ type: "text", text: oldContent }] }),
+			});
+			const editTool = defineTool({
+				name: "edit",
+				description: "Edit",
+				parameters: obj({ path: str() }),
+				execute: async () => {
+					writeFileSync(join(agentDir, "target.ts"), newContent, "utf8");
+					return { output: [{ type: "text", text: "Edited target.ts" }] };
+				},
+			});
+
+			const reg = createRegistry();
+			reg.install(defineExtension({ name: "test.f4", tools: [readTool, editTool] }));
+			reg.install(sw.extension);
+
+			const seenTails: string[] = [];
+			mainProv.setResponses([
+				(ctx) => {
+					seenTails.push(String(ctx.messages.at(-1)?.content ?? ""));
+					return fauxAssistantMessage([fauxToolCall("read", { path: "target.ts" })], { stopReason: "toolUse" });
+				},
+				(ctx) => {
+					seenTails.push(String(ctx.messages.at(-1)?.content ?? ""));
+					return fauxAssistantMessage([fauxToolCall("edit", { path: "target.ts" })], { stopReason: "toolUse" });
+				},
+				(ctx) => {
+					seenTails.push(String(ctx.messages.at(-1)?.content ?? ""));
+					return fauxAssistantMessage("Edit complete.");
+				},
+			]);
+
+			const harness = await Harness.open(new MemoryStorage(), { models: routed, registry: reg }, context);
+			harness.resume();
+			const root = await harness.root(context, { agent: { model: sw.selection, cwd: agentDir } });
+			await root.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, root.id)).target = { provider: "f4-prov", modelId: "f4-model" };
+			}, context);
+
+			await (await root.submit({ type: "input", content: "Read then edit target.ts" }, context)).wait(context);
+			await root.waitForIdle(context);
+
+			// Turn 2 (after read, before edit) had OLD_UNEDITED_TARGET_CONTENT staged
+			expect(seenTails[1]).toContain("OLD_UNEDITED_TARGET_CONTENT");
+			// Turn 3 (after edit) MUST have evicted OLD_UNEDITED_TARGET_CONTENT using AgentDoc.cwd (agentDir)
+			expect(seenTails[2]).not.toContain("OLD_UNEDITED_TARGET_CONTENT");
+			expect(sw.inspect(root.id).stagedSlices).toBe(0);
+			expect(store.getLatestBySourcePath("target.ts", agentDir)).toBeDefined();
+
+			await sw.close();
+			await harness.close(context);
+		} finally {
+			rmSync(launchDir, { recursive: true, force: true });
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("Tier 5 Finding #6: exportCheckpointedFork emits SystemEntry.toolsAdded from asOf atSeq when options.tools is omitted", async () => {
+		const prov = fauxProvider({
+			provider: "f6-prov",
+			models: [{ id: "f6-model", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const models = createModels();
+		models.setProvider(prov.provider);
+
+		const readTool = defineTool({
+			name: "read",
+			description: "Read",
+			parameters: obj({ path: str() }),
+			execute: async () => ({ output: [{ type: "text", text: "ok" }] }),
+		});
+		const writeTool = defineTool({
+			name: "write",
+			description: "Write",
+			parameters: obj({ path: str() }),
+			execute: async () => ({ output: [{ type: "text", text: "written" }] }),
+		});
+
+		const sw = createSlidingWindow();
+		const routed = sw.wrapModels(models);
+		const reg = createRegistry();
+		reg.install(defineExtension({ name: "test.f6", tools: [readTool, writeTool] }));
+		reg.install(sw.extension);
+
+		prov.setResponses([
+			fauxAssistantMessage("Turn 1 with read only.", { timestamp: 10_000 }),
+			fauxAssistantMessage("Turn 2 with read and write.", { timestamp: 20_000 }),
+		]);
+
+		const parentStorage = new MemoryStorage();
+		const parentHarness = await Harness.open(parentStorage, { models: routed, registry: reg }, context);
+		parentHarness.resume();
+		const root = await parentHarness.root(context, {
+			agent: { model: sw.selection, tools: [readTool] },
+		});
+		await root.commit(async (tx) => {
+			(await tx.doc(SlidingWindowTargetDoc, root.id)).target = { provider: "f6-prov", modelId: "f6-model" };
+		}, context);
+
+		await (await root.submit({ type: "input", content: "Turn 1" }, context)).wait(context);
+		await root.waitForIdle(context);
+		const turn1Entry = (await allEntries(root)).findLast((e) => AssistantEntry.is(e))!.id;
+
+		// Update tools to ["read", "write"] and run Turn 2
+		await root.commit(async (tx) => {
+			(await tx.doc(AgentDoc, root.id)).tools = ["read", "write"];
+		}, context);
+		await (await root.submit({ type: "input", content: "Turn 2" }, context)).wait(context);
+		await root.waitForIdle(context);
+
+		const targetStorage = new MemoryStorage();
+		await exportCheckpointedFork(
+			{
+				parent: root,
+				parentHarness,
+				parentStorage,
+				at: turn1Entry,
+				targetStorage,
+				models: routed,
+				registry: reg,
+				systemPrompt: "Child system prompt",
+				taskPrompt: "Child task at turn 1",
+			},
+			context,
+		);
+
+		const childHarness = await Harness.open(targetStorage, { models: routed, registry: reg }, context);
+		const childRoot = await childHarness.root(context);
+		const childAgent = await childHarness.snapshot(AgentDoc, childRoot.id, context);
+		const sysEntry = (await allEntries(childRoot)).find((e) => SystemEntry.is(e));
+		const toolsAdded = sysEntry?.model?.[0]?.role === "system" ? sysEntry.model[0].toolsAdded : undefined;
+
+		expect(childAgent?.tools).toEqual(["read"]);
+		expect(toolsAdded?.map((t) => t.name)).toEqual(["read"]);
+
+		await childHarness.close(context);
+		await sw.close();
+		await parentHarness.close(context);
+	});
 });

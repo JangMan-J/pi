@@ -196,13 +196,17 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 		const cwdKey = options.cwd ? resolve(options.cwd) : "";
 		const normSourcePath =
 			options.sourcePath !== undefined ? normalizeSliceKey(options.sourcePath, options.cwd) : undefined;
+		const canBindSource =
+			options.bindSource !== false &&
+			normSourcePath !== undefined &&
+			(liveHash?.sha256 == null || liveHash.sha256 === sha256);
 
 		if (existing) {
 			const existingRef = String(existing.ref);
 			this.db.exec("BEGIN IMMEDIATE");
 			try {
 				this.db.prepare(`UPDATE artifact_blobs SET created_at_ms = ? WHERE ref = ?`).run(nowMs, existingRef);
-				if (normSourcePath !== undefined) {
+				if (canBindSource) {
 					this.db
 						.prepare(
 							`INSERT OR REPLACE INTO artifact_sources (cwd, source_path, ref, source_sha256, updated_at_ms)
@@ -220,6 +224,15 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 				throw err;
 			}
 			const baseMeta = this.rowToMeta({ ...existing, created_at_ms: nowMs });
+			if (!canBindSource) {
+				const { sourcePath: _sp, sourceSha256: _ss, ...rest } = baseMeta;
+				return {
+					...rest,
+					...((options.label ?? options.sourcePath ?? baseMeta.label)
+						? { label: options.label ?? options.sourcePath ?? baseMeta.label }
+						: {}),
+				};
+			}
 			return {
 				...baseMeta,
 				...(options.sourcePath ? { sourcePath: options.sourcePath } : {}),
@@ -257,14 +270,14 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 					options.toolName,
 					byteLen,
 					lineCount,
-					options.sourcePath ?? null,
-					liveHash?.sha256 ?? null,
+					canBindSource ? (options.sourcePath ?? null) : null,
+					canBindSource ? (liveHash?.sha256 ?? null) : null,
 					options.label ?? options.sourcePath ?? null,
 					createdAtMs,
 					compressed,
 				);
 
-			if (normSourcePath !== undefined) {
+			if (canBindSource) {
 				this.db
 					.prepare(
 						`INSERT OR REPLACE INTO artifact_sources (cwd, source_path, ref, source_sha256, updated_at_ms)
@@ -305,8 +318,8 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 			toolName: options.toolName,
 			byteLen,
 			lineCount,
-			...(options.sourcePath ? { sourcePath: options.sourcePath } : {}),
-			...(liveHash?.sha256 ? { sourceSha256: liveHash.sha256 } : {}),
+			...(canBindSource && options.sourcePath ? { sourcePath: options.sourcePath } : {}),
+			...(canBindSource && liveHash?.sha256 ? { sourceSha256: liveHash.sha256 } : {}),
 			...((options.label ?? options.sourcePath) ? { label: options.label ?? options.sourcePath } : {}),
 			createdAtMs,
 		};

@@ -272,8 +272,9 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 				context,
 			);
 			const entries = planSystemEntries(view, desired, agent.tools, runtime.now());
+			const policy = compactionPolicy(settings, model, agent.compaction);
 			const threshold =
-				compacted === undefined
+				compacted === undefined && policy.enabled
 					? thresholdCompaction(
 							view,
 							entries,
@@ -287,7 +288,7 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 								thinkingLevel,
 								context,
 							),
-							compactionPolicy(settings, model, agent.compaction),
+							policy,
 						)
 					: undefined;
 			if (threshold === "blocking") {
