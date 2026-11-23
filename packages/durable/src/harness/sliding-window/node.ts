@@ -3,25 +3,50 @@ import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { deflateSync, inflateSync } from "node:zlib";
-import { normalizeRefId } from "./memory-store.ts";
+import { openStore, sqliteBackend } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
+import { StoreStorage } from "../../storage/store/index.ts";
+import {
+	type ExportCheckpointedForkResult,
+	type ExportCheckpointedForkStorageOptions,
+	exportCheckpointedForkToStorage,
+} from "./fork-export.ts";
+import { createLayeredArtifactStore, normalizeRefId } from "./memory-store.ts";
+import { normalizeSliceKey } from "./staging.ts";
 import type {
 	ArtifactMeta,
+	LiveFileSnapshot,
 	PutArtifactOptions,
 	RecallOptions,
 	RecallResult,
 	SlidingWindowArtifactStore,
+	StoredArtifactEntry,
 } from "./types.ts";
 
 const CHUNK_LINES = 80;
 const DEFAULT_MAX_RECALL_LINES = 140;
 const DEFAULT_CONTEXT_LINES = 4;
 const MAX_SOURCE_HASH_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MAX_BLOB_COUNT = 4_096;
+const DEFAULT_MIN_AGE_MS = 30 * 60 * 1000;
+const DEFAULT_GC_INTERVAL_PUTS = 32;
+
+export interface NodeArtifactStoreOptions {
+	readonly readOnly?: boolean;
+	readonly maxTotalBytes?: number;
+	readonly maxBlobCount?: number;
+	readonly minAgeMs?: number;
+	readonly gcIntervalPuts?: number;
+	readonly pinnedRefs?: () => ReadonlySet<string>;
+}
 
 export function sha256Hex(input: string | Uint8Array): string {
 	return createHash("sha256").update(input).digest("hex");
 }
 
-export { normalizeRefId };
+export { createLayeredArtifactStore, normalizeRefId };
 
 export function hashLiveFile(sourcePath: string, cwd?: string): { resolvedPath: string; sha256: string | null } {
 	const resolvedPath = isAbsolute(sourcePath) ? sourcePath : resolve(cwd ?? process.cwd(), sourcePath);
@@ -32,6 +57,19 @@ export function hashLiveFile(sourcePath: string, cwd?: string): { resolvedPath: 
 		return { resolvedPath, sha256: sha256Hex(readFileSync(resolvedPath)) };
 	} catch {
 		return { resolvedPath, sha256: null };
+	}
+}
+
+export function readLiveFileText(sourcePath: string, cwd?: string): LiveFileSnapshot | undefined {
+	const resolvedPath = isAbsolute(sourcePath) ? sourcePath : resolve(cwd ?? process.cwd(), sourcePath);
+	try {
+		if (!existsSync(resolvedPath)) return undefined;
+		const st = statSync(resolvedPath);
+		if (!st.isFile() || st.size > MAX_SOURCE_HASH_BYTES) return undefined;
+		const buf = readFileSync(resolvedPath);
+		return { text: buf.toString("utf8"), sha256: sha256Hex(buf) };
+	} catch {
+		return undefined;
 	}
 }
 
@@ -63,11 +101,35 @@ function splitLinesPreserve(text: string): string[] {
  */
 export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStore {
 	readonly dbPath: string;
+	readonly readOnly: boolean;
 	private readonly db: DatabaseSync;
+	private readonly hasSourcesTable: boolean;
+	private readonly maxTotalBytes: number;
+	private readonly maxBlobCount: number;
+	private readonly minAgeMs: number;
+	private readonly gcIntervalPuts: number;
+	private readonly pinnedRefs?: () => ReadonlySet<string>;
+	private putsSinceGc = 0;
 	private closed = false;
 
-	constructor(dbPath = ":memory:") {
+	constructor(dbPath = ":memory:", opts: NodeArtifactStoreOptions = {}) {
 		this.dbPath = dbPath;
+		this.readOnly = opts.readOnly === true;
+		this.maxTotalBytes = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
+		this.maxBlobCount = opts.maxBlobCount ?? DEFAULT_MAX_BLOB_COUNT;
+		this.minAgeMs = opts.minAgeMs ?? DEFAULT_MIN_AGE_MS;
+		this.gcIntervalPuts = Math.max(1, opts.gcIntervalPuts ?? DEFAULT_GC_INTERVAL_PUTS);
+		this.pinnedRefs = opts.pinnedRefs;
+
+		if (this.readOnly) {
+			this.db = new DatabaseSync(dbPath, { readOnly: true });
+			const row = this.db
+				.prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'artifact_sources'`)
+				.get() as { ok?: number } | undefined;
+			this.hasSourcesTable = row?.ok === 1;
+			return;
+		}
+
 		if (dbPath !== ":memory:") {
 			mkdirSync(dirname(dbPath), { recursive: true });
 		}
@@ -76,6 +138,8 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
       PRAGMA busy_timeout = 5000;
+
+      DROP TABLE IF EXISTS artifact_chunks;
 
       CREATE TABLE IF NOT EXISTS artifact_blobs (
         ref TEXT PRIMARY KEY,
@@ -93,14 +157,17 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
       CREATE INDEX IF NOT EXISTS idx_artifact_blobs_created
         ON artifact_blobs(created_at_ms DESC);
 
-      CREATE TABLE IF NOT EXISTS artifact_chunks (
+      CREATE TABLE IF NOT EXISTS artifact_sources (
+        cwd TEXT NOT NULL,
+        source_path TEXT NOT NULL,
         ref TEXT NOT NULL,
-        chunk_idx INTEGER NOT NULL,
-        start_line INTEGER NOT NULL,
-        end_line INTEGER NOT NULL,
-        text TEXT NOT NULL,
-        PRIMARY KEY (ref, chunk_idx)
+        source_sha256 TEXT,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (cwd, source_path)
       );
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_sources_ref
+        ON artifact_sources(ref);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS artifact_fts USING fts5(
         ref UNINDEXED,
@@ -109,10 +176,15 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
         text
       );
     `);
+		this.hasSourcesTable = true;
 	}
 
 	put(rawText: string, options: PutArtifactOptions): ArtifactMeta {
+		if (this.readOnly) {
+			throw new Error(`Cannot write to read-only artifact store (${this.dbPath})`);
+		}
 		const sha256 = sha256Hex(rawText);
+		const nowMs = options.nowMs ?? Date.now();
 		const existing = this.db
 			.prepare(
 				`SELECT ref, sha256, tool_name, byte_len, line_count, source_path, source_sha256, label, created_at_ms
@@ -121,17 +193,38 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 			.get(sha256) as Record<string, unknown> | undefined;
 
 		const liveHash = options.sourcePath !== undefined ? hashLiveFile(options.sourcePath, options.cwd) : undefined;
+		const cwdKey = options.cwd ? resolve(options.cwd) : "";
+		const normSourcePath =
+			options.sourcePath !== undefined ? normalizeSliceKey(options.sourcePath, options.cwd) : undefined;
 
 		if (existing) {
-			if (liveHash?.sha256 && existing.source_sha256 !== liveHash.sha256) {
-				this.db
-					.prepare(`UPDATE artifact_blobs SET source_path = ?, source_sha256 = ? WHERE ref = ?`)
-					.run(options.sourcePath ?? null, liveHash.sha256, String(existing.ref));
+			const existingRef = String(existing.ref);
+			this.db.exec("BEGIN IMMEDIATE");
+			try {
+				this.db.prepare(`UPDATE artifact_blobs SET created_at_ms = ? WHERE ref = ?`).run(nowMs, existingRef);
+				if (normSourcePath !== undefined) {
+					this.db
+						.prepare(
+							`INSERT OR REPLACE INTO artifact_sources (cwd, source_path, ref, source_sha256, updated_at_ms)
+               VALUES (?, ?, ?, ?, ?)`,
+						)
+						.run(cwdKey, normSourcePath, existingRef, liveHash?.sha256 ?? null, nowMs);
+				}
+				this.db.exec("COMMIT");
+			} catch (err) {
+				try {
+					this.db.exec("ROLLBACK");
+				} catch {
+					// ignore rollback failure
+				}
+				throw err;
 			}
-			return this.rowToMeta({
-				...existing,
-				...(liveHash?.sha256 ? { source_path: options.sourcePath, source_sha256: liveHash.sha256 } : {}),
-			});
+			const baseMeta = this.rowToMeta({ ...existing, created_at_ms: nowMs });
+			return {
+				...baseMeta,
+				...(options.sourcePath ? { sourcePath: options.sourcePath } : {}),
+				...(liveHash?.sha256 ? { sourceSha256: liveHash.sha256 } : {}),
+			};
 		}
 
 		let prefixLen = 12;
@@ -148,7 +241,7 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 		const byteLen = Buffer.byteLength(rawText, "utf8");
 		const lineCount = lines.length;
 		const compressed = deflateSync(Buffer.from(rawText, "utf8"));
-		const createdAtMs = options.nowMs ?? Date.now();
+		const createdAtMs = nowMs;
 
 		this.db.exec("BEGIN IMMEDIATE");
 		try {
@@ -171,20 +264,24 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 					compressed,
 				);
 
-			const insertChunk = this.db.prepare(
-				`INSERT INTO artifact_chunks (ref, chunk_idx, start_line, end_line, text) VALUES (?, ?, ?, ?, ?)`,
-			);
+			if (normSourcePath !== undefined) {
+				this.db
+					.prepare(
+						`INSERT OR REPLACE INTO artifact_sources (cwd, source_path, ref, source_sha256, updated_at_ms)
+             VALUES (?, ?, ?, ?, ?)`,
+					)
+					.run(cwdKey, normSourcePath, ref, liveHash?.sha256 ?? null, createdAtMs);
+			}
+
 			const insertFts = this.db.prepare(
 				`INSERT INTO artifact_fts (ref, start_line, end_line, text) VALUES (?, ?, ?, ?)`,
 			);
 
-			for (let idx = 0, start = 0; start < lines.length; idx += 1, start += CHUNK_LINES) {
+			for (let start = 0; start < lines.length; start += CHUNK_LINES) {
 				const slice = lines.slice(start, start + CHUNK_LINES);
 				const startLine = start + 1;
 				const endLine = start + slice.length;
-				const chunkText = slice.join("\n");
-				insertChunk.run(ref, idx, startLine, endLine, chunkText);
-				insertFts.run(ref, startLine, endLine, chunkText);
+				insertFts.run(ref, startLine, endLine, slice.join("\n"));
 			}
 			this.db.exec("COMMIT");
 		} catch (err) {
@@ -194,6 +291,12 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 				// ignore rollback failure
 			}
 			throw err;
+		}
+
+		this.putsSinceGc += 1;
+		if (this.putsSinceGc >= this.gcIntervalPuts) {
+			this.putsSinceGc = 0;
+			this.runGc(nowMs);
 		}
 
 		return {
@@ -207,6 +310,68 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 			...((options.label ?? options.sourcePath) ? { label: options.label ?? options.sourcePath } : {}),
 			createdAtMs,
 		};
+	}
+
+	getLatestBySourcePath(sourcePath: string, cwd?: string): StoredArtifactEntry | undefined {
+		const normPath = normalizeSliceKey(sourcePath, cwd);
+		const cwdKey = cwd ? resolve(cwd) : "";
+		let ref: string | undefined;
+		let resolvedSourcePath = sourcePath;
+		let sourceSha256: string | undefined;
+
+		if (this.hasSourcesTable) {
+			const row = (this.db
+				.prepare(`SELECT ref, source_path, source_sha256 FROM artifact_sources WHERE cwd = ? AND source_path = ?`)
+				.get(cwdKey, normPath) ??
+				this.db
+					.prepare(
+						`SELECT ref, source_path, source_sha256 FROM artifact_sources WHERE source_path = ? ORDER BY updated_at_ms DESC LIMIT 1`,
+					)
+					.get(normPath)) as { ref?: string; source_path?: string; source_sha256?: string | null } | undefined;
+			if (row?.ref) {
+				ref = String(row.ref);
+				resolvedSourcePath = row.source_path ? String(row.source_path) : sourcePath;
+				if (typeof row.source_sha256 === "string" && row.source_sha256) {
+					sourceSha256 = row.source_sha256;
+				}
+			}
+		}
+
+		if (!ref) {
+			const legacy = this.db
+				.prepare(
+					`SELECT ref, source_path, source_sha256 FROM artifact_blobs
+           WHERE source_path = ? OR source_path = ?
+           ORDER BY created_at_ms DESC LIMIT 1`,
+				)
+				.get(sourcePath, normPath) as
+				| { ref?: string; source_path?: string; source_sha256?: string | null }
+				| undefined;
+			if (legacy?.ref) {
+				ref = String(legacy.ref);
+				resolvedSourcePath = legacy.source_path ? String(legacy.source_path) : sourcePath;
+				if (typeof legacy.source_sha256 === "string" && legacy.source_sha256) {
+					sourceSha256 = legacy.source_sha256;
+				}
+			}
+		}
+
+		if (!ref) return undefined;
+		const meta = this.getMeta(ref);
+		const text = this.readFullText(ref);
+		if (!meta || text === undefined) return undefined;
+		return {
+			meta: {
+				...meta,
+				sourcePath: resolvedSourcePath,
+				...(sourceSha256 ? { sourceSha256 } : {}),
+			},
+			text,
+		};
+	}
+
+	readLiveFile(sourcePath: string, cwd?: string): LiveFileSnapshot | undefined {
+		return readLiveFileText(sourcePath, cwd);
 	}
 
 	getMeta(rawRef: string): ArtifactMeta | undefined {
@@ -258,17 +423,57 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 
 		let staleSource: RecallResult["staleSource"];
 		const notices: string[] = [];
-		if (meta.sourcePath && meta.sourceSha256) {
-			const live = hashLiveFile(meta.sourcePath, options.cwd);
-			if (live.sha256 !== meta.sourceSha256) {
+		const checkedSources: Array<{ path: string; cwd?: string; sha256: string }> = [];
+		if (this.hasSourcesTable) {
+			const cwdKey = options.cwd ? resolve(options.cwd) : undefined;
+			const rows = (
+				cwdKey
+					? this.db
+							.prepare(
+								`SELECT cwd, source_path, source_sha256 FROM artifact_sources
+                 WHERE ref = ?
+                 ORDER BY CASE WHEN cwd = ? THEN 0 ELSE 1 END, updated_at_ms DESC
+                 LIMIT 8`,
+							)
+							.all(meta.ref, cwdKey)
+					: this.db
+							.prepare(
+								`SELECT cwd, source_path, source_sha256 FROM artifact_sources
+                 WHERE ref = ?
+                 ORDER BY updated_at_ms DESC
+                 LIMIT 8`,
+							)
+							.all(meta.ref)
+			) as Array<{ cwd?: string; source_path?: string; source_sha256?: string | null }>;
+			for (const row of rows) {
+				if (typeof row.source_path === "string" && typeof row.source_sha256 === "string" && row.source_sha256) {
+					checkedSources.push({
+						path: row.source_path,
+						...(typeof row.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
+						sha256: row.source_sha256,
+					});
+				}
+			}
+		}
+		if (checkedSources.length === 0 && meta.sourcePath && meta.sourceSha256) {
+			checkedSources.push({
+				path: meta.sourcePath,
+				...(options.cwd ? { cwd: options.cwd } : {}),
+				sha256: meta.sourceSha256,
+			});
+		}
+		for (const src of checkedSources) {
+			const live = hashLiveFile(src.path, src.cwd ?? options.cwd);
+			if (live.sha256 !== src.sha256) {
 				staleSource = {
-					path: meta.sourcePath,
-					snapshotSha256: meta.sourceSha256,
+					path: src.path,
+					snapshotSha256: src.sha256,
 					currentSha256: live.sha256,
 				};
 				notices.push(
-					`[stale snapshot: ${meta.sourcePath} changed on disk since ref:${meta.ref}; call read("${meta.sourcePath}") for live bytes]`,
+					`[stale snapshot: ${src.path} changed on disk since ref:${meta.ref}; call read("${src.path}") for live bytes]`,
 				);
+				break;
 			}
 		}
 
@@ -407,6 +612,57 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 		return [...new Set(top)];
 	}
 
+	private runGc(nowMs: number): void {
+		if (this.readOnly) return;
+		const cutoffMs = nowMs - this.minAgeMs;
+		const pinned = this.pinnedRefs?.();
+		this.db.exec("BEGIN IMMEDIATE");
+		try {
+			const totals = this.db
+				.prepare(`SELECT COUNT(*) AS cnt, COALESCE(SUM(LENGTH(zlib_bytes)), 0) AS total_bytes FROM artifact_blobs`)
+				.get() as { cnt?: number; total_bytes?: number } | undefined;
+			let cnt = Number(totals?.cnt ?? 0);
+			let totalBytes = Number(totals?.total_bytes ?? 0);
+			if (totalBytes <= this.maxTotalBytes && cnt <= this.maxBlobCount) {
+				this.db.exec("COMMIT");
+				return;
+			}
+
+			const candidates = this.db
+				.prepare(
+					`SELECT ref, LENGTH(zlib_bytes) AS zlen FROM artifact_blobs
+           WHERE created_at_ms < ?
+           ORDER BY created_at_ms ASC`,
+				)
+				.all(cutoffMs) as Array<{ ref?: string; zlen?: number }>;
+
+			const delBlob = this.db.prepare(`DELETE FROM artifact_blobs WHERE ref = ?`);
+			const delFts = this.db.prepare(`DELETE FROM artifact_fts WHERE ref = ?`);
+			const delSources = this.hasSourcesTable
+				? this.db.prepare(`DELETE FROM artifact_sources WHERE ref = ?`)
+				: undefined;
+
+			for (const row of candidates) {
+				if (totalBytes <= this.maxTotalBytes && cnt <= this.maxBlobCount) break;
+				const ref = typeof row.ref === "string" ? row.ref : undefined;
+				if (!ref || pinned?.has(ref)) continue;
+				delBlob.run(ref);
+				delFts.run(ref);
+				delSources?.run(ref);
+				cnt -= 1;
+				totalBytes = Math.max(0, totalBytes - Number(row.zlen ?? 0));
+			}
+			this.db.exec("COMMIT");
+		} catch (err) {
+			try {
+				this.db.exec("ROLLBACK");
+			} catch {
+				// ignore rollback failure
+			}
+			throw err;
+		}
+	}
+
 	private rowToMeta(row: Record<string, unknown>): ArtifactMeta {
 		return {
 			ref: String(row.ref),
@@ -422,6 +678,52 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 	}
 }
 
-export function openNodeSlidingWindowArtifactStore(dbPath?: string): NodeSlidingWindowArtifactStore {
-	return new NodeSlidingWindowArtifactStore(dbPath);
+export function openNodeSlidingWindowArtifactStore(
+	dbPath?: string,
+	opts?: NodeArtifactStoreOptions,
+): NodeSlidingWindowArtifactStore {
+	return new NodeSlidingWindowArtifactStore(dbPath, opts);
+}
+
+export type ExportCheckpointedForkOptions =
+	| (ExportCheckpointedForkStorageOptions & { readonly targetDbPath?: never; readonly owner?: never })
+	| (Omit<ExportCheckpointedForkStorageOptions, "targetStorage" | "closeTargetStorage"> & {
+			readonly targetDbPath: string;
+			readonly owner?: string;
+	  });
+
+/**
+ * Node SQLite wrapper around `exportCheckpointedForkToStorage` that opens a fresh Chord `Store` + `StoreStorage`
+ * at `targetDbPath`, commits the checkpointed fork, forces `PRAGMA locking_mode = NORMAL` + `PRAGMA wal_checkpoint(TRUNCATE)`,
+ * and closes the SQLite handle cleanly so sandboxed worker processes can immediately open it exclusively.
+ */
+export async function exportCheckpointedFork(
+	options: ExportCheckpointedForkOptions,
+	context: Context,
+): Promise<ExportCheckpointedForkResult> {
+	if ("targetStorage" in options && options.targetStorage !== undefined) {
+		return exportCheckpointedForkToStorage(options, context);
+	}
+	const targetDbPath = options.targetDbPath;
+	if (!targetDbPath) {
+		throw new Error("exportCheckpointedFork requires either targetStorage or targetDbPath");
+	}
+	const db = await openNodeSqliteDatabase(targetDbPath);
+	const store = await openStore(sqliteBackend(db), context);
+	const storage = await StoreStorage.open(store, options.owner ?? "pi", context);
+	try {
+		return await exportCheckpointedForkToStorage(
+			{
+				...options,
+				targetStorage: storage,
+				closeTargetStorage: false,
+			},
+			context,
+		);
+	} finally {
+		await storage.close(context).catch(() => {});
+		await db.run("PRAGMA locking_mode = NORMAL").catch(() => {});
+		await db.run("PRAGMA wal_checkpoint(TRUNCATE)").catch(() => {});
+		await store.close(context).catch(() => {});
+	}
 }
