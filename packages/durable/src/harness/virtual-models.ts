@@ -265,7 +265,9 @@ export function applyForkGuardToRoute(
 		...route,
 		thinkingLevel: guardedThinking,
 		...(effectiveSession !== undefined ? { sessionId: effectiveSession } : {}),
-		...(guard?.disableContinuation !== undefined ? { disableContinuation: guard.disableContinuation } : {}),
+		...(route.disableContinuation === true || guard?.disableContinuation !== undefined
+			? { disableContinuation: route.disableContinuation === true || guard?.disableContinuation === true }
+			: {}),
 		...(guard?.preserveToolDeclarations !== undefined
 			? { preserveToolDeclarations: guard.preserveToolDeclarations }
 			: {}),
