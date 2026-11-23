@@ -722,4 +722,73 @@ describe("@earendil-works/pi-ai/virtual-models", () => {
 		expect(callEvents.at(-1)?.toolName).toBe("custom_tool");
 		expect(callEvents.at(-1)?.turnIndex).toBe(7);
 	});
+
+	it("passes request purpose and turnIndex through executeRoutedStream onComplete on standard and hedged paths", async () => {
+		const { fast, deep, models } = setupModels();
+		fast.setResponses([
+			fauxAssistantMessage("fast done"),
+			async () => {
+				await new Promise((r) => setTimeout(r, 40));
+				return fauxAssistantMessage("slow loser");
+			},
+		]);
+		deep.setResponses([fauxAssistantMessage("hedged winner")]);
+
+		let useHedge = false;
+		const routed = withVirtualModelRouting(models, {
+			models: [
+				{
+					provider: "router",
+					id: "meta",
+					name: "Meta",
+					route: () =>
+						useHedge
+							? {
+									model: models.getModel("fast-prov", "fast-1")!,
+									thinkingLevel: "off",
+									hedge: { afterMs: 5, model: models.getModel("deep-prov", "deep-1")!, thinkingLevel: "low" },
+								}
+							: { model: models.getModel("fast-prov", "fast-1")!, thinkingLevel: "off" },
+				},
+			],
+		});
+
+		const completions: Array<{ purpose?: string; turnIndex?: number; provider: string }> = [];
+		const vm = routed.getModel("router", "meta")!;
+		await routed.completeSimple(
+			vm,
+			{ messages: [{ role: "user", content: "turn 0", timestamp: 1 }] },
+			attachVirtualRequestScope(
+				{},
+				{
+					purpose: "continuation",
+					turnIndex: 4,
+					onComplete: (c) => {
+						completions.push({ purpose: c.purpose, turnIndex: c.turnIndex, provider: c.message.provider });
+					},
+				},
+			),
+		);
+
+		useHedge = true;
+		await routed.completeSimple(
+			vm,
+			{ messages: [{ role: "user", content: "turn 1", timestamp: 2 }] },
+			attachVirtualRequestScope(
+				{},
+				{
+					purpose: "retry",
+					turnIndex: 9,
+					onComplete: (c) => {
+						completions.push({ purpose: c.purpose, turnIndex: c.turnIndex, provider: c.message.provider });
+					},
+				},
+			),
+		);
+
+		expect(completions).toEqual([
+			{ purpose: "continuation", turnIndex: 4, provider: "fast-prov" },
+			{ purpose: "retry", turnIndex: 9, provider: "deep-prov" },
+		]);
+	});
 });
