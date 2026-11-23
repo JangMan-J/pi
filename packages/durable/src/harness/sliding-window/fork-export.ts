@@ -25,7 +25,7 @@ import {
 } from "../virtual-models.ts";
 import { SlidingWindowLedgerDoc, SlidingWindowStateDoc, SlidingWindowTargetDoc } from "./docs.ts";
 import { reconstructLedgerFromView } from "./ledger.ts";
-import type { MechanicalLedger } from "./types.ts";
+import type { MechanicalLedger, SlidingWindowTargetValue } from "./types.ts";
 
 const ZERO_USAGE: Usage = {
 	input: 0,
@@ -152,6 +152,8 @@ export async function exportCheckpointedForkToStorage(
 	let parentLedger: MechanicalLedger | undefined;
 	let parentSessionId: string | undefined;
 	let parentVmState: VirtualModelStateValue | undefined;
+	let parentTargetDoc: SlidingWindowTargetValue | undefined;
+	let readTargetAsOf = false;
 
 	if (options.parentStorage) {
 		const entryRec = await options.parentStorage.entry(options.parent.id, options.at, context);
@@ -186,6 +188,24 @@ export async function exportCheckpointedForkToStorage(
 				atSeq,
 				context,
 			);
+			parentTargetDoc = await readConversationDocAsOf<SlidingWindowTargetValue>(
+				options.parentStorage,
+				sourceConvId,
+				SlidingWindowTargetDoc,
+				atSeq,
+				context,
+			);
+			readTargetAsOf = true;
+			if (!parentTargetDoc?.target && sourceConvId !== options.parent.id) {
+				const ownTargetDoc = await readConversationDocAsOf<SlidingWindowTargetValue>(
+					options.parentStorage,
+					options.parent.id,
+					SlidingWindowTargetDoc,
+					"current",
+					context,
+				);
+				if (ownTargetDoc?.target) parentTargetDoc = ownTargetDoc;
+			}
 			const providerDoc = await readConversationDocAsOf<{ sessionId?: string }>(
 				options.parentStorage,
 				options.parent.id,
@@ -210,6 +230,9 @@ export async function exportCheckpointedForkToStorage(
 	if (options.parentHarness) {
 		parentBaton ??= await options.parentHarness.snapshot(BatonStateDoc, options.parent.id, context);
 		parentVmState ??= await options.parentHarness.snapshot(VirtualModelStateDoc, options.parent.id, context);
+		if (!readTargetAsOf) {
+			parentTargetDoc ??= await options.parentHarness.snapshot(SlidingWindowTargetDoc, options.parent.id, context);
+		}
 		if (parentSessionId === undefined) {
 			parentSessionId = (await options.parentHarness.snapshot(ProviderDoc, options.parent.id, context))?.sessionId;
 		}
@@ -292,7 +315,21 @@ export async function exportCheckpointedForkToStorage(
 		options.dispatchSummary?.trim() || "Checkpoint exported. Executing scoped task directly on hydrated context.";
 	const assistantText = finalStudyNotes ? `${finalStudyNotes}\n\n${dispatchSummary}` : dispatchSummary;
 
-	const targetRef = options.targetModel ?? parentAgentState?.model ?? parentAgent.model;
+	const defaultSwSelection = options.slidingWindowModel ?? { provider: "sliding-window", modelId: "active" };
+	const isSlidingWindowSelectionRef = (ref: ModelRef | undefined): boolean =>
+		Boolean(
+			ref &&
+				((ref.provider === "sliding-window" && ref.modelId === "active") ||
+					(ref.provider === defaultSwSelection.provider && ref.modelId === defaultSwSelection.modelId)),
+		);
+	const candidateParentModel = parentAgentState?.model ?? parentAgent.model;
+	const fallbackParentModel =
+		candidateParentModel && !isSlidingWindowSelectionRef(candidateParentModel) ? candidateParentModel : undefined;
+	const inheritedTargetRef =
+		parentTargetDoc?.target && !isSlidingWindowSelectionRef(parentTargetDoc.target)
+			? parentTargetDoc.target
+			: fallbackParentModel;
+	const targetRef = options.targetModel ?? inheritedTargetRef;
 	const physicalTarget =
 		targetRef && !isVirtualRef(targetRef, options.models)
 			? options.models.getModel(targetRef.provider, targetRef.modelId)
@@ -369,7 +406,6 @@ export async function exportCheckpointedForkToStorage(
 			if (childToolNames !== undefined) {
 				agentDoc.tools = Array.isArray(childToolNames) ? [...childToolNames] : childToolNames;
 			}
-			const defaultSwSelection = options.slidingWindowModel ?? { provider: "sliding-window", modelId: "active" };
 			const hasSwModel = Boolean(options.models.getModel(defaultSwSelection.provider, defaultSwSelection.modelId));
 			const agentModel = slidingWindowEnabled && hasSwModel ? defaultSwSelection : targetRef;
 			if (agentModel !== undefined) agentDoc.model = agentModel;
@@ -395,8 +431,9 @@ export async function exportCheckpointedForkToStorage(
 					: {}),
 			};
 
-			if (options.targetModel !== undefined) {
-				(await tx.doc(SlidingWindowTargetDoc, root.id)).target = options.targetModel;
+			const persistedTarget = targetRef && !isSlidingWindowSelectionRef(targetRef) ? targetRef : undefined;
+			if (persistedTarget !== undefined) {
+				(await tx.doc(SlidingWindowTargetDoc, root.id)).target = persistedTarget;
 			}
 
 			const swDoc = await tx.doc(SlidingWindowStateDoc, root.id);
