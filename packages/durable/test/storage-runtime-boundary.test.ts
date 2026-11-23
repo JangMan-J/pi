@@ -45,4 +45,11 @@ describe("durable storage runtime boundaries", () => {
 		expect([...graph].some((path) => path.endsWith("/storage/jsonl/node.ts"))).toBe(false);
 		expect([...graph].some((path) => path.endsWith("/env/node.ts"))).toBe(false);
 	});
+
+	it("keeps virtual-models and portable sliding-window subpaths free of Node imports", async () => {
+		const vmGraph = await sourceGraph("harness/virtual-models.ts");
+		expect([...vmGraph].some((path) => path.endsWith("/sliding-window/node.ts"))).toBe(false);
+		const swGraph = await sourceGraph("harness/sliding-window.ts");
+		expect([...swGraph].some((path) => path.endsWith("/sliding-window/node.ts"))).toBe(false);
+	});
 });
