@@ -6,7 +6,7 @@ import { harvestPostReadStudyNotes } from "@earendil-works/pi-ai/virtual-models"
 import { type AnyDocToken, materializeDocument } from "../../documents.ts";
 import { AssistantEntry, SystemEntry, UserEntry } from "../../entries.ts";
 import type { Cursor, EntryId, Seq, Storage } from "../../types.ts";
-import { AgentDoc } from "../agent.ts";
+import { AgentDoc, resolveAgent, resolveSettings } from "../agent.ts";
 import { Harness } from "../harness.ts";
 import { ProviderDoc } from "../provider.ts";
 import type {
@@ -276,12 +276,15 @@ export async function exportCheckpointedForkToStorage(
 		.join("\n\n");
 	const finalStudyNotes = mergedNotes.length > 0 ? mergedNotes : undefined;
 
+	const resolvedParentAsOfAgent = parentAgentState
+		? resolveAgent(parentAgentState, options.registry.snapshot(), resolveSettings(options.settings), () => {})
+		: undefined;
 	const toolDecls: Tool[] = options.tools
 		? options.tools.map(toToolDeclaration)
-		: parentAgent.tools.map(toToolDeclaration);
+		: (resolvedParentAsOfAgent ?? parentAgent).tools.map(toToolDeclaration);
 	const childToolNames = options.tools
 		? options.tools.map((t) => t.name)
-		: (parentAgentState?.tools ?? parentAgent.tools.map((t) => t.name));
+		: (parentAgentState?.tools ?? (resolvedParentAsOfAgent ?? parentAgent).tools.map((t) => t.name));
 
 	const compactOutlines = formatCompactLedgerOutlines(effectiveLedger);
 	const userContent = compactOutlines ? `${options.taskPrompt}\n\n${compactOutlines}` : options.taskPrompt;
