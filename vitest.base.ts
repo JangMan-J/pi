@@ -35,6 +35,12 @@ export const workspaceSourcePaths = {
 	durableVirtualModels: fileURLToPath(
 		new URL("./packages/durable/src/harness/virtual-models.ts", import.meta.url),
 	),
+	durableSlidingWindow: fileURLToPath(
+		new URL("./packages/durable/src/harness/sliding-window.ts", import.meta.url),
+	),
+	durableSlidingWindowNode: fileURLToPath(
+		new URL("./packages/durable/src/harness/sliding-window/node.ts", import.meta.url),
+	),
 	aiApi: fileURLToPath(new URL("./packages/ai/src/api", import.meta.url)),
 	aiProviders: fileURLToPath(new URL("./packages/ai/src/providers", import.meta.url)),
 	aiUtils: fileURLToPath(new URL("./packages/ai/src/utils", import.meta.url)),
@@ -80,6 +86,11 @@ export default defineConfig({
 			{ find: /^@earendil-works\/pi-ai\/oauth$/, replacement: workspaceSourcePaths.aiOAuth },
 			{ find: /^@earendil-works\/pi-ai\/virtual-models$/, replacement: workspaceSourcePaths.aiVirtualModels },
 			{ find: /^@earendil-works\/pi-durable\/virtual-models$/, replacement: workspaceSourcePaths.durableVirtualModels },
+			{ find: /^@earendil-works\/pi-durable\/sliding-window$/, replacement: workspaceSourcePaths.durableSlidingWindow },
+			{
+				find: /^@earendil-works\/pi-durable\/sliding-window\/node$/,
+				replacement: workspaceSourcePaths.durableSlidingWindowNode,
+			},
 			{
 				find: /^@earendil-works\/pi-ai\/utils\/(.+)$/,
 				replacement: `${workspaceSourcePaths.aiUtils}/$1.ts`,

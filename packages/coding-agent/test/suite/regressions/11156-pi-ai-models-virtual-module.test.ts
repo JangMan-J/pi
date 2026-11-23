@@ -14,4 +14,15 @@ describe("pi-ai/models virtual module", () => {
 	it("exposes the same module under the legacy @mariozechner scope", () => {
 		expect(VIRTUAL_MODULES["@mariozechner/pi-ai/models"]).toBe(VIRTUAL_MODULES["@earendil-works/pi-ai/models"]);
 	});
+
+	it("exposes the pi-ai /virtual-models entrypoint under both scopes", () => {
+		const vm = VIRTUAL_MODULES["@earendil-works/pi-ai/virtual-models"] as
+			| { withVirtualModelRouting?: unknown; createVirtualModel?: unknown; attachVirtualRequestScope?: unknown }
+			| undefined;
+		expect(vm).toBeDefined();
+		expect(typeof vm?.withVirtualModelRouting).toBe("function");
+		expect(typeof vm?.createVirtualModel).toBe("function");
+		expect(typeof vm?.attachVirtualRequestScope).toBe("function");
+		expect(VIRTUAL_MODULES["@mariozechner/pi-ai/virtual-models"]).toBe(vm);
+	});
 });
