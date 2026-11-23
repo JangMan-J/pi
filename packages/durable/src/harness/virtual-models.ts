@@ -26,7 +26,7 @@ import {
 } from "@earendil-works/pi-ai/virtual-models";
 import { defineDoc } from "../documents.ts";
 import { AssistantEntry, CompactionEntry, ResetEntry } from "../entries.ts";
-import type { ConversationId, EntryId, Tx } from "../types.ts";
+import type { ConversationId, EntryId, TaskId, Tx } from "../types.ts";
 import { AgentDoc } from "./agent.ts";
 import { ProviderDoc } from "./provider.ts";
 import type { ContextView, Conversation, ConversationCreateOptions } from "./types.ts";
@@ -85,6 +85,17 @@ export const VirtualModelStateDoc = defineDoc<VirtualModelStateValue>({
 	checkpointWhen: () => true,
 });
 
+/** Durable staged baton snapshot persisted in `BatonStateDoc` by `BatonPrepTask`. */
+export type StagedBaton = {
+	firstKeptId: string | null;
+	proseDigest: string;
+	keptTokens: number;
+	preparedThroughId?: string;
+	provider: string;
+	modelId: string;
+	durationMs: number;
+};
+
 /**
  * State persisted in `BatonStateDoc` across `<250k` / `1M` context handoffs ("baton passes").
  * Readable in any hook via `await api.snapshot(BatonStateDoc, api.conversationId, context)` and writable
@@ -105,6 +116,12 @@ export type BatonStateValue = {
 	swappedAtTokens?: number;
 	/** Extension-defined JSON payload (e.g. incremental helper ledger, disk spill `ref:<digest>` index). */
 	data?: JsonValue;
+	/** In-flight durable `BatonPrepTask` ID, if one is currently synthesizing a staged baton. */
+	preparingTaskId?: TaskId;
+	/** Durably staged baton synthesis awaiting swap trigger. */
+	staged?: StagedBaton;
+	/** Post-read study notes harvested across aged turns for checkpoint fork continuity. */
+	harvestedStudyNotes?: string;
 };
 
 /** Per-conversation baton epoch & stable `firstUser` anchor (`cch` invariant); rewindable across forks. */
@@ -339,9 +356,11 @@ export {
 	createVirtualModel,
 	DEFAULT_PROMPT_CACHE_TTL_MS,
 	EMPTY_ROUTE_CACHE_SNAPSHOT,
+	ENCRYPTED_REASONING_COMMENTARY_PROMPT,
 	executeRoutedStream,
 	findLatestResponse,
 	getVirtualRequestScope,
+	harvestPostReadStudyNotes,
 	isStatefulRoutePurpose,
 	isStreamSuppressedRoute,
 	isVirtualModel,
@@ -360,7 +379,9 @@ export {
 	projectRoutedTranscript,
 	type ResolveVirtualModelOptions,
 	type RoutedStreamCompletion,
+	type StudyNoteHarvestOptions,
 	suppressAssistantText,
+	type ToolCallStartEvent,
 	VIRTUAL_MODEL_API,
 	type VirtualModelDefinition,
 	type VirtualModels,
@@ -378,6 +399,7 @@ export type {
 	BatonThinkingLevel,
 	BuildPreviewOptions,
 	EditRecord,
+	LiveFileSnapshot,
 	MechanicalLedger,
 	PutArtifactOptions,
 	RawTurn,
@@ -391,22 +413,31 @@ export type {
 	SlidingWindowConfig,
 	SlidingWindowForkOptions,
 	SlidingWindowHandle,
+	SlidingWindowHydratePolicy,
 	SlidingWindowInspection,
 	SlidingWindowOptions,
 	SlidingWindowPreviewContext,
 	SlidingWindowSectionContext,
 	SlidingWindowTarget,
 	SlidingWindowTargetContext,
+	SlidingWindowTargetValue,
 	StagedSlice,
+	StoredArtifactEntry,
 	SwapProbe,
 	SwapProjectionInput,
 	SymbolSpan,
 } from "./sliding-window/types.ts";
 export {
+	createLayeredArtifactStore,
 	createSlidingWindow,
 	createSlidingWindowFork,
 	DEFAULT_SLIDING_WINDOW_MODEL_ID,
 	DEFAULT_SLIDING_WINDOW_PROVIDER,
+	type ExportCheckpointedForkResult,
+	type ExportCheckpointedForkStorageOptions,
+	exportCheckpointedForkToStorage,
+	SlidingWindowLedgerDoc,
 	SlidingWindowStateDoc,
 	type SlidingWindowStateValue,
+	SlidingWindowTargetDoc,
 } from "./sliding-window.ts";

@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { openStore, sqliteBackend } from "@earendil-works/chord";
+import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import {
 	createModels,
 	fauxAssistantMessage,
@@ -11,6 +14,7 @@ import {
 	type Model,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { withVirtualModelRouting } from "@earendil-works/pi-ai/virtual-models";
 import {
 	AssistantEntry,
 	createRegistry,
@@ -19,6 +23,7 @@ import {
 	Harness,
 	MemoryStorage,
 	ResetEntry,
+	SystemEntry,
 	ToolResultEntry,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
@@ -29,6 +34,7 @@ import {
 	calibrationRatio,
 	chooseKeepFrom,
 	createEmptyLedger,
+	createLayeredArtifactStore,
 	createSlidingWindow,
 	createSlidingWindowFork,
 	EphemeralSliceStage,
@@ -42,6 +48,9 @@ import {
 	recordToolResult,
 	renderBatonSummary,
 	renderLedgerBlock,
+	SlidingWindowLedgerDoc,
+	SlidingWindowStateDoc,
+	SlidingWindowTargetDoc,
 	selectCut,
 	spillThresholdForTool,
 	swapErrorPct,
@@ -49,16 +58,18 @@ import {
 	viewTurns,
 } from "@earendil-works/pi-durable/sliding-window";
 import {
+	exportCheckpointedFork,
 	NodeSlidingWindowArtifactStore,
 	openNodeSlidingWindowArtifactStore,
 } from "@earendil-works/pi-durable/sliding-window/node";
+import { StoreStorage } from "@earendil-works/pi-durable/storage/store";
 import {
 	BatonStateDoc,
 	createSlidingWindowFork as createSlidingWindowForkFromVm,
 	createSlidingWindow as createSlidingWindowFromVm,
 	VirtualModelStateDoc,
 } from "@earendil-works/pi-durable/virtual-models";
-import { obj, str } from "@earendil-works/pi-schema";
+import { obj, opt, str } from "@earendil-works/pi-schema";
 import { describe, expect, it } from "vitest";
 import { allEntries, textOf, waitFor } from "./chat-support.ts";
 import { addSection, assistant, toolResult, user } from "./harness-support.ts";
@@ -988,5 +999,1013 @@ describe("sliding-window Harness integration", () => {
 
 		await sw.close();
 		await harness.close(context);
+	});
+
+	it("Fix 1: swaps autonomously mid-run during a 45-round single-prompt tool loop without ending unanswered or emitting AfterToolsDecision errors", async () => {
+		const mainProv = fauxProvider({
+			provider: "anthropic",
+			models: [{ id: "main-8k", contextWindow: 8_000, maxTokens: 1024 }],
+		});
+		const helperProv = fauxProvider({
+			provider: "anthropic-helper",
+			models: [{ id: "helper-fast", contextWindow: 16_000, maxTokens: 512 }],
+		});
+		const models = createModels();
+		models.setProvider(mainProv.provider);
+		models.setProvider(helperProv.provider);
+
+		// Unit check for Guardrail 1: assistant turns are safeCutPoint and midRun: true does not clamp back to lastUser === 0
+		const singlePromptTurns = [
+			turnFromMessages("u0", [{ role: "user", content: "Do 45 tool rounds" }]),
+			turnFromMessages("a1", [
+				{ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "a.ts" } }] },
+			]),
+			turnFromMessages("r1", [
+				{ role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "ok" }] },
+			]),
+			turnFromMessages("a2", [
+				{ role: "assistant", content: [{ type: "toolCall", id: "t2", name: "read", arguments: { path: "b.ts" } }] },
+			]),
+			turnFromMessages("r2", [
+				{ role: "toolResult", toolCallId: "t2", toolName: "read", content: [{ type: "text", text: "ok" }] },
+			]),
+		];
+		expect(singlePromptTurns[1]!.safeCutPoint).toBe(true);
+		expect(chooseKeepFrom({ stagedFirstKeptId: "a2", turns: singlePromptTurns, midRun: true })).toBe("a2");
+		expect(
+			chooseKeepFrom({ stagedFirstKeptId: null, preparedThroughId: "r1", turns: singlePromptTurns, midRun: true }),
+		).toBe("a2");
+
+		let round = 0;
+		const seenMsgCounts: number[] = [];
+		mainProv.setResponses(
+			Array.from({ length: 46 }, () => (ctx: TranscriptContext) => {
+				round += 1;
+				seenMsgCounts.push(ctx.messages.length);
+				const approxTokens = Math.max(400, ctx.messages.length * 140);
+				if (round <= 45) {
+					return {
+						...fauxAssistantMessage(
+							[
+								{ type: "thinking", thinking: `Round ${round} study invariant ${"x".repeat(120)}` },
+								fauxToolCall("read", { path: `src/file_${round}.ts` }),
+							],
+							{ stopReason: "toolUse" },
+						),
+						usage: {
+							input: approxTokens,
+							output: 60,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: approxTokens + 60,
+							cost: { input: 0.001, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.002 },
+						},
+					};
+				}
+				return fauxAssistantMessage("All 45 rounds complete.");
+			}),
+		);
+		helperProv.setResponses(
+			Array.from({ length: 12 }, (_, idx) => ({
+				...fauxAssistantMessage(`- Mid-run baton digest #${idx + 1}`),
+				usage: {
+					input: 220,
+					output: 40,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 260,
+					cost: { input: 0.0002, output: 0.0002, cacheRead: 0, cacheWrite: 0, total: 0.0004 },
+				},
+			})),
+		);
+
+		const readTool = defineTool({
+			name: "read",
+			description: "Read file",
+			parameters: obj({ path: str() }),
+			execute: async (args) => ({ output: [{ type: "text", text: `contents of ${args.path}` }] }),
+		});
+
+		const sw = createSlidingWindow({
+			batonModel: "anthropic-helper/helper-fast",
+			softCeilingTokens: 450,
+			hardCeilingTokens: 900,
+			keepRecentTokens: 180,
+			keepTail: true,
+		});
+		const routed = sw.wrapModels(models);
+		const registry = createRegistry();
+		registry.install(defineExtension({ name: "test.tools", tools: [readTool] }));
+		registry.install(sw.extension);
+
+		const reports: unknown[] = [];
+		const harness = await Harness.open(
+			new MemoryStorage(),
+			{
+				models: routed,
+				registry,
+				settings: { compaction: { enabled: false } },
+				onReport: (err) => reports.push(err),
+			},
+			context,
+		);
+		harness.resume();
+		const root = await harness.root(context, {
+			agent: { model: sw.selection },
+		});
+		await root.configure({ model: models.getModel("anthropic", "main-8k") ? sw.selection : sw.selection }, context);
+		await root.commit(async (tx) => {
+			(await tx.doc(SlidingWindowTargetDoc, root.id)).target = { provider: "anthropic", modelId: "main-8k" };
+		}, context);
+
+		const submission = await root.submit({ type: "input", content: "Run 45 autonomous read rounds" }, context);
+		const result = await submission.wait(context);
+		await root.waitForIdle(context);
+
+		expect(result.status, `result=${JSON.stringify(result)} reports=${JSON.stringify(reports)} round=${round}`).toBe(
+			"done",
+		);
+		expect(round).toBe(46);
+		expect(reports).toEqual([]);
+
+		const entries = await allEntries(root);
+		const resets = entries.filter((e) => ResetEntry.is(e));
+		expect(resets.length).toBeGreaterThanOrEqual(2);
+		for (const r of resets) {
+			// Kept tail starts on an assistant entry (safeCutPoint: true) rather than user[0]
+			expect(r.head).toBeDefined();
+			expect(r.head).not.toBe(r.id);
+		}
+		// Verify context message count dropped mid-run due to ResetEntry swaps
+		expect(Math.max(...seenMsgCounts)).toBeLessThan(35);
+
+		const baton = await harness.snapshot(BatonStateDoc, root.id, context);
+		expect(baton?.epoch).toBeGreaterThanOrEqual(2);
+		expect(baton?.harvestedStudyNotes).toContain("<study_notes>");
+
+		const usage = await harness.snapshot(UsageDoc, root.id, context);
+		expect(usage?.sidecars?.["baton:anthropic-helper/helper-fast"]).toBeDefined();
+
+		await sw.close();
+		await harness.close(context);
+	});
+
+	it("Fix 2 & Fix 3: persists SlidingWindowLedgerDoc across restart and asOf forks, records BatonPrepTask sidecar spend on cancel/restart, and guards stale epoch", async () => {
+		const mainProv = fauxProvider({
+			provider: "openai",
+			models: [{ id: "main-4k", contextWindow: 4_000, maxTokens: 512 }],
+		});
+		const helperProv = fauxProvider({
+			provider: "openai-helper",
+			models: [{ id: "mini-helper", contextWindow: 8_000, maxTokens: 512 }],
+		});
+		const models = createModels();
+		models.setProvider(mainProv.provider);
+		models.setProvider(helperProv.provider);
+
+		const dir = mkdtempSync(join(tmpdir(), "sw-fix23-"));
+		const dbPath = join(dir, "session.sqlite");
+		try {
+			const readTool = defineTool({
+				name: "read",
+				description: "Read file",
+				parameters: obj({ path: str() }),
+				execute: async (args) => ({ output: [{ type: "text", text: `big ${args.path} ${"x".repeat(400)}` }] }),
+			});
+			const editTool = defineTool({
+				name: "edit",
+				description: "Edit file",
+				parameters: obj({ path: str() }),
+				execute: async (args) => ({ output: [{ type: "text", text: `edited ${args.path}` }] }),
+			});
+
+			// Epoch 0 mid-epoch persistence & fork(at)
+			let cancelSwap = true;
+			const sw1 = createSlidingWindow({
+				batonModel: "openai-helper/mini-helper",
+				softCeilingTokens: 150,
+				hardCeilingTokens: 900,
+				keepRecentTokens: 60,
+				spillThresholdBytes: 50,
+				onBeforeSwap: () => (cancelSwap ? { cancel: true } : undefined),
+			});
+			let routed = sw1.wrapModels(models);
+			let reg = createRegistry();
+			reg.install(defineExtension({ name: "test.tools", tools: [readTool, editTool] }));
+			reg.install(sw1.extension);
+
+			mainProv.setResponses([
+				{
+					...fauxAssistantMessage([fauxToolCall("read", { path: "alpha.ts" })], { stopReason: "toolUse" }),
+					usage: {
+						input: 1_100,
+						output: 20,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 1_120,
+						cost: { input: 0.001, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.002 },
+					},
+				},
+				fauxAssistantMessage("Read alpha done."),
+			]);
+			helperProv.setResponses([
+				{
+					...fauxAssistantMessage("- Prepared digest 1"),
+					usage: {
+						input: 150,
+						output: 30,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 180,
+						cost: { input: 0.0005, output: 0.0005, cacheRead: 0, cacheWrite: 0, total: 0.001 },
+					},
+				},
+			]);
+
+			const store1 = await StoreStorage.open(
+				await openStore(sqliteBackend(await openNodeSqliteDatabase(dbPath)), context),
+				"pi",
+				context,
+			);
+			const harness1 = await Harness.open(
+				store1,
+				{ models: routed, registry: reg, settings: { compaction: { enabled: false } } },
+				context,
+			);
+			harness1.resume();
+			const root1 = await harness1.root(context, { agent: { model: sw1.selection } });
+			await root1.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, root1.id)).target = { provider: "openai", modelId: "main-4k" };
+			}, context);
+
+			await (await root1.submit({ type: "input", content: "Read alpha" }, context)).wait(context);
+			await root1.waitForIdle(context);
+			const atAlpha = (await allEntries(root1)).findLast((e) => AssistantEntry.is(e))!.id;
+
+			// Now do a second read + edit after atAlpha
+			mainProv.setResponses([
+				fauxAssistantMessage(
+					[fauxToolCall("read", { path: "beta.ts" }), fauxToolCall("edit", { path: "beta.ts" })],
+					{
+						stopReason: "toolUse",
+					},
+				),
+				fauxAssistantMessage("Read+edit beta done."),
+			]);
+			await (await root1.submit({ type: "input", content: "Read and edit beta" }, context)).wait(context);
+			await root1.waitForIdle(context);
+
+			// Cancel swap via onBeforeSwap({ cancel: true }) on next turn while BatonPrepTask already recorded sidecar spend
+			const prepTaskId = (await harness1.snapshot(BatonStateDoc, root1.id, context))?.preparingTaskId;
+			if (prepTaskId !== undefined) await harness1.waitForTask(prepTaskId, context);
+
+			mainProv.setResponses([fauxAssistantMessage("Cancelled swap still answered.")]);
+			await (await root1.submit({ type: "input", content: "Trigger cancelled swap" }, context)).wait(context);
+			await root1.waitForIdle(context);
+
+			const usageAfterCancel = await harness1.snapshot(UsageDoc, root1.id, context);
+			expect(usageAfterCancel?.sidecars?.["baton:openai-helper/mini-helper"]?.totalTokens).toBeGreaterThan(0);
+
+			// Fork at atAlpha: must inherit alpha.ts only, NOT beta.ts
+			const fork = await createSlidingWindowFork(root1, atAlpha, { ownership: { kind: "ownerless" } }, context);
+			const forkLedger = await harness1.snapshot(SlidingWindowLedgerDoc, fork.id, context);
+			expect(forkLedger?.filesRead.map((r) => r.path)).toEqual(["alpha.ts"]);
+			expect(forkLedger?.filesEdited).toEqual([]);
+
+			await sw1.close();
+			await harness1.close(context);
+
+			// Restart Harness + fresh createSlidingWindow on same SQLite DB (before any swap, epoch === 0)
+			cancelSwap = false;
+			let helperCallsAfterRestart = 0;
+			helperProv.setResponses([
+				() => {
+					helperCallsAfterRestart += 1;
+					return fauxAssistantMessage("- Should not run if staged survived");
+				},
+			]);
+			mainProv.setResponses([
+				{
+					...fauxAssistantMessage("Post-restart response"),
+					usage: {
+						input: 1_200,
+						output: 20,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 1_220,
+						cost: { input: 0.001, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.002 },
+					},
+				},
+				fauxAssistantMessage("Second turn after staged restart"),
+			]);
+
+			const sw2 = createSlidingWindow({
+				batonModel: "openai-helper/mini-helper",
+				softCeilingTokens: 150,
+				hardCeilingTokens: 900,
+				keepRecentTokens: 60,
+				spillThresholdBytes: 50,
+			});
+			routed = sw2.wrapModels(models);
+			reg = createRegistry();
+			reg.install(defineExtension({ name: "test.tools", tools: [readTool, editTool] }));
+			reg.install(sw2.extension);
+
+			const store2 = await StoreStorage.open(
+				await openStore(sqliteBackend(await openNodeSqliteDatabase(dbPath)), context),
+				"pi",
+				context,
+			);
+			const harness2 = await Harness.open(
+				store2,
+				{ models: routed, registry: reg, settings: { compaction: { enabled: false } } },
+				context,
+			);
+			harness2.resume();
+			const root2 = await harness2.root(context);
+
+			// Trigger BatonPrepTask again on a fresh high-token turn, wait for idle, restart BEFORE swap, verify staged survives restart!
+			helperCallsAfterRestart = 0;
+			helperProv.setResponses([
+				() => {
+					helperCallsAfterRestart += 1;
+					return {
+						...fauxAssistantMessage("- Survives restart digest"),
+						usage: {
+							input: 180,
+							output: 25,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 205,
+							cost: { input: 0.0005, output: 0.0005, cacheRead: 0, cacheWrite: 0, total: 0.001 },
+						},
+					};
+				},
+			]);
+			await (await root2.submit({ type: "input", content: "Prepare new staged baton" }, context)).wait(context);
+			await root2.waitForIdle(context);
+			const prep2 = (await harness2.snapshot(BatonStateDoc, root2.id, context))?.preparingTaskId;
+			if (prep2 !== undefined) await harness2.waitForTask(prep2, context);
+			expect(helperCallsAfterRestart).toBe(1);
+			expect(sw2.inspect(root2.id).ledger.filesRead.map((r) => r.path)).toEqual(["alpha.ts", "beta.ts"]);
+			const stagedBeforeRestart = (await harness2.snapshot(BatonStateDoc, root2.id, context))?.staged;
+			expect(stagedBeforeRestart?.proseDigest).toBe("- Survives restart digest");
+
+			await sw2.close();
+			await harness2.close(context);
+
+			// Reopen a 3rd time and submit — swap must consume persisted BatonStateDoc.staged without re-calling helper!
+			const sw3 = createSlidingWindow({
+				batonModel: "openai-helper/mini-helper",
+				softCeilingTokens: 150,
+				hardCeilingTokens: 900,
+				keepRecentTokens: 60,
+				spillThresholdBytes: 50,
+			});
+			const routed3 = sw3.wrapModels(models);
+			const reg3 = createRegistry();
+			reg3.install(defineExtension({ name: "test.tools", tools: [readTool, editTool] }));
+			reg3.install(sw3.extension);
+			const store3 = await StoreStorage.open(
+				await openStore(sqliteBackend(await openNodeSqliteDatabase(dbPath)), context),
+				"pi",
+				context,
+			);
+			const harness3 = await Harness.open(
+				store3,
+				{ models: routed3, registry: reg3, settings: { compaction: { enabled: false } } },
+				context,
+			);
+			harness3.resume();
+			const root3 = await harness3.root(context);
+			await (await root3.submit({ type: "input", content: "Consume staged baton after restart" }, context)).wait(
+				context,
+			);
+			await root3.waitForIdle(context);
+
+			expect(helperCallsAfterRestart).toBe(1);
+			const batonAfter = await harness3.snapshot(BatonStateDoc, root3.id, context);
+			expect(batonAfter?.epoch).toBe(1);
+			expect(batonAfter?.staged).toBeUndefined();
+			expect(batonAfter?.handoffSummary).toContain("- Survives restart digest");
+
+			await sw3.close();
+			await harness3.close(context);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("Fix 4 & B2: drops artifact_chunks, separates artifact_sources, enforces GC with pinnedRefs, and layers readOnly fallback stores", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sw-fix4-"));
+		const parentDbPath = join(dir, "parent.artifacts.sqlite");
+		const childDbPath = join(dir, "child.artifacts.sqlite");
+		try {
+			// Seed legacy artifact_chunks table and verify writable open drops it
+			const rawSeed = new DatabaseSync(parentDbPath);
+			rawSeed.exec(
+				`CREATE TABLE artifact_chunks (ref TEXT NOT NULL, chunk_idx INTEGER NOT NULL, start_line INTEGER, end_line INTEGER, text TEXT, PRIMARY KEY (ref, chunk_idx))`,
+			);
+			rawSeed.close();
+
+			const fileA = join(dir, "a", "index.ts");
+			const fileB = join(dir, "b", "index.ts");
+			mkdirSync(join(dir, "a"), { recursive: true });
+			mkdirSync(join(dir, "b"), { recursive: true });
+			const sharedBody = Array.from({ length: 10 }, (_, i) => `export const line${i} = ${i};`).join("\n");
+			writeFileSync(fileA, sharedBody);
+			writeFileSync(fileB, sharedBody);
+
+			let pinned = new Set<string>();
+			const store = openNodeSlidingWindowArtifactStore(parentDbPath, {
+				maxTotalBytes: 80,
+				minAgeMs: 1_000,
+				gcIntervalPuts: 1,
+				pinnedRefs: () => pinned,
+			});
+
+			const metaA = store.put(sharedBody, { toolName: "read", sourcePath: "a/index.ts", cwd: dir, nowMs: 10_000 });
+			const metaB = store.put(sharedBody, { toolName: "read", sourcePath: "b/index.ts", cwd: dir, nowMs: 10_000 });
+			expect(metaA.ref).toBe(metaB.ref);
+			expect(store.getLatestBySourcePath("a/index.ts", dir)?.meta.sourcePath).toContain("a/index.ts");
+			expect(store.getLatestBySourcePath("b/index.ts", dir)?.meta.sourcePath).toContain("b/index.ts");
+
+			// Mutate a/index.ts on disk -> recall detects staleSource
+			writeFileSync(fileA, `${sharedBody}\nexport const mutated = true;`);
+			expect(store.recall({ ref: metaA.ref, cwd: dir }).staleSource).toBeDefined();
+
+			// GC evicts unpinned aged blobs while sparing pinnedRefs
+			pinned = new Set([metaA.ref]);
+			const evictable = store.put("evictable old blob ".repeat(12), { toolName: "bash", nowMs: 1_000 });
+			const triggerGc = store.put("newest fresh blob ".repeat(12), { toolName: "bash", nowMs: 100_000 });
+			expect(store.getMeta(metaA.ref)).toBeDefined();
+			expect(store.getMeta(evictable.ref)).toBeUndefined();
+			expect(store.getMeta(triggerGc.ref)).toBeDefined();
+			store.close();
+
+			// Verify artifact_chunks is absent
+			const inspectDb = new DatabaseSync(parentDbPath, { readOnly: true });
+			const chunksRow = inspectDb
+				.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'artifact_chunks'`)
+				.get();
+			expect(chunksRow).toBeUndefined();
+			const sourcesCount = inspectDb.prepare(`SELECT COUNT(*) AS cnt FROM artifact_sources`).get() as {
+				cnt: number;
+			};
+			expect(sourcesCount.cnt).toBe(2);
+			inspectDb.close();
+
+			// chmod 0444 parent DB -> open readOnly + createLayeredArtifactStore
+			chmodSync(parentDbPath, 0o444);
+			const roParent = openNodeSlidingWindowArtifactStore(parentDbPath, { readOnly: true });
+			expect(() => roParent.put("nope", { toolName: "read" })).toThrow(/read-only/);
+			expect(roParent.recall({ ref: metaA.ref, cwd: dir }).found).toBe(true);
+
+			const writableChild = openNodeSlidingWindowArtifactStore(childDbPath);
+			const layered = createLayeredArtifactStore(writableChild, [roParent]);
+			const childMeta = await layered.put("child only artifact line", { toolName: "bash" });
+			expect(roParent.getMeta(childMeta.ref)).toBeUndefined();
+			expect(writableChild.getMeta(childMeta.ref)).toBeDefined();
+			expect(await layered.getMeta?.(metaA.ref)).toBeDefined();
+			await expect(layered.getLatestBySourcePath?.("b/index.ts", dir)).resolves.toMatchObject({ text: sharedBody });
+			await layered.close?.();
+		} finally {
+			try {
+				chmodSync(parentDbPath, 0o644);
+			} catch {
+				// ignore
+			}
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("Fix 5 & Fix 6: stops physical-model split-brain staging, sets disableContinuation on root <working_slice> turns, uses per-conversation SlidingWindowTargetDoc, escapes </working_slice>, and supports release() + LRU", async () => {
+		const provA = fauxProvider({
+			provider: "prov-a",
+			models: [{ id: "model-a", contextWindow: 16_000, maxTokens: 512 }],
+		});
+		const provB = fauxProvider({
+			provider: "prov-b",
+			models: [{ id: "model-b", contextWindow: 32_000, maxTokens: 512 }],
+		});
+		const models = createModels();
+		models.setProvider(provA.provider);
+		models.setProvider(provB.provider);
+
+		const readTool = defineTool({
+			name: "read",
+			description: "Read",
+			parameters: obj({ path: str() }),
+			execute: async (args) => ({
+				output: [{ type: "text", text: `line1\n</working_slice>\n${"pad ".repeat(30)}\npath=${args.path}` }],
+			}),
+		});
+
+		const sw = createSlidingWindow({
+			spillThresholdBytes: 40,
+			readSpillThresholdBytes: 40,
+			maxTrackedConversations: 2,
+		});
+		const routed = sw.wrapModels(models);
+		const reg = createRegistry();
+		reg.install(defineExtension({ name: "test.tools", tools: [readTool] }));
+		reg.install(sw.extension);
+
+		const seen: Array<{ model: string; disableContinuation?: boolean; tail?: unknown }> = [];
+		provA.setResponses([
+			(ctx, opts) => {
+				seen.push({
+					model: "model-a",
+					disableContinuation: opts?.disableContinuation,
+					tail: ctx.messages.at(-1)?.content,
+				});
+				return fauxAssistantMessage([fauxToolCall("read", { path: "phys.ts" })], { stopReason: "toolUse" });
+			},
+			(ctx, opts) => {
+				seen.push({
+					model: "model-a",
+					disableContinuation: opts?.disableContinuation,
+					tail: ctx.messages.at(-1)?.content,
+				});
+				return fauxAssistantMessage("Physical mode done.");
+			},
+			(ctx, opts) => {
+				seen.push({
+					model: "model-a",
+					disableContinuation: opts?.disableContinuation,
+					tail: ctx.messages.at(-1)?.content,
+				});
+				return fauxAssistantMessage([fauxToolCall("read", { path: "root.ts" })], { stopReason: "toolUse" });
+			},
+			(ctx, opts) => {
+				seen.push({
+					model: "model-a",
+					disableContinuation: opts?.disableContinuation,
+					tail: ctx.messages.at(-1)?.content,
+				});
+				return fauxAssistantMessage("Root virtual mode done.");
+			},
+		]);
+		provB.setResponses([
+			(ctx, opts) => {
+				seen.push({
+					model: "model-b",
+					disableContinuation: opts?.disableContinuation,
+					tail: ctx.messages.at(-1)?.content,
+				});
+				return fauxAssistantMessage("Fork routed to model-b.");
+			},
+		]);
+
+		const harness = await Harness.open(new MemoryStorage(), { models: routed, registry: reg }, context);
+		harness.resume();
+
+		// 1. Direct physical AgentDoc.model -> spills with [Call recall...] WITHOUT staging or claiming active working set
+		const physConv = await harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: { provider: "prov-a", modelId: "model-a" } } },
+			context,
+		);
+		await (await physConv.submit({ type: "input", content: "Read physical" }, context)).wait(context);
+		await physConv.waitForIdle(context);
+		const physToolResult = textOf((await allEntries(physConv)).find((e) => ToolResultEntry.is(e))?.model?.[0]);
+		expect(physToolResult).toContain("recall(");
+		expect(physToolResult).not.toContain("active working set");
+		expect(sw.inspect(physConv.id).stagedSlices).toBe(0);
+
+		// 2. Root sliding-window with SlidingWindowTargetDoc -> prov-a/model-a; escapes </working_slice> and sets disableContinuation: true
+		const root = await harness.root(context, { agent: { model: sw.selection } });
+		await root.commit(async (tx) => {
+			(await tx.doc(SlidingWindowTargetDoc, root.id)).target = { provider: "prov-a", modelId: "model-a" };
+		}, context);
+		await (await root.submit({ type: "input", content: "Read virtual root" }, context)).wait(context);
+		await root.waitForIdle(context);
+		const rootTurnWithSlice = seen.find((s) => typeof s.tail === "string" && s.tail.includes("<working_slice"));
+		expect(rootTurnWithSlice).toBeDefined();
+		expect(rootTurnWithSlice?.disableContinuation).toBe(true);
+		expect(String(rootTurnWithSlice?.tail)).toContain("<\\/working_slice>");
+
+		// 3. Child fork switches SlidingWindowTargetDoc to prov-b/model-b independently from root
+		const atRoot = (await allEntries(root)).findLast((e) => AssistantEntry.is(e))!.id;
+		const fork = await createSlidingWindowFork(
+			root,
+			atRoot,
+			{ ownership: { kind: "ownerless" }, target: { provider: "prov-b", modelId: "model-b" } },
+			context,
+		);
+		await (await fork.submit({ type: "input", content: "Run on fork target" }, context)).wait(context);
+		await fork.waitForIdle(context);
+		expect(seen.at(-1)?.model).toBe("model-b");
+
+		// 4. release() & LRU eviction cap (maxTrackedConversations = 2)
+		sw.release(fork.id);
+		sw.inspect("conv-extra-1");
+		sw.inspect("conv-extra-2");
+		expect(sw.inspect(fork.id).epoch).toBe(0);
+
+		await sw.close();
+		await harness.close(context);
+	});
+
+	it("Part II B1–B4: composes inner virtual model (onToolCallStart + onOutcome(toolResults)), hydrates scoped paths with widen delta, and exports checkpointed fork across SQLite DBs", async () => {
+		const fastProv = fauxProvider({
+			provider: "fast",
+			models: [{ id: "fast-1", contextWindow: 16_000, maxTokens: 512 }],
+		});
+		const strongProv = fauxProvider({
+			provider: "strong",
+			models: [{ id: "strong-1", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const models = createModels();
+		models.setProvider(fastProv.provider);
+		models.setProvider(strongProv.provider);
+
+		const toolCallStarts: string[] = [];
+		const escalatedDef = {
+			provider: "router",
+			id: "escalate",
+			name: "Escalate",
+			route(req: { state?: unknown }) {
+				const errCount = (req.state as { errors?: number } | undefined)?.errors ?? 0;
+				return errCount >= 1
+					? { model: models.getModel("strong", "strong-1")!, thinkingLevel: "off" as const }
+					: { model: models.getModel("fast", "fast-1")!, thinkingLevel: "off" as const };
+			},
+			onToolCallStart(ev: { toolName: string }) {
+				toolCallStarts.push(ev.toolName);
+			},
+			onOutcome(outcome: { toolResults: readonly { isError: boolean }[]; state?: unknown }) {
+				const prev = (outcome.state as { errors?: number } | undefined)?.errors ?? 0;
+				const added = outcome.toolResults.filter((r) => r.isError).length;
+				return { errors: prev + added };
+			},
+		};
+
+		const dir = mkdtempSync(join(tmpdir(), "sw-b14-"));
+		const exportDbPath = join(dir, "fork.sqlite");
+		try {
+			writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+			writeFileSync(join(dir, "b.ts"), "export const b = 2;\n");
+
+			const failTool = defineTool({
+				name: "check",
+				description: "Check",
+				parameters: obj({ ok: opt(str()) }),
+				execute: async (args) =>
+					args.ok === "yes"
+						? { output: [{ type: "text", text: "ok" }] }
+						: { output: [{ type: "text", text: "failed" }], isError: true },
+			});
+			const readTool = defineTool({
+				name: "read",
+				description: "Read",
+				parameters: obj({ path: str() }),
+				execute: async (args) => ({ output: [{ type: "text", text: `read:${args.path}` }] }),
+			});
+
+			const sw = createSlidingWindow({ cwd: dir });
+			const routed = withVirtualModelRouting(models, { models: [escalatedDef] });
+			sw.wrapModels(routed);
+			const reg = createRegistry();
+			reg.install(defineExtension({ name: "test.tools", tools: [failTool, readTool] }));
+			reg.install(sw.extension);
+
+			const parentTailMessages: string[] = [];
+			fastProv.setResponses([
+				(ctx) => {
+					parentTailMessages.push(String(ctx.messages.at(-1)?.content));
+					return fauxAssistantMessage(
+						[
+							{ type: "thinking", thinking: "Parent study invariant about a.ts and b.ts ".repeat(5) },
+							fauxToolCall("read", { path: "a.ts" }),
+						],
+						{ stopReason: "toolUse" },
+					);
+				},
+				() =>
+					fauxAssistantMessage(
+						[
+							{ type: "thinking", thinking: "Parent study invariant about a.ts and b.ts ".repeat(5) },
+							{ type: "text", text: "Parent ready for fork." },
+						],
+						{ timestamp: 88_000 },
+					),
+			]);
+
+			const parentHarness = await Harness.open(
+				new MemoryStorage(),
+				{
+					models: routed,
+					registry: reg,
+					env: async () =>
+						({
+							readTextFile: async (p: string) => {
+								const { readFileSync } = await import("node:fs");
+								return { ok: true as const, value: readFileSync(p, "utf8") };
+							},
+						}) as never,
+				},
+				context,
+			);
+			parentHarness.resume();
+			const parent = await parentHarness.root(context, { agent: { model: sw.selection, cwd: dir } });
+			await parent.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, parent.id)).target = { provider: "fast", modelId: "fast-1" };
+			}, context);
+			await (await parent.submit({ type: "input", content: "Study codebase" }, context)).wait(context);
+			await parent.waitForIdle(context);
+			const atEntry = (await allEntries(parent)).findLast((e) => AssistantEntry.is(e))!.id;
+
+			// Export checkpointed fork with owner: "cellar" -> SQLite DB -> reopen in isolated Harness
+			const exported = await exportCheckpointedFork(
+				{
+					parent,
+					parentHarness,
+					at: atEntry,
+					targetDbPath: exportDbPath,
+					owner: "cellar",
+					models: routed,
+					registry: reg,
+					systemPrompt: "Child system prompt",
+					tools: [failTool, readTool, sw.recallTool],
+					taskPrompt: "Execute scoped work",
+					dispatchSummary: "Focus on a.ts",
+					targetModel: { provider: "router", modelId: "escalate" },
+					allowedTools: ["check", "read"],
+					allowedPaths: ["a.ts"],
+					cwd: dir,
+				},
+				context,
+			);
+			expect(exported.studyNotes).toContain("<study_notes>");
+
+			// Open exported DB in a separate Harness (simulating sandboxed worker process) with B3 HydratePolicy + B1 escalation!
+			const childSeen: Array<{ model: string; tail: unknown; tools: string[]; disableContinuation?: boolean }> = [];
+			fastProv.setResponses([
+				(ctx, opts) => {
+					childSeen.push({
+						model: "fast-1",
+						tail: ctx.messages.at(-1)?.content,
+						tools: getCurrentTools(ctx.messages).map((t) => t.name),
+						disableContinuation: opts?.disableContinuation,
+					});
+					return fauxAssistantMessage([fauxToolCall("check", { ok: "no" })], { stopReason: "toolUse" });
+				},
+			]);
+			strongProv.setResponses([
+				(ctx, opts) => {
+					childSeen.push({
+						model: "strong-1",
+						tail: ctx.messages.at(-1)?.content,
+						tools: getCurrentTools(ctx.messages).map((t) => t.name),
+						disableContinuation: opts?.disableContinuation,
+					});
+					return fauxAssistantMessage("Escalated to strong-1 after tool error.");
+				},
+				(ctx, opts) => {
+					childSeen.push({
+						model: "strong-1",
+						tail: ctx.messages.at(-1)?.content,
+						tools: getCurrentTools(ctx.messages).map((t) => t.name),
+						disableContinuation: opts?.disableContinuation,
+					});
+					return fauxAssistantMessage("Widened b.ts only.");
+				},
+			]);
+
+			const childSw = createSlidingWindow({ cwd: dir });
+			const childRouted = withVirtualModelRouting(models, { models: [escalatedDef] });
+			childSw.wrapModels(childRouted);
+			const childReg = createRegistry();
+			childReg.install(defineExtension({ name: "test.tools", tools: [failTool, readTool] }));
+			childReg.install(childSw.extension);
+
+			const childDb = await openNodeSqliteDatabase(exportDbPath);
+			const childStore = await StoreStorage.open(
+				await openStore(sqliteBackend(childDb), context),
+				"cellar",
+				context,
+			);
+			const childHarness = await Harness.open(
+				childStore,
+				{
+					models: childRouted,
+					registry: childReg,
+					env: async () =>
+						({
+							readTextFile: async (p: string) => {
+								const { readFileSync } = await import("node:fs");
+								return { ok: true as const, value: readFileSync(p, "utf8") };
+							},
+						}) as never,
+				},
+				context,
+			);
+			childHarness.resume();
+			const childRoot = await childHarness.root(context);
+
+			// Verify planSystemEntries emits zero duplicate SystemEntry on turn 1
+			const systemEntriesBefore = (await allEntries(childRoot)).filter((e) => SystemEntry.is(e)).length;
+			await (await childRoot.submit({ type: "input", content: "Run check" }, context)).wait(context);
+			await childRoot.waitForIdle(context);
+			const systemEntriesAfter = (await allEntries(childRoot)).filter((e) => SystemEntry.is(e)).length;
+			expect(systemEntriesAfter).toBe(systemEntriesBefore);
+
+			// Turn 1 used fast-1 with a.ts hydrated and frozen tools + disableContinuation: true; tool error escalated Turn 2 to strong-1!
+			expect(childSeen[0]?.model).toBe("fast-1");
+			expect(String(childSeen[0]?.tail)).toContain("export const a = 1;");
+			expect(childSeen[0]?.disableContinuation).toBe(true);
+			expect(childSeen[0]?.tools).toEqual(["check", "read", "recall"]);
+			expect(childSeen[1]?.model).toBe("strong-1");
+			expect(toolCallStarts).toContain("check");
+
+			// Widen allowedPaths to ["a.ts", "b.ts"]: only b.ts is staged on the next turn (a.ts stays in hydratedPaths)
+			await childRoot.commit(async (tx) => {
+				const stateDoc = await tx.doc(SlidingWindowStateDoc, childRoot.id);
+				stateDoc.hydrate = {
+					allowedPaths: ["a.ts", "b.ts"],
+					hydratedPaths: stateDoc.hydrate?.hydratedPaths ?? [],
+				};
+			}, context);
+			await (await childRoot.submit({ type: "input", content: "Now use widened b.ts" }, context)).wait(context);
+			await childRoot.waitForIdle(context);
+			expect(String(childSeen[2]?.tail)).toContain("export const b = 2;");
+			expect(String(childSeen[2]?.tail)).not.toContain("export const a = 1;");
+
+			await childSw.close();
+			await childHarness.close(context);
+			await sw.close();
+			await parentHarness.close(context);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("handles legacy ledger reconstruction from entries, mid-run hard-ceiling burst fallback, BatonPrepTask epoch-mismatch fence, and MemoryStorage exportCheckpointedFork with owner='pi'", async () => {
+		const mainProv = fauxProvider({
+			provider: "main-e",
+			models: [{ id: "m-1", contextWindow: 4_000, maxTokens: 512 }],
+		});
+		const slowHelper = fauxProvider({
+			provider: "helper-e",
+			models: [{ id: "h-1", contextWindow: 8_000, maxTokens: 512 }],
+		});
+		const models = createModels();
+		models.setProvider(mainProv.provider);
+		models.setProvider(slowHelper.provider);
+
+		// 1. Legacy ledger reconstruction from entries (when SlidingWindowLedgerDoc & BatonStateDoc.data are empty)
+		const reg0 = createRegistry();
+		const swLegacy = createSlidingWindow();
+		const routedLegacy = swLegacy.wrapModels(models);
+		const regLegacy = createRegistry();
+		regLegacy.install(swLegacy.extension);
+		const dir = mkdtempSync(join(tmpdir(), "sw-legacy-"));
+		const legacyDbPath = join(dir, "legacy.sqlite");
+		try {
+			const s1 = await StoreStorage.open(
+				await openStore(sqliteBackend(await openNodeSqliteDatabase(legacyDbPath)), context),
+				"pi",
+				context,
+			);
+			const h1 = await Harness.open(s1, { models, registry: reg0 }, context);
+			const r1 = await h1.root(context, { agent: { model: swLegacy.selection } });
+			const tc = fauxToolCall("read", { path: "legacy.ts" });
+			await r1.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, r1.id)).target = { provider: "main-e", modelId: "m-1" };
+				await tx.appendEntry(AssistantEntry, r1.id, {
+					model: [fauxAssistantMessage([tc], { stopReason: "toolUse" })],
+				});
+				await tx.appendEntry(ToolResultEntry, r1.id, {
+					data: { diagnostics: [] },
+					model: [
+						{
+							role: "toolResult",
+							toolCallId: tc.id,
+							toolName: "read",
+							content: [{ type: "text", text: "preview" }],
+							details: { slidingWindow: { ref: "abc123def456", bytes: 999, lines: 42 } },
+							isError: false,
+							timestamp: 100,
+						},
+					],
+				});
+			}, context);
+			await h1.close(context);
+
+			mainProv.setResponses([fauxAssistantMessage("After legacy hydrate")]);
+			const s2 = await StoreStorage.open(
+				await openStore(sqliteBackend(await openNodeSqliteDatabase(legacyDbPath)), context),
+				"pi",
+				context,
+			);
+			const h2 = await Harness.open(s2, { models: routedLegacy, registry: regLegacy }, context);
+			h2.resume();
+			const r2 = await h2.root(context);
+			await (await r2.submit({ type: "input", content: "Continue legacy" }, context)).wait(context);
+			await r2.waitForIdle(context);
+			expect(
+				swLegacy.inspect(r2.id).ledger.filesRead.some((f) => f.path === "legacy.ts" && f.ref === "abc123def456"),
+			).toBe(true);
+			await swLegacy.close();
+			await h2.close(context);
+
+			// 2. Mid-run hard-ceiling burst swap (keepTail: false -> head: "self") while BatonPrepTask is in flight (epoch fence)
+			let releaseHelper!: () => void;
+			const helperBlocked = new Promise<void>((r) => {
+				releaseHelper = r;
+			});
+			let helperStartedResolve!: () => void;
+			const helperStarted = new Promise<void>((r) => {
+				helperStartedResolve = r;
+			});
+			slowHelper.setResponses([
+				async () => {
+					helperStartedResolve();
+					await helperBlocked;
+					return fauxAssistantMessage("- Stale slow digest");
+				},
+			]);
+
+			const pingTool = defineTool({
+				name: "ping",
+				description: "Ping",
+				parameters: obj({ msg: str() }),
+				execute: async (args) => ({ output: [{ type: "text", text: `pong:${args.msg}` }] }),
+			});
+			const swBurst = createSlidingWindow({
+				batonModel: "helper-e/h-1",
+				softCeilingTokens: 120,
+				hardCeilingTokens: 260,
+				keepTail: false,
+			});
+			const routedBurst = swBurst.wrapModels(models);
+			const regBurst = createRegistry();
+			regBurst.install(defineExtension({ name: "test.tools", tools: [pingTool] }));
+			regBurst.install(swBurst.extension);
+
+			mainProv.setResponses([
+				() => fauxAssistantMessage([fauxToolCall("ping", { msg: "a".repeat(200) })], { stopReason: "toolUse" }),
+				async () => {
+					await helperStarted;
+					return fauxAssistantMessage([fauxToolCall("ping", { msg: "b".repeat(800) })], { stopReason: "toolUse" });
+				},
+				() => fauxAssistantMessage("Burst swap mid-run finished."),
+			]);
+
+			const hBurst = await Harness.open(
+				new MemoryStorage(),
+				{ models: routedBurst, registry: regBurst, settings: { compaction: { enabled: false } } },
+				context,
+			);
+			hBurst.resume();
+			const rBurst = await hBurst.root(context, { agent: { model: swBurst.selection } });
+			await rBurst.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, rBurst.id)).target = { provider: "main-e", modelId: "m-1" };
+			}, context);
+			const burstResult = await (await rBurst.submit({ type: "input", content: "Start burst test" }, context)).wait(
+				context,
+			);
+			await rBurst.waitForIdle(context);
+			expect(burstResult.status).toBe("done");
+
+			// Release slow helper AFTER burst swap already incremented epoch to 1: UsageDoc.sidecars must record, BatonStateDoc.staged must stay undefined!
+			const prepTask = (await hBurst.snapshot(BatonStateDoc, rBurst.id, context))?.preparingTaskId;
+			releaseHelper();
+			if (prepTask !== undefined) await hBurst.waitForTask(prepTask, context);
+			// Poll briefly via waitFor until BatonPrepTask terminal commit settles
+			await waitFor(async () => {
+				const u = await hBurst.snapshot(UsageDoc, rBurst.id, context);
+				return Boolean(u?.sidecars?.["baton:helper-e/h-1"]);
+			});
+			const batonAfterFence = await hBurst.snapshot(BatonStateDoc, rBurst.id, context);
+			expect(batonAfterFence?.epoch).toBe(1);
+			expect(batonAfterFence?.staged).toBeUndefined();
+
+			// 3. Export to MemoryStorage with default owner="pi" (non-closing) + verify MemoryStorage stays usable
+			const memExport = new MemoryStorage();
+			const atBurst = (await allEntries(rBurst)).findLast((e) => AssistantEntry.is(e))!.id;
+			const exportedMem = await exportCheckpointedFork(
+				{
+					parent: rBurst,
+					parentHarness: hBurst,
+					at: atBurst,
+					targetStorage: memExport,
+					models: routedBurst,
+					registry: regBurst,
+					systemPrompt: "PI owner child",
+					taskPrompt: "Run child task",
+				},
+				context,
+			);
+			expect(exportedMem.conversationId).toBeDefined();
+			const reopenMem = await Harness.open(memExport, { models: routedBurst, registry: regBurst }, context);
+			expect((await allEntries(await reopenMem.root(context))).some((e) => SystemEntry.is(e))).toBe(true);
+			await reopenMem.close(context);
+
+			await swBurst.close();
+			await hBurst.close(context);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

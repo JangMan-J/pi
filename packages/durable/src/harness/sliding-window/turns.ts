@@ -52,8 +52,8 @@ function hasPendingToolResultAfter(contributions: ContextView["contributions"], 
 }
 
 /**
- * One RawTurn for the model messages one history entry contributes. Only a user message with no pending
- * tool result following it is a safe place to cut.
+ * One RawTurn for the model messages one history entry contributes. User messages without pending tool results
+ * and assistant messages (matching `CompactionTask.isCandidate`) are valid cut points.
  */
 export function turnFromMessages(
 	id: string,
@@ -75,7 +75,7 @@ export function turnFromMessages(
 				const label = typeof args.path === "string" ? args.path : undefined;
 				return { name: String(b.name), ...(label ? { label } : {}) };
 			});
-		return { id, role: "assistant", text: blockText(blocks), toolCalls, estimatedTokens, safeCutPoint: false };
+		return { id, role: "assistant", text: blockText(blocks), toolCalls, estimatedTokens, safeCutPoint: true };
 	}
 	if (first.role === "toolResult") return { id, role: "toolResult", text: "", estimatedTokens, safeCutPoint: false };
 	return { id, role: "other", text: "", estimatedTokens: 0, safeCutPoint: false };
@@ -135,15 +135,27 @@ export function chooseKeepFrom(o: {
 	turns: readonly RawTurn[];
 	midRun: boolean;
 }): string | null {
-	if (o.stagedFirstKeptId) return o.stagedFirstKeptId;
-	const at = o.preparedThroughId ? o.turns.findIndex((t) => t.id === o.preparedThroughId) : -1;
 	let idx: number | undefined;
-	if (at >= 0 && at + 1 < o.turns.length) {
-		idx = o.turns[at + 1]!.role === "toolResult" ? at : at + 1;
+	if (o.stagedFirstKeptId) {
+		const stagedIdx = o.turns.findIndex((t) => t.id === o.stagedFirstKeptId);
+		if (stagedIdx < 0) return o.stagedFirstKeptId;
+		idx = stagedIdx;
+	} else {
+		const at = o.preparedThroughId ? o.turns.findIndex((t) => t.id === o.preparedThroughId) : -1;
+		if (at >= 0 && at + 1 < o.turns.length) {
+			idx = o.turns[at + 1]!.role === "toolResult" ? at : at + 1;
+		}
 	}
 	if (o.midRun) {
+		// Never clamp to index 0 (root anchorUser0 is already preserved); only clamp to a later safe user turn (> 0).
 		const lastUser = o.turns.findLastIndex((t) => t.role === "user");
-		if (lastUser >= 0) idx = idx === undefined ? lastUser : Math.min(idx, lastUser);
+		if (lastUser > 0) {
+			idx = idx === undefined ? lastUser : Math.min(idx, lastUser);
+			while (idx > 0 && (o.turns[idx]!.role === "toolResult" || !o.turns[idx]!.safeCutPoint)) {
+				idx -= 1;
+			}
+			if (idx === 0) idx = undefined;
+		}
 	}
 	return idx === undefined ? null : o.turns[idx]!.id;
 }
