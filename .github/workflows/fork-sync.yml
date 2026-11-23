@@ -94,13 +94,28 @@ jobs:
           git checkout -q next
           commit="$(git rev-parse HEAD)"
           tag="next-${commit:0:12}"
+          pkg_tag="packages-${commit:0:12}"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "pkg_tag=$pkg_tag" >> "$GITHUB_OUTPUT"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "$tag is already released"
-            echo "needed=false" >> "$GITHUB_OUTPUT"
+            next_needed=false
           else
+            next_needed=true
+          fi
+          if gh release view "$pkg_tag" --json assets --jq '.assets | map(.name) | index("manifest.json") != null' 2>/dev/null | grep -qx true; then
+            echo "$pkg_tag is already released"
+            pkg_needed=false
+          else
+            pkg_needed=true
+          fi
+          echo "next_needed=$next_needed" >> "$GITHUB_OUTPUT"
+          echo "pkg_needed=$pkg_needed" >> "$GITHUB_OUTPUT"
+          if [ "$next_needed" = "true" ] || [ "$pkg_needed" = "true" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build
@@ -118,28 +133,51 @@ jobs:
           git diff --exit-code || { echo "npm run check changed files; fix them on their owning branch"; exit 1; }
           .fork/check.sh focused
 
-      - name: Pack
-        if: steps.release.outputs.needed == 'true'
+      - name: Pack next
+        if: steps.release.outputs.next_needed == 'true'
         run: .fork/pack-release.sh "$RUNNER_TEMP/release"
+
+      - name: Pack packages
+        if: steps.release.outputs.pkg_needed == 'true'
+        run: node scripts/pack-packages.mjs --offline-model-data --skip-build --force --out "$RUNNER_TEMP/packages"
 
       - name: Publish
         if: steps.release.outputs.needed == 'true' && env.PUBLISH == 'true'
         env:
           TAG: ${{ steps.release.outputs.tag }}
+          PKG_TAG: ${{ steps.release.outputs.pkg_tag }}
           COMMIT: ${{ steps.release.outputs.commit }}
+          NEXT_NEEDED: ${{ steps.release.outputs.next_needed }}
+          PKG_NEEDED: ${{ steps.release.outputs.pkg_needed }}
         run: |
-          {
-            echo "next at $COMMIT, checked and packed by the fork workflow. Install it with .fork/install-next.sh."
-            echo
-            echo "Branches merged into next:"
-            grep -vE '^\s*(#|$)' .fork/branches | sed 's/^/- /'
-          } > "$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" "$RUNNER_TEMP"/release/pi-next.tar.gz "$RUNNER_TEMP"/release/pi-next.tar.gz.sha256 \
-            "$RUNNER_TEMP"/release/release.json --target "$COMMIT" --title "next ${COMMIT:0:9}" --notes-file "$RUNNER_TEMP/notes.md" --latest
-          # Keep the five newest next releases; install-next.sh keeps its own previous copy for rollback.
-          gh release list --limit 100 --json tagName,createdAt \
-            --jq '[.[] | select(.tagName | startswith("next-"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
-            while read -r old; do gh release delete "$old" --yes --cleanup-tag; done
+          if [ "$NEXT_NEEDED" = "true" ]; then
+            {
+              echo "next at $COMMIT, checked and packed by the fork workflow. Install it with .fork/install-next.sh."
+              echo
+              echo "Branches merged into next:"
+              grep -vE '^\s*(#|$)' .fork/branches | sed 's/^/- /'
+            } > "$RUNNER_TEMP/notes.md"
+            gh release create "$TAG" "$RUNNER_TEMP"/release/pi-next.tar.gz "$RUNNER_TEMP"/release/pi-next.tar.gz.sha256 \
+              "$RUNNER_TEMP"/release/release.json --target "$COMMIT" --title "next ${COMMIT:0:9}" --notes-file "$RUNNER_TEMP/notes.md" --latest
+            # Keep the five newest next releases; install-next.sh keeps its own previous copy for rollback.
+            gh release list --limit 100 --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("next-"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+              while read -r old; do gh release delete "$old" --yes --cleanup-tag; done
+          fi
+          if [ "$PKG_NEEDED" = "true" ]; then
+            {
+              echo "Public @earendil-works/* package tarballs and manifest.json at $COMMIT (not pruned by next-* retention)."
+              echo
+              echo "Branches merged into next:"
+              grep -vE '^\s*(#|$)' .fork/branches | sed 's/^/- /'
+            } > "$RUNNER_TEMP/packages-notes.md"
+            if gh release view "$PKG_TAG" >/dev/null 2>&1; then
+              gh release upload "$PKG_TAG" "$RUNNER_TEMP"/packages/tarballs/*.tgz "$RUNNER_TEMP"/packages/manifest.json --clobber
+            else
+              gh release create "$PKG_TAG" "$RUNNER_TEMP"/packages/tarballs/*.tgz "$RUNNER_TEMP"/packages/manifest.json \
+                --target "$COMMIT" --title "packages ${COMMIT:0:9}" --notes-file "$RUNNER_TEMP/packages-notes.md" --latest=false
+            fi
+          fi
 
       - name: Status
         # A failed step can leave a rebase or merge in progress on a branch without .fork/; fork/tooling has it,
