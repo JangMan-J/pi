@@ -46,11 +46,12 @@ case "${1:-focused}" in
 			virtual-models-runtime
 		)
 		core_agent_tests=(agent-loop agent-request-update)
-		durable_tests=(virtual-models-durable)
+		durable_tests=(virtual-models-durable sliding-window harness-compaction harness-generation-recovery)
 		agent_tests=(
 			add-endpoint-provider remote-catalog-names anthropic-oauth-prompt-drift references
 			virtual-models interactive-mode-suppressed-messages
 			suite/virtual-models suite/virtual-model-substrate suite/suppress-text-display
+			suite/regressions/11156-pi-ai-models-virtual-module
 		)
 		# vitest skips a listed file that does not exist, so a branch missing from next would pass silently.
 		missing=()
