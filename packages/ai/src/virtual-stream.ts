@@ -21,6 +21,7 @@ import { normalizeContext } from "./utils/transcript.ts";
 import type {
 	ModelRoute,
 	ModelRouteHedge,
+	ModelRoutePurpose,
 	ModelRouteRequest,
 	ModelRouteToolChoice,
 	VirtualModelDefinition,
@@ -46,6 +47,8 @@ export interface RoutedStreamCompletion<TState = unknown> {
 	message: AssistantMessage;
 	ttfbMs: number;
 	durationMs: number;
+	readonly purpose?: ModelRoutePurpose;
+	readonly turnIndex?: number;
 }
 
 const ZERO_USAGE: Usage = {
@@ -945,6 +948,8 @@ export function executeRoutedStream<TState = unknown>(
 					message: finalMessage,
 					ttfbMs: timing.ttfbMs,
 					durationMs: timing.durationMs,
+					purpose: params.request.purpose,
+					turnIndex: params.request.turnIndex,
 				});
 			}
 			outer.end(finalMessage);
@@ -971,6 +976,8 @@ export function executeRoutedStream<TState = unknown>(
 				message: finalMessage,
 				ttfbMs: timing.ttfbMs,
 				durationMs: timing.durationMs,
+				purpose: params.request.purpose,
+				turnIndex: params.request.turnIndex,
 			});
 		}
 		outer.end(finalMessage);

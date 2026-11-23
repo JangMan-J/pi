@@ -16,12 +16,14 @@ import {
 } from "@earendil-works/pi-ai";
 import { withVirtualModelRouting } from "@earendil-works/pi-ai/virtual-models";
 import {
+	AgentDoc,
 	AssistantEntry,
 	createRegistry,
 	defineExtension,
 	defineTool,
 	Harness,
 	MemoryStorage,
+	ProviderDoc,
 	ResetEntry,
 	SystemEntry,
 	ToolResultEntry,
@@ -70,7 +72,7 @@ import {
 	VirtualModelStateDoc,
 } from "@earendil-works/pi-durable/virtual-models";
 import { obj, opt, str } from "@earendil-works/pi-schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { allEntries, textOf, waitFor } from "./chat-support.ts";
 import { addSection, assistant, toolResult, user } from "./harness-support.ts";
 import { context } from "./session-support.ts";
@@ -175,6 +177,62 @@ describe("sliding-window pure engine", () => {
 				midRun: false,
 			}),
 		).toBe("e2");
+
+		// Guardrail 1: multi-turn autonomous loops must NOT clamp back to an earlier aged-out user turn.
+		const multiTurnLoop = [
+			turnFromMessages("u0", [user("root prompt")]),
+			turnFromMessages("a1", [assistant("step 1", { calls: ["c1"] })]),
+			turnFromMessages("r1", [toolResult("c1", "ok")]),
+			turnFromMessages("u1", [user("follow-up prompt")]),
+			turnFromMessages("a2", [assistant("step 2", { calls: ["c2"] })]),
+			turnFromMessages("r2", [toolResult("c2", "ok")]),
+			turnFromMessages("a3", [assistant("step 3", { calls: ["c3"] })]),
+			turnFromMessages("r3", [toolResult("c3", "ok")]),
+			turnFromMessages("a4", [assistant("step 4", { calls: ["c4"] })]),
+			turnFromMessages("r4", [toolResult("c4", "ok")]),
+		];
+		expect(
+			chooseKeepFrom({
+				stagedFirstKeptId: "a4",
+				turns: multiTurnLoop,
+				midRun: true,
+			}),
+		).toBe("a4");
+
+		const steerMidRun = [
+			turnFromMessages("u0", [user("root")]),
+			turnFromMessages("a1", [assistant("s1", { calls: ["c1"] })]),
+			turnFromMessages("r1", [toolResult("c1", "ok")]),
+			turnFromMessages("a2", [assistant("s2", { calls: ["c2"] })]),
+			turnFromMessages("r2", [toolResult("c2", "ok")]),
+			turnFromMessages("u_steer", [user("steer instruction")]),
+			turnFromMessages("a3", [assistant("s3", { calls: ["c3"] })]),
+			turnFromMessages("r3", [toolResult("c3", "ok")]),
+		];
+		expect(
+			chooseKeepFrom({
+				stagedFirstKeptId: null,
+				preparedThroughId: "r2",
+				turns: steerMidRun,
+				midRun: true,
+			}),
+		).toBe("u_steer");
+
+		const noPreparedFallback = [
+			turnFromMessages("u0", [user("root")]),
+			turnFromMessages("a1", [assistant("s1", { calls: ["c1"] })]),
+			turnFromMessages("r1", [toolResult("c1", "ok")]),
+			turnFromMessages("u1", [user("later user")]),
+			turnFromMessages("a2", [assistant("s2", { calls: ["c2"] })]),
+			turnFromMessages("r2", [toolResult("c2", "ok")]),
+		];
+		expect(
+			chooseKeepFrom({
+				stagedFirstKeptId: null,
+				turns: noPreparedFallback,
+				midRun: true,
+			}),
+		).toBeNull();
 	});
 
 	it("projects swap tokens accurately and computes swapErrorPct", () => {
@@ -2004,6 +2062,300 @@ describe("sliding-window Harness integration", () => {
 
 			await swBurst.close();
 			await hBurst.close(context);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("Caveats 1 & 2: deterministic timestamp for Message[] ephemeralTail, propagated purpose/turnIndex/state in onOutcome, and zero-call toolUse flush", async () => {
+		const fastProv = fauxProvider({
+			provider: "fast-c12",
+			models: [{ id: "f-1", contextWindow: 32_000, maxTokens: 512 }],
+		});
+		const models = createModels();
+		models.setProvider(fastProv.provider);
+
+		let currentFakeNow = 50_000;
+		const seenTailTimestamps: number[] = [];
+		const recordedOutcomes: Array<{ purpose: string; turnIndex: number; routedCount?: number }> = [];
+		const nowSpy = vi.spyOn(Date, "now");
+		const innerDef = {
+			provider: "router-c12",
+			id: "inner",
+			name: "Inner",
+			route(req: { state?: unknown; purpose: string }) {
+				if (req.purpose === "continuation") {
+					nowSpy.mockReturnValue(currentFakeNow);
+				}
+				const prev = (req.state as { routedCount?: number } | undefined)?.routedCount ?? 0;
+				return {
+					model: models.getModel("fast-c12", "f-1")!,
+					thinkingLevel: "off" as const,
+					state: { routedCount: prev + 1 },
+					ephemeralTail: [{ role: "user" as const, content: "inner-tail", timestamp: 42_000 }],
+				};
+			},
+			onOutcome(outcome: { purpose: string; turnIndex: number; state?: unknown }) {
+				const routedCount = (outcome.state as { routedCount?: number } | undefined)?.routedCount;
+				recordedOutcomes.push({ purpose: outcome.purpose, turnIndex: outcome.turnIndex, routedCount });
+				return { routedCount, recorded: recordedOutcomes.length };
+			},
+		};
+
+		const readTool = defineTool({
+			name: "read",
+			description: "Read",
+			parameters: obj({ path: str() }),
+			execute: async (args) => ({
+				output: [
+					{
+						type: "text",
+						text: Array.from({ length: 120 }, (_, i) => `${args.path}:line_${i + 1}`).join("\n"),
+					},
+				],
+			}),
+		});
+
+		const runOnce = async (fakeNow: number) => {
+			currentFakeNow = fakeNow;
+			nowSpy.mockReturnValue(50_000);
+			try {
+				const sw = createSlidingWindow({ readSpillThresholdBytes: 128, stageReadSlices: true });
+				const routed = withVirtualModelRouting(models, { models: [innerDef] });
+				sw.wrapModels(routed);
+				const reg = createRegistry();
+				reg.install(defineExtension({ name: "test.read", tools: [readTool] }));
+				reg.install(sw.extension);
+
+				fastProv.setResponses([
+					() =>
+						fauxAssistantMessage([fauxToolCall("read", { path: "big.ts" })], {
+							stopReason: "toolUse",
+							timestamp: 88_000,
+						}),
+					(ctx) => {
+						const tailMsg = ctx.messages.at(-1);
+						if (tailMsg) seenTailTimestamps.push(tailMsg.timestamp);
+						// Zero-call toolUse must still flush c.pendingCompletion in afterResponse.
+						return fauxAssistantMessage([{ type: "text", text: "zero-call done" }], {
+							stopReason: "toolUse",
+							timestamp: 89_000,
+						});
+					},
+				]);
+
+				const harness = await Harness.open(new MemoryStorage(), { models: routed, registry: reg }, context);
+				harness.resume();
+				const root = await harness.root(context, { agent: { model: sw.selection } });
+				await root.commit(async (tx) => {
+					(await tx.doc(SlidingWindowTargetDoc, root.id)).target = { provider: "router-c12", modelId: "inner" };
+				}, context);
+				await (await root.submit({ type: "input", content: "Inspect big.ts" }, context)).wait(context);
+				await root.waitForIdle(context);
+				await sw.close();
+				await harness.close(context);
+			} finally {
+				nowSpy.mockReset();
+			}
+		};
+
+		try {
+			await runOnce(1_111_000);
+			await runOnce(9_999_000);
+		} finally {
+			nowSpy.mockRestore();
+		}
+
+		expect(seenTailTimestamps).toEqual([50_000, 50_000]);
+		expect(recordedOutcomes).toEqual([
+			{ purpose: "prompt", turnIndex: 0, routedCount: 1 },
+			{ purpose: "continuation", turnIndex: 1, routedCount: 2 },
+			{ purpose: "prompt", turnIndex: 0, routedCount: 1 },
+			{ purpose: "continuation", turnIndex: 1, routedCount: 2 },
+		]);
+	});
+
+	it("Caveat 3: reads parentStorage docs asOf atSeq while reading ProviderDoc at current with sourceConvId fallback, and avoids Date.now() on empty views", async () => {
+		const fastProv = fauxProvider({
+			provider: "fast-c3",
+			models: [{ id: "f-1", contextWindow: 16_000, maxTokens: 512 }],
+		});
+		const strongProv = fauxProvider({
+			provider: "strong-c3",
+			models: [{ id: "s-1", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const models = createModels();
+		models.setProvider(fastProv.provider);
+		models.setProvider(strongProv.provider);
+
+		const readTool = defineTool({
+			name: "read",
+			description: "Read",
+			parameters: obj({ path: str() }),
+			execute: async (args) => ({ output: [{ type: "text", text: `content:${args.path}` }] }),
+		});
+		const checkTool = defineTool({
+			name: "check",
+			description: "Check",
+			parameters: obj({}),
+			execute: async () => ({ output: [{ type: "text", text: "ok" }] }),
+		});
+
+		const dir = mkdtempSync(join(tmpdir(), "sw-c3-"));
+		try {
+			const parentDb = await openNodeSqliteDatabase(join(dir, "parent.sqlite"));
+			const parentStorage = await StoreStorage.open(
+				await openStore(sqliteBackend(parentDb), context),
+				"pi",
+				context,
+			);
+			const sw = createSlidingWindow({ cwd: dir });
+			const routed = sw.wrapModels(models);
+			const reg = createRegistry();
+			reg.install(defineExtension({ name: "test.c3", tools: [readTool, checkTool] }));
+			reg.install(sw.extension);
+
+			fastProv.setResponses([
+				fauxAssistantMessage([fauxToolCall("read", { path: "a.ts" })], {
+					stopReason: "toolUse",
+					timestamp: 50_000,
+				}),
+				fauxAssistantMessage("read a.ts", { timestamp: 51_000 }),
+				fauxAssistantMessage([fauxToolCall("read", { path: "b.ts" })], {
+					stopReason: "toolUse",
+					timestamp: 60_000,
+				}),
+				fauxAssistantMessage("read b.ts", { timestamp: 61_000 }),
+			]);
+
+			const parentHarness = await Harness.open(parentStorage, { models: routed, registry: reg }, context);
+			parentHarness.resume();
+			const root = await parentHarness.root(context, {
+				agent: {
+					model: sw.selection,
+					tools: [readTool, checkTool],
+					thinkingLevel: "medium",
+					cwd: dir,
+				},
+			});
+			await root.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, root.id)).target = { provider: "fast-c3", modelId: "f-1" };
+				(await tx.doc(ProviderDoc, root.id)).sessionId = "sess-root-123";
+			}, context);
+
+			await (await root.submit({ type: "input", content: "Read a" }, context)).wait(context);
+			await root.waitForIdle(context);
+			const atEntry = (await allEntries(root)).findLast((e) => AssistantEntry.is(e))!.id;
+
+			// Mutate root AFTER atEntry (more reads + narrowed tools + downgraded thinkingLevel)
+			await root.commit(async (tx) => {
+				const agentDoc = await tx.doc(AgentDoc, root.id);
+				agentDoc.tools = ["read"];
+				agentDoc.thinkingLevel = "off";
+			}, context);
+			await (await root.submit({ type: "input", content: "Read b" }, context)).wait(context);
+			await root.waitForIdle(context);
+
+			// Create a multi-level fork from atEntry whose own ProviderDoc.sessionId is unset (sourceConvId is root.id)
+			const midFork = await root.fork(atEntry, { ownership: { kind: "ownerless" } }, context);
+			await midFork.commit(async (tx) => {
+				delete ((await tx.doc(ProviderDoc, midFork.id)) as { sessionId?: string }).sessionId;
+			}, context);
+
+			const targetStorage1 = new MemoryStorage();
+			const exportedFromRoot = await exportCheckpointedFork(
+				{
+					parent: root,
+					parentHarness,
+					parentStorage,
+					at: atEntry,
+					targetStorage: targetStorage1,
+					models: routed,
+					registry: reg,
+					systemPrompt: "Child sys",
+					taskPrompt: "Child task",
+				},
+				context,
+			);
+			expect(exportedFromRoot.ledger.filesRead.map((f) => f.path)).toEqual(["a.ts"]);
+
+			const reopened1 = await Harness.open(targetStorage1, { models: routed, registry: reg }, context);
+			const childRoot1 = await reopened1.root(context);
+			expect((await reopened1.snapshot(ProviderDoc, childRoot1.id, context))?.sessionId).toBe("sess-root-123");
+			expect((await reopened1.snapshot(AgentDoc, childRoot1.id, context))?.tools).toEqual(["read", "check"]);
+			expect((await reopened1.snapshot(AgentDoc, childRoot1.id, context))?.thinkingLevel).toBe("medium");
+			await reopened1.close(context);
+
+			// Multi-level fork export: midFork has no ProviderDoc.sessionId, so it falls back to sourceConvId (root.id)
+			const targetStorage2 = new MemoryStorage();
+			await exportCheckpointedFork(
+				{
+					parent: midFork,
+					parentHarness,
+					parentStorage,
+					at: atEntry,
+					targetStorage: targetStorage2,
+					models: routed,
+					registry: reg,
+					systemPrompt: "Child sys 2",
+					taskPrompt: "Child task 2",
+				},
+				context,
+			);
+			const reopened2 = await Harness.open(targetStorage2, { models: routed, registry: reg }, context);
+			const childRoot2 = await reopened2.root(context);
+			expect((await reopened2.snapshot(ProviderDoc, childRoot2.id, context))?.sessionId).toBe("sess-root-123");
+			await reopened2.close(context);
+
+			// Empty / timestamp-less view falls back to deterministic 0 (never Date.now())
+			const emptyStorage = new MemoryStorage();
+			const emptyHarness = await Harness.open(emptyStorage, { models: routed, registry: reg }, context);
+			const emptyRoot = await emptyHarness.root(context);
+			let emptyEntryId!: Awaited<ReturnType<typeof allEntries>>[number]["id"];
+			await emptyRoot.commit(async (tx) => {
+				emptyEntryId = (await tx.appendEntry(ResetEntry, emptyRoot.id, { head: "self", model: [] })).id;
+			}, context);
+
+			const spy1 = vi.spyOn(Date, "now").mockReturnValue(1_234_567);
+			const emptyRes1 = await exportCheckpointedFork(
+				{
+					parent: emptyRoot,
+					parentStorage: emptyStorage,
+					at: emptyEntryId,
+					targetStorage: new MemoryStorage(),
+					models: routed,
+					registry: reg,
+					systemPrompt: "Empty",
+					taskPrompt: "Empty task",
+				},
+				context,
+			);
+			spy1.mockRestore();
+
+			const spy2 = vi.spyOn(Date, "now").mockReturnValue(7_654_321);
+			const emptyRes2 = await exportCheckpointedFork(
+				{
+					parent: emptyRoot,
+					parentStorage: emptyStorage,
+					at: emptyEntryId,
+					targetStorage: new MemoryStorage(),
+					models: routed,
+					registry: reg,
+					systemPrompt: "Empty",
+					taskPrompt: "Empty task",
+				},
+				context,
+			);
+			spy2.mockRestore();
+			await emptyHarness.close(context);
+
+			expect(emptyRes1.anchorTimestamp).toBe(0);
+			expect(emptyRes1.atTimestamp).toBe(0);
+			expect(emptyRes2.anchorTimestamp).toBe(0);
+			expect(emptyRes2.atTimestamp).toBe(0);
+
+			await sw.close();
+			await parentHarness.close(context);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
