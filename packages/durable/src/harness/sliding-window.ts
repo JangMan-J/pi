@@ -1268,20 +1268,22 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 								: typeof args.filePath === "string"
 									? args.filePath
 									: undefined;
+					const agentState = await api.snapshot(AgentDoc, api.conversationId, ctx);
+					const effectiveCwd = agentState?.cwd ?? options.cwd;
+					const canStageSlices = isSlidingWindowRef(agentState?.model);
+
 					const isError = result.isError === true;
 					if ((call.name === "edit" || call.name === "write") && !isError && path) {
-						c.stage.evict(path, options.cwd);
+						c.stage.evict(path, effectiveCwd);
 					}
-
-					const agentState = await api.snapshot(AgentDoc, api.conversationId, ctx);
-					const canStageSlices = isSlidingWindowRef(agentState?.model);
 
 					const spill = await spillToolOutput({
 						toolName: call.name,
 						input: args,
 						rawText: raw,
 						isError,
-						...(options.cwd ? { cwd: options.cwd } : {}),
+						...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+						...(result.details !== undefined ? { details: result.details } : {}),
 						config,
 						store: getStore,
 						stage: c.stage,
@@ -1367,11 +1369,26 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 							let text: string | undefined;
 							if (live) {
 								if (storedRef && storedSourceSha && live.sha256 === storedSourceSha) {
-									ref = storedRef;
-									text = (await store.readFullText?.(storedRef)) ?? live.text;
+									const candidateText =
+										stored?.meta.ref === storedRef ? stored.text : await store.readFullText?.(storedRef);
+									if (candidateText !== undefined && portableSha256Hex(candidateText) === live.sha256) {
+										ref = storedRef;
+										text = candidateText;
+									} else {
+										text = live.text;
+										ref = portableSha256Hex(live.text).slice(0, 12);
+									}
 								} else {
 									text = live.text;
-									ref = storedRef && !storedSourceSha ? storedRef : portableSha256Hex(live.text).slice(0, 12);
+									const storedMeta = storedRef
+										? stored?.meta.ref === storedRef
+											? stored.meta
+											: await store.getMeta?.(storedRef)
+										: undefined;
+									ref =
+										storedRef && storedMeta?.sha256 === live.sha256
+											? storedRef
+											: portableSha256Hex(live.text).slice(0, 12);
 								}
 							} else if (storedRef) {
 								ref = storedRef;
