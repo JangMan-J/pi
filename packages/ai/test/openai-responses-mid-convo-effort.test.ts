@@ -258,19 +258,16 @@ describe("OpenAI Responses configuration_update", () => {
 		expect(message.providerThinkingLevel).toBeUndefined();
 	});
 
-	it("keeps reasoning.effort constant and appends configuration_update items on OpenAI Codex", async () => {
+	it("keeps reasoning.effort pinned to initial selection and appends configuration_update items on effort change on OpenAI Codex", async () => {
 		const history: Message[] = [user("one")];
 		const first = await runCodex(history, "xhigh");
 		history.push(first.message, user("two"));
 		const second = await runCodex(history, "low");
 
-		expect(first.payload.reasoning?.effort).toBe("medium");
-		expect(second.payload.reasoning?.effort).toBe("medium");
+		expect(first.payload.reasoning?.effort).toBe("xhigh");
+		expect(second.payload.reasoning?.effort).toBe("xhigh");
 		expect(second.payload.input.slice(0, first.payload.input.length)).toEqual(first.payload.input);
-		expect(second.payload.input.filter((item) => item.type === "configuration_update")).toEqual([
-			update("xhigh"),
-			update("low"),
-		]);
+		expect(second.payload.input.filter((item) => item.type === "configuration_update")).toEqual([update("low")]);
 		expect([first.message.providerThinkingLevel, second.message.providerThinkingLevel]).toEqual(["xhigh", "low"]);
 	});
 
@@ -348,13 +345,10 @@ describe("OpenAI Responses configuration_update", () => {
 
 			expect(sentFrames).toHaveLength(2);
 			expect(sentFrames[0]?.previous_response_id).toBeUndefined();
-			expect(sentFrames[0]?.reasoning?.effort).toBe("medium");
-			expect(sentFrames[0]?.input).toEqual([
-				{ role: "user", content: [{ type: "input_text", text: "one" }] },
-				update("xhigh"),
-			]);
+			expect(sentFrames[0]?.reasoning?.effort).toBe("xhigh");
+			expect(sentFrames[0]?.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "one" }] }]);
 			expect(sentFrames[1]?.previous_response_id).toBe("resp_1");
-			expect(sentFrames[1]?.reasoning?.effort).toBe("medium");
+			expect(sentFrames[1]?.reasoning?.effort).toBe("xhigh");
 			expect(sentFrames[1]?.input).toEqual([
 				{ role: "user", content: [{ type: "input_text", text: "two" }] },
 				update("low"),
