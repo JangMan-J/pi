@@ -22,7 +22,10 @@ function makeModel<TApi extends "google-generative-ai">(
 	};
 }
 
-function makeContext(model: { api: string; provider: string; id: string }): Context {
+// Gemini 3+ signs the first call of a turn; an unsigned turn is replayed as observations instead.
+const SIGNATURE = "AAAAAAAAAAAAAAAAAAAAAA==";
+
+function makeContext(model: { api: string; provider: string; id: string }, thoughtSignature?: string): Context {
 	const now = Date.now();
 	return {
 		messages: [
@@ -30,7 +33,13 @@ function makeContext(model: { api: string; provider: string; id: string }): Cont
 			{
 				role: "assistant",
 				content: [
-					{ type: "toolCall", id: "call_a", name: "read", arguments: { path: "a.txt" } },
+					{
+						type: "toolCall",
+						id: "call_a",
+						name: "read",
+						arguments: { path: "a.txt" },
+						...(thoughtSignature && { thoughtSignature }),
+					},
 					{ type: "toolCall", id: "call_img", name: "read", arguments: { path: "image.png" } },
 					{ type: "toolCall", id: "call_b", name: "read", arguments: { path: "b.txt" } },
 				],
@@ -90,7 +99,7 @@ describe("google-shared image tool result routing", () => {
 
 	it("nests image tool results for Gemini 3 Google API models", () => {
 		const model = makeModel("google-generative-ai", "google", "gemini-3-pro-preview");
-		const contents = convertMessages(model, normalizeContext(makeContext(model)));
+		const contents = convertMessages(model, normalizeContext(makeContext(model, SIGNATURE)));
 
 		expect(contents).toHaveLength(3);
 		const toolResultTurn = contents[2];
@@ -102,9 +111,11 @@ describe("google-shared image tool result routing", () => {
 	});
 
 	// https://github.com/earendil-works/pi/issues/12321
+	// Unsigned tool-call turns replay as observations (fb98effb8), so this carries a signature
+	// like its siblings to exercise prefixed-ID functionResponse nesting.
 	it("nests image tool results for prefixed Gemini 3+ IDs", () => {
 		const model = makeModel("google-generative-ai", "google", "randomprefix-gemini-4-argon");
-		const contents = convertMessages(model, normalizeContext(makeContext(model)));
+		const contents = convertMessages(model, normalizeContext(makeContext(model, SIGNATURE)));
 
 		expect(contents).toHaveLength(3);
 		expect(contents[2].parts?.[1]?.functionResponse?.parts?.[0]?.inlineData).toBeTruthy();
@@ -113,7 +124,7 @@ describe("google-shared image tool result routing", () => {
 	// https://github.com/earendil-works/pi/issues/8720
 	it("treats whitespace-only tool result text as no text", () => {
 		const model = makeModel("google-generative-ai", "google", "gemini-3-pro-preview");
-		const context = makeContext(model);
+		const context = makeContext(model, SIGNATURE);
 		for (const message of context.messages) {
 			if (message.role !== "toolResult") continue;
 			if (message.toolCallId === "call_a") message.content = [{ type: "text", text: "\r\n" }];
