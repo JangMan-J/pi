@@ -58,6 +58,8 @@
 			"@earendil-works/pi-durable": ["./packages/durable/src/index.ts"],
 			"@earendil-works/pi-durable/testing": ["./packages/durable/src/testing/index.ts"],
 			"@earendil-works/pi-durable/virtual-models": ["./packages/durable/src/harness/virtual-models.ts"],
+			"@earendil-works/pi-durable/sliding-window": ["./packages/durable/src/harness/sliding-window.ts"],
+			"@earendil-works/pi-durable/sliding-window/node": ["./packages/durable/src/harness/sliding-window/node.ts"],
 			"@earendil-works/pi-durable/*": [
 				"./packages/durable/src/*.ts",
 				"./packages/durable/src/*/index.ts",
