@@ -2713,4 +2713,397 @@ describe("sliding-window Harness integration", () => {
 		await sw.close();
 		await parentHarness.close(context);
 	});
+
+	it("Tier 5 Iter 2 Finding #1: HydratePolicy respects effectiveHydrateBudget = min(maxHydrateBytes, maxStageBytes), reconciles pendingHydratedPaths, and skips staging/marking when stageReadSlices is false", async () => {
+		const prov = fauxProvider({
+			provider: "t5i2-f1-prov",
+			models: [{ id: "f1-m", contextWindow: 64_000, maxTokens: 1024 }],
+		});
+		const models = createModels();
+		models.setProvider(prov.provider);
+
+		const dir = mkdtempSync(join(tmpdir(), "sw-t5i2-f1-"));
+		try {
+			const contentA = `A_MARKER\n${"a".repeat(30_000)}`;
+			const contentB = `B_MARKER\n${"b".repeat(30_000)}`;
+			writeFileSync(join(dir, "a.ts"), contentA, "utf8");
+			writeFileSync(join(dir, "b.ts"), contentB, "utf8");
+
+			const sw = createSlidingWindow({ cwd: dir });
+			const routed = sw.wrapModels(models);
+			const reg = createRegistry();
+			reg.install(sw.extension);
+
+			const seenTails: string[] = [];
+			prov.setResponses([
+				(ctx) => {
+					seenTails.push(String(ctx.messages.at(-1)?.content ?? ""));
+					return fauxAssistantMessage("Turn 1 saw a.ts");
+				},
+				(ctx) => {
+					seenTails.push(String(ctx.messages.at(-1)?.content ?? ""));
+					return fauxAssistantMessage("Turn 2 saw b.ts");
+				},
+			]);
+
+			const harness = await Harness.open(
+				new MemoryStorage(),
+				{
+					models: routed,
+					registry: reg,
+					env: async () =>
+						({
+							readTextFile: async (p: string) => {
+								const { readFileSync } = await import("node:fs");
+								return { ok: true as const, value: readFileSync(p, "utf8") };
+							},
+						}) as never,
+				},
+				context,
+			);
+			harness.resume();
+			const root = await harness.root(context, { agent: { model: sw.selection, cwd: dir } });
+			await root.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, root.id)).target = { provider: "t5i2-f1-prov", modelId: "f1-m" };
+				(await tx.doc(SlidingWindowStateDoc, root.id)).hydrate = {
+					allowedPaths: ["a.ts", "b.ts"],
+					hydratedPaths: [],
+					maxHydrateBytes: 200_000,
+				};
+			}, context);
+
+			// Turn 1: a.ts (30KB) fits within maxStageBytes (49,152); b.ts (30KB) must wait so a.ts is not evicted!
+			await (await root.submit({ type: "input", content: "Turn 1" }, context)).wait(context);
+			await root.waitForIdle(context);
+			expect(seenTails[0]).toContain("A_MARKER");
+			expect(seenTails[0]).not.toContain("B_MARKER");
+			const stateAfterT1 = await harness.snapshot(SlidingWindowStateDoc, root.id, context);
+			expect(stateAfterT1?.hydrate?.hydratedPaths).toEqual(["a.ts"]);
+
+			// Turn 2: a.ts already hydrated; b.ts now fits and is delivered cleanly.
+			await (await root.submit({ type: "input", content: "Turn 2" }, context)).wait(context);
+			await root.waitForIdle(context);
+			expect(seenTails[1]).toContain("B_MARKER");
+			const stateAfterT2 = await harness.snapshot(SlidingWindowStateDoc, root.id, context);
+			expect(stateAfterT2?.hydrate?.hydratedPaths).toEqual(["a.ts", "b.ts"]);
+
+			await sw.close();
+			await harness.close(context);
+
+			// stageReadSlices: false must neither stage nor mark a.ts as hydrated.
+			const swDisabledSlices = createSlidingWindow({ cwd: dir, stageReadSlices: false });
+			const routedDisabled = swDisabledSlices.wrapModels(models);
+			const regDisabled = createRegistry();
+			regDisabled.install(swDisabledSlices.extension);
+
+			let sawWorkingSlice = false;
+			prov.setResponses([
+				(ctx) => {
+					const allText = ctx.messages.map((m) => String(m.content ?? "")).join("\n");
+					sawWorkingSlice = allText.includes("A_MARKER") || allText.includes("<working_slice");
+					return fauxAssistantMessage("No slice staged");
+				},
+			]);
+
+			const hDisabled = await Harness.open(
+				new MemoryStorage(),
+				{
+					models: routedDisabled,
+					registry: regDisabled,
+					env: async () =>
+						({
+							readTextFile: async (p: string) => {
+								const { readFileSync } = await import("node:fs");
+								return { ok: true as const, value: readFileSync(p, "utf8") };
+							},
+						}) as never,
+				},
+				context,
+			);
+			hDisabled.resume();
+			const rDisabled = await hDisabled.root(context, { agent: { model: swDisabledSlices.selection, cwd: dir } });
+			await rDisabled.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, rDisabled.id)).target = {
+					provider: "t5i2-f1-prov",
+					modelId: "f1-m",
+				};
+				(await tx.doc(SlidingWindowStateDoc, rDisabled.id)).hydrate = {
+					allowedPaths: ["a.ts"],
+					hydratedPaths: [],
+				};
+			}, context);
+
+			await (await rDisabled.submit({ type: "input", content: "Check no stage" }, context)).wait(context);
+			await rDisabled.waitForIdle(context);
+			expect(sawWorkingSlice).toBe(false);
+			const stateDisabled = await hDisabled.snapshot(SlidingWindowStateDoc, rDisabled.id, context);
+			expect(stateDisabled?.hydrate?.hydratedPaths).toEqual([]);
+
+			await swDisabledSlices.close();
+			await hDisabled.close(context);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("Tier 5 Iter 2 Finding #2: direct exportCheckpointedFork inherits parent SlidingWindowTargetDoc asOf(atSeq) when targetModel is omitted", async () => {
+		const provA = fauxProvider({
+			provider: "t5i2-f2-a",
+			models: [{ id: "m-a", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const provB = fauxProvider({
+			provider: "t5i2-f2-b",
+			models: [{ id: "m-b", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const models = createModels();
+		models.setProvider(provA.provider);
+		models.setProvider(provB.provider);
+
+		const sw = createSlidingWindow();
+		const routed = sw.wrapModels(models);
+		const reg = createRegistry();
+		reg.install(sw.extension);
+
+		provA.setResponses([fauxAssistantMessage("Parent Turn 1 on A", { timestamp: 10_000 })]);
+		provB.setResponses([fauxAssistantMessage("Parent Turn 2 on B", { timestamp: 20_000 })]);
+
+		const parentStorage = new MemoryStorage();
+		const parentHarness = await Harness.open(parentStorage, { models: routed, registry: reg }, context);
+		parentHarness.resume();
+		const parent = await parentHarness.root(context, { agent: { model: sw.selection } });
+		await parent.commit(async (tx) => {
+			(await tx.doc(SlidingWindowTargetDoc, parent.id)).target = { provider: "t5i2-f2-a", modelId: "m-a" };
+		}, context);
+
+		await (await parent.submit({ type: "input", content: "Turn 1" }, context)).wait(context);
+		await parent.waitForIdle(context);
+		const turn1Entry = (await allEntries(parent)).findLast((e) => AssistantEntry.is(e))!.id;
+
+		// Change SlidingWindowTargetDoc AFTER turn1Entry
+		await parent.commit(async (tx) => {
+			(await tx.doc(SlidingWindowTargetDoc, parent.id)).target = { provider: "t5i2-f2-b", modelId: "m-b" };
+		}, context);
+		await (await parent.submit({ type: "input", content: "Turn 2" }, context)).wait(context);
+		await parent.waitForIdle(context);
+
+		// Case 1: slidingWindow: false, targetModel omitted -> child AgentDoc.model and SlidingWindowTargetDoc must be m-a (asOf atSeq) and Turn 1 succeeds!
+		const targetNoSwStorage = new MemoryStorage();
+		await exportCheckpointedFork(
+			{
+				parent,
+				parentHarness,
+				parentStorage,
+				at: turn1Entry,
+				targetStorage: targetNoSwStorage,
+				models: routed,
+				registry: reg,
+				systemPrompt: "Child no-sw",
+				taskPrompt: "Run child on asOf target",
+				slidingWindow: false,
+			},
+			context,
+		);
+
+		provA.setResponses([fauxAssistantMessage("Child no-sw Turn 1 succeeded on m-a", { timestamp: 30_000 })]);
+		const childNoSwHarness = await Harness.open(targetNoSwStorage, { models: routed, registry: reg }, context);
+		childNoSwHarness.resume();
+		const childNoSwRoot = await childNoSwHarness.root(context);
+		expect((await childNoSwHarness.snapshot(AgentDoc, childNoSwRoot.id, context))?.model).toEqual({
+			provider: "t5i2-f2-a",
+			modelId: "m-a",
+		});
+		expect((await childNoSwHarness.snapshot(SlidingWindowTargetDoc, childNoSwRoot.id, context))?.target).toEqual({
+			provider: "t5i2-f2-a",
+			modelId: "m-a",
+		});
+		const resNoSw = await (await childNoSwRoot.submit({ type: "input", content: "Go" }, context)).wait(context);
+		expect(resNoSw.status).toBe("done");
+		await childNoSwHarness.close(context);
+
+		// Case 2: slidingWindow: true, targetModel omitted -> child AgentDoc.model is sliding-window/active, SlidingWindowTargetDoc is m-a, and Turn 1 succeeds!
+		const targetSwStorage = new MemoryStorage();
+		await exportCheckpointedFork(
+			{
+				parent,
+				parentHarness,
+				parentStorage,
+				at: turn1Entry,
+				targetStorage: targetSwStorage,
+				models: routed,
+				registry: reg,
+				systemPrompt: "Child sw",
+				taskPrompt: "Run child sw on asOf target",
+				slidingWindow: true,
+			},
+			context,
+		);
+
+		provA.setResponses([fauxAssistantMessage("Child sw Turn 1 succeeded on m-a", { timestamp: 40_000 })]);
+		const childSw = createSlidingWindow();
+		const childSwRouted = childSw.wrapModels(models);
+		const childSwReg = createRegistry();
+		childSwReg.install(childSw.extension);
+		const childSwHarness = await Harness.open(
+			targetSwStorage,
+			{ models: childSwRouted, registry: childSwReg },
+			context,
+		);
+		childSwHarness.resume();
+		const childSwRoot = await childSwHarness.root(context);
+		expect((await childSwHarness.snapshot(AgentDoc, childSwRoot.id, context))?.model).toEqual(sw.selection);
+		expect((await childSwHarness.snapshot(SlidingWindowTargetDoc, childSwRoot.id, context))?.target).toEqual({
+			provider: "t5i2-f2-a",
+			modelId: "m-a",
+		});
+		const resSw = await (await childSwRoot.submit({ type: "input", content: "Go" }, context)).wait(context);
+		expect(resSw.status).toBe("done");
+
+		await childSw.close();
+		await childSwHarness.close(context);
+		await sw.close();
+		await parentHarness.close(context);
+	});
+
+	it("Tier 5 Iter 2 Finding #5: sliding-window delegates to innerDef.stream() with unwrapped req.state, merges ephemeralTail, and records sidecar usage & onOutcome", async () => {
+		const candA = fauxProvider({
+			provider: "t5i2-f5-a",
+			models: [{ id: "cand-a", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const candB = fauxProvider({
+			provider: "t5i2-f5-b",
+			models: [{ id: "cand-b", contextWindow: 32_000, maxTokens: 1024 }],
+		});
+		const models = createModels();
+		models.setProvider(candA.provider);
+		models.setProvider(candB.provider);
+
+		const seenStreamStates: unknown[] = [];
+		const seenStreamModels: string[] = [];
+		const seenOutcomeStates: unknown[] = [];
+		const seenOutcomeModels: string[] = [];
+		const seenTailInCandB: string[] = [];
+
+		const dir = mkdtempSync(join(tmpdir(), "sw-t5i2-f5-"));
+		try {
+			writeFileSync(join(dir, "slice.ts"), "SLICE_CONTEXT_MARKER\n", "utf8");
+
+			const routed = withVirtualModelRouting(models, {
+				models: [
+					{
+						provider: "router-f5",
+						id: "custom-stream",
+						name: "Custom Stream Virtual",
+						route() {
+							return { model: models.getModel("t5i2-f5-a", "cand-a")!, thinkingLevel: "off" };
+						},
+						async stream(req) {
+							seenStreamStates.push(req.state);
+							seenStreamModels.push(`${req.model.provider}/${req.model.id}`);
+							const draft = await req
+								.dispatch({
+									model: models.getModel("t5i2-f5-a", "cand-a")!,
+									thinkingLevel: "off",
+								})
+								.result();
+							req.recordUsage("speculation", draft.provider, draft.model, draft.usage, "draft a");
+							const prevRuns = ((req.state as { runs?: number } | undefined)?.runs ?? 0) + 1;
+							req.setState({ runs: prevRuns, winner: "cand-b" });
+							return req.dispatch({
+								model: models.getModel("t5i2-f5-b", "cand-b")!,
+								thinkingLevel: "off",
+							});
+						},
+						onOutcome(outcome) {
+							seenOutcomeStates.push(outcome.state);
+							seenOutcomeModels.push(`${outcome.route.model.provider}/${outcome.route.model.id}`);
+							return { runs: (outcome.state as { runs?: number } | undefined)?.runs ?? 1, settled: true };
+						},
+					},
+				],
+			});
+
+			const sw = createSlidingWindow({ cwd: dir });
+			sw.wrapModels(routed);
+			const reg = createRegistry();
+			reg.install(sw.extension);
+
+			const draftUsage = {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0.001, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.002 },
+			};
+			candA.setResponses([
+				{ ...fauxAssistantMessage("Draft A1"), usage: draftUsage },
+				{ ...fauxAssistantMessage("Draft A2"), usage: draftUsage },
+			]);
+			candB.setResponses([
+				(ctx) => {
+					seenTailInCandB.push(String(ctx.messages.at(-1)?.content ?? ""));
+					return fauxAssistantMessage("Winner B1");
+				},
+				(ctx) => {
+					seenTailInCandB.push(String(ctx.messages.at(-1)?.content ?? ""));
+					return fauxAssistantMessage("Winner B2");
+				},
+			]);
+
+			const harness = await Harness.open(
+				new MemoryStorage(),
+				{
+					models: routed,
+					registry: reg,
+					env: async () =>
+						({
+							readTextFile: async (p: string) => {
+								const { readFileSync } = await import("node:fs");
+								return { ok: true as const, value: readFileSync(p, "utf8") };
+							},
+						}) as never,
+				},
+				context,
+			);
+			harness.resume();
+			const root = await harness.root(context, { agent: { model: sw.selection, cwd: dir } });
+			await root.commit(async (tx) => {
+				(await tx.doc(SlidingWindowTargetDoc, root.id)).target = {
+					provider: "router-f5",
+					modelId: "custom-stream",
+				};
+				(await tx.doc(SlidingWindowStateDoc, root.id)).hydrate = {
+					allowedPaths: ["slice.ts"],
+					hydratedPaths: [],
+				};
+			}, context);
+
+			await (await root.submit({ type: "input", content: "Turn 1" }, context)).wait(context);
+			await root.waitForIdle(context);
+			await (await root.submit({ type: "input", content: "Turn 2" }, context)).wait(context);
+			await root.waitForIdle(context);
+
+			expect(seenStreamModels).toEqual(["router-f5/custom-stream", "router-f5/custom-stream"]);
+			expect(seenStreamStates).toEqual([undefined, { runs: 1, settled: true }]);
+			expect(seenTailInCandB[0]).toContain("SLICE_CONTEXT_MARKER");
+			expect(seenOutcomeModels).toEqual(["t5i2-f5-b/cand-b", "t5i2-f5-b/cand-b"]);
+			expect(seenOutcomeStates).toEqual([
+				{ runs: 1, winner: "cand-b" },
+				{ runs: 2, winner: "cand-b" },
+			]);
+
+			const vmDoc = await harness.snapshot(VirtualModelStateDoc, root.id, context);
+			expect(vmDoc?.routeState).toEqual({ runs: 2, settled: true });
+			const usageDoc = await harness.snapshot(UsageDoc, root.id, context);
+			const specUsage = usageDoc?.sidecars?.["speculation:t5i2-f5-a/cand-a"];
+			expect(specUsage).toBeDefined();
+			expect(specUsage?.totalTokens ?? 0).toBeGreaterThan(0);
+			expect(specUsage?.output ?? 0).toBeGreaterThan(0);
+
+			await sw.close();
+			await harness.close(context);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
