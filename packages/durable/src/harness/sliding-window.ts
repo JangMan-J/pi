@@ -159,6 +159,38 @@ function lastReportedTokens(messages: readonly Message[]): number | undefined {
 	return undefined;
 }
 
+const MAX_FORK_ENABLED_HINTS = 1024;
+const forkEnabledHints = new Map<string, boolean>();
+
+function recordForkEnabledHint(conversationId: ConversationId | string, enabled: boolean): void {
+	const id = String(conversationId);
+	if (forkEnabledHints.has(id)) {
+		forkEnabledHints.delete(id);
+	} else if (forkEnabledHints.size >= MAX_FORK_ENABLED_HINTS) {
+		const oldest = forkEnabledHints.keys().next().value;
+		if (oldest !== undefined) forkEnabledHints.delete(oldest);
+	}
+	forkEnabledHints.set(id, enabled);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const proto = Object.getPrototypeOf(value);
+	return proto === Object.prototype || proto === null;
+}
+
+function isMechanicalLedger(value: unknown): value is MechanicalLedger {
+	if (!isPlainObject(value)) return false;
+	if (!Array.isArray(value.filesRead)) return false;
+	if (!Array.isArray(value.filesEdited)) return false;
+	if (!Array.isArray(value.recentRefs)) return false;
+	if (!Array.isArray(value.recentErrors)) return false;
+	if (typeof value.turnCount !== "number" || !Number.isFinite(value.turnCount)) return false;
+	if (value.epoch !== undefined && (typeof value.epoch !== "number" || !Number.isFinite(value.epoch))) return false;
+	if (value.lastProseDigest !== undefined && typeof value.lastProseDigest !== "string") return false;
+	return true;
+}
+
 function isModelObject(value: unknown): value is Model<Api> {
 	return typeof value === "object" && value !== null && "api" in value && "id" in value && "provider" in value;
 }
@@ -228,14 +260,23 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 		return s;
 	};
 
+	const resolveEnabledOption = (
+		enabled: SlidingWindowOptions["enabled"],
+		conversationId: ConversationId | string,
+	): boolean => {
+		if (typeof enabled === "function") return enabled(conversationId as ConversationId);
+		return enabled ?? true;
+	};
+
 	const isEnabled = (conversationId: ConversationId | string, c?: ConvState): boolean => {
 		const id = String(conversationId);
 		const perConv = enabledOverrides.get(id);
 		if (perConv !== undefined) return perConv;
-		if (globalEnabledOverride !== undefined) return globalEnabledOverride;
 		if (c?.persistedEnabled !== undefined) return c.persistedEnabled;
-		if (typeof options.enabled === "function") return options.enabled(conversationId as ConversationId);
-		return options.enabled ?? true;
+		const forkHint = forkEnabledHints.get(id);
+		if (forkHint !== undefined) return forkHint;
+		if (globalEnabledOverride !== undefined) return globalEnabledOverride;
+		return resolveEnabledOption(options.enabled, conversationId);
 	};
 
 	const resolveTargetModel = (ctx: SlidingWindowTargetContext): Model<Api> | undefined => {
@@ -347,12 +388,25 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 	});
 
 	const hydrate = async (c: ConvState, api: HookApi, ctx: Context) => {
+		const id = String(api.conversationId);
 		const swState = await api.snapshot(SlidingWindowStateDoc, api.conversationId, ctx);
 		if (swState?.enabled !== undefined) c.persistedEnabled = swState.enabled;
+		forkEnabledHints.delete(id);
 		if (c.hydrated) return;
 		c.hydrated = true;
 		const baton = await api.snapshot(BatonStateDoc, api.conversationId, ctx);
-		if (baton?.data) c.ledger = baton.data as unknown as MechanicalLedger;
+		const batonData: unknown = baton?.data;
+		c.ledger = isMechanicalLedger(batonData)
+			? {
+					epoch: batonData.epoch,
+					turnCount: batonData.turnCount,
+					filesRead: [...batonData.filesRead],
+					filesEdited: [...batonData.filesEdited],
+					recentRefs: [...batonData.recentRefs],
+					recentErrors: [...batonData.recentErrors],
+					...(batonData.lastProseDigest !== undefined ? { lastProseDigest: batonData.lastProseDigest } : {}),
+				}
+			: createEmptyLedger();
 		if (baton) c.ledger = { ...c.ledger, epoch: baton.epoch };
 	};
 
@@ -550,6 +604,7 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 						models: api.models,
 						...(agentState?.model ? { agent: { model: agentState.model } as Agent } : {}),
 					});
+					if (target && !isVirtualModel(target)) c.lastPhysicalModel = target;
 					if (!tail && !guard && !target) return undefined;
 					return attachVirtualRequestScope(
 						{ messages },
@@ -796,10 +851,13 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 		},
 		inspect(conversationId: ConversationId | string): SlidingWindowInspection {
 			const c = conv(String(conversationId));
-			const bounds: SlidingWindowBounds = effectiveWindowBounds(
-				config,
-				c.lastPhysicalModel?.contextWindow ?? staticTarget?.contextWindow,
-			);
+			const liveTarget = resolveTargetModel({
+				conversationId: conversationId as ConversationId,
+				...(boundModels ? { models: boundModels } : {}),
+			});
+			const contextWindow =
+				liveTarget?.contextWindow ?? c.lastPhysicalModel?.contextWindow ?? staticTarget?.contextWindow;
+			const bounds: SlidingWindowBounds = effectiveWindowBounds(config, contextWindow);
 			return {
 				enabled: isEnabled(conversationId, c),
 				epoch: c.ledger.epoch,
@@ -813,7 +871,11 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 		},
 		setEnabled(enabled: boolean, conversationId?: ConversationId | string): void {
 			if (conversationId !== undefined) {
-				enabledOverrides.set(String(conversationId), enabled);
+				const id = String(conversationId);
+				enabledOverrides.set(id, enabled);
+				forkEnabledHints.delete(id);
+				const existing = states.get(id);
+				if (existing) existing.persistedEnabled = enabled;
 			} else {
 				enabledOverrides.clear();
 				globalEnabledOverride = enabled;
@@ -858,7 +920,7 @@ export async function createSlidingWindowFork(
 		...createOptions
 	} = options;
 
-	return parent.fork(
+	const fork = await parent.fork(
 		at,
 		{
 			...createOptions,
@@ -901,4 +963,8 @@ export async function createSlidingWindowFork(
 		},
 		context,
 	);
+	if (slidingWindow !== undefined) {
+		recordForkEnabledHint(fork.id, slidingWindow);
+	}
+	return fork;
 }
