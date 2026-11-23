@@ -1,5 +1,6 @@
 import { utf8ByteLength } from "@earendil-works/chord/output";
 import { isReadToolName, spillThresholdForTool } from "./bounds.ts";
+import { portableSha256Hex } from "./memory-store.ts";
 import { buildMechanicalPreview } from "./preview.ts";
 import type { EphemeralSliceStage } from "./staging.ts";
 import type {
@@ -18,6 +19,7 @@ export interface SpillInput {
 	readonly rawText: string;
 	readonly isError: boolean;
 	readonly cwd?: string;
+	readonly details?: unknown;
 	readonly config: SlidingWindowConfig;
 	/** Called only once an output is over its threshold, so the store opens on the first real spill. */
 	readonly store: () => SlidingWindowArtifactStore;
@@ -44,16 +46,33 @@ export async function spillToolOutput(i: SpillInput): Promise<SpillOutput | unde
 	if (!i.config.spillEnabled || SPILL_EXEMPT_TOOLS.has(i.toolName) || i.rawText.length === 0) return undefined;
 	if (utf8ByteLength(i.rawText) <= spillThresholdForTool(i.toolName, i.config)) return undefined;
 
+	const detailsRec =
+		i.details && typeof i.details === "object" && !Array.isArray(i.details)
+			? (i.details as Record<string, unknown>)
+			: undefined;
+	const artifactRec =
+		detailsRec?.artifact && typeof detailsRec.artifact === "object" && !Array.isArray(detailsRec.artifact)
+			? (detailsRec.artifact as Record<string, unknown>)
+			: undefined;
+	const artifactPartial = artifactRec?.partial === true;
+	const artifactSourcePath = typeof artifactRec?.sourcePath === "string" ? artifactRec.sourcePath : undefined;
+	const artifactSourceSha256 = typeof artifactRec?.sourceSha256 === "string" ? artifactRec.sourceSha256 : undefined;
+
 	const path =
 		typeof i.input?.path === "string"
 			? i.input.path
 			: typeof i.input?.file_path === "string"
 				? i.input.file_path
-				: undefined;
+				: typeof i.input?.filePath === "string"
+					? i.input.filePath
+					: artifactSourcePath;
 	const isRead = isReadToolName(i.toolName);
+	const isPartialRead =
+		artifactPartial || (artifactSourceSha256 !== undefined && portableSha256Hex(i.rawText) !== artifactSourceSha256);
 	const meta = await i.store().put(i.rawText, {
 		toolName: i.toolName,
-		...(isRead && path ? { sourcePath: path, ...(i.cwd ? { cwd: i.cwd } : {}) } : {}),
+		...(isRead && path && !isPartialRead ? { sourcePath: path, ...(i.cwd ? { cwd: i.cwd } : {}) } : {}),
+		...(isRead && path && isPartialRead ? { label: path, bindSource: false } : {}),
 	});
 	const staged =
 		(i.canStageSlices ?? true) && isRead && !i.isError && i.config.stageReadSlices && path
