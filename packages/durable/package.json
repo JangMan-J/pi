@@ -126,6 +126,18 @@
 			"import": "./dist/harness/virtual-models.js",
 			"default": "./dist/harness/virtual-models.js"
 		},
+		"./sliding-window": {
+			"source": "./src/harness/sliding-window.ts",
+			"types": "./dist/harness/sliding-window.d.ts",
+			"import": "./dist/harness/sliding-window.js",
+			"default": "./dist/harness/sliding-window.js"
+		},
+		"./sliding-window/node": {
+			"source": "./src/harness/sliding-window/node.ts",
+			"types": "./dist/harness/sliding-window/node.d.ts",
+			"import": "./dist/harness/sliding-window/node.js",
+			"default": "./dist/harness/sliding-window/node.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"sideEffects": false,
