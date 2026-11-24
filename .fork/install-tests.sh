@@ -70,8 +70,8 @@ if [[ ! -d node_modules ]]; then
 fi
 if [[ ! -f packages/coding-agent/dist/bundle/cli.js || ! -d packages/ai/dist ]]; then
 	if ! npm --prefix packages/ai run check:model-data >/dev/null 2>&1; then
-		say "Hydrating model data (npm run hydrate:model-data, needs network)"
-		npm run hydrate:model-data
+		say "Hydrating model data (.fork/hydrate-models.mjs, needs network)"
+		node .fork/hydrate-models.mjs
 	fi
 	say "Building packages (npm run build:offline)"
 	npm run build:offline

@@ -21,11 +21,8 @@ ensure_ai_deps_built() {
 	done
 	if [[ ! -d "packages/ai/dist" ]]; then
 		echo "building @earendil-works/pi-ai (dist missing)"
-		(
-			cd packages/ai
-			npm run check:model-data >/dev/null 2>&1 || npm run hydrate-model-data >/dev/null
-			npm run build:offline >/dev/null
-		)
+		npm --prefix packages/ai run check:model-data >/dev/null 2>&1 || node "$here/hydrate-models.mjs" >/dev/null
+		(cd packages/ai && npm run build:offline >/dev/null)
 	fi
 }
 
