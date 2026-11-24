@@ -123,7 +123,7 @@ jobs:
         if: steps.release.outputs.needed == 'true'
         run: |
           [ -d node_modules ] || npm ci --ignore-scripts
-          npm --prefix packages/ai run check:model-data >/dev/null 2>&1 || npm run hydrate:model-data
+          npm --prefix packages/ai run check:model-data >/dev/null 2>&1 || node .fork/hydrate-models.mjs
           npm run build:offline
 
       - name: Check
