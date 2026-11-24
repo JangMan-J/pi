@@ -258,8 +258,8 @@ prepare_for_check() {
 	if [[ ! -d node_modules ]] || [[ -n "$(git diff --name-only "$prev" next -- package.json package-lock.json 'packages/*/package.json' 'apps/*/package.json')" ]]; then
 		npm ci --ignore-scripts
 	fi
-	# Always from live sources (models.dev, OpenRouter, ...), so a release carries the current model list.
-	npm run hydrate:model-data
+	# Live sources first; backfill only tsc-referenced retired entries from nix/model-catalog.json if models.dev moved ahead of upstream tests.
+	node "$here/hydrate-models.mjs"
 }
 
 align_refs() {
