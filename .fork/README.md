@@ -56,6 +56,7 @@ operations, and recovery.
   rebases every branch, rebuilds `next`, runs the focused checks and optionally pushes with
   `--force-with-lease` (`--push` is refused outside GitHub Actions). It refuses to rebuild over commits made
   on `next`.
+- `hydrate-models.mjs`: hydrates model data from live sources, backfilling only `tsc`-referenced retired entries from upstream's `nix/model-catalog.json` pin when live sources move ahead of upstream tests.
 - `install-hooks.sh`: installs the `pre-push` hook in every worktree; it refuses pushes of `next` and `main`
   outside GitHub Actions.
 - `check.sh`: `focused` runs the tests the fork owns; `all` runs `npm run check` and `./test.sh`.
