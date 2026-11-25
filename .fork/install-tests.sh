@@ -84,9 +84,7 @@ command -v cargo >/dev/null 2>&1 || die "cargo is required for packages/env test
 chmod +x .fork/*.sh
 
 say "Installing the pre-commit and pre-push hooks and checking commit signing"
-# npm ci --ignore-scripts skips upstream's "prepare": "husky", which installs the hook that runs npm run check.
-npx --no-install husky
-# pre-push refuses pushes of next and main: only fork-sync.yml pushes them.
+# Use .fork's hooks in common git hooks instead of upstream's .husky/pre-commit (which runs dead apps/p2 checks).
 .fork/install-hooks.sh
 [[ "$(git config --get commit.gpgsign)" == true ]] ||
 	echo "warning: commit.gpgsign is not true, so fork commits will be unsigned (see .fork/AGENTS.md, step 5)"
