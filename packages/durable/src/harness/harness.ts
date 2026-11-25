@@ -45,12 +45,17 @@ import type {
 import { ROOT_CONVERSATION_ID } from "../types.ts";
 import { AgentDoc, configure, createAgent, resolveAgent, resolveSettings } from "./agent.ts";
 import { createCompaction } from "./compaction.ts";
-import { readContext } from "./context.ts";
+import { captureContextBounds, deriveContext, readContext } from "./context.ts";
 import { InboxDoc, withdrawAbortedInputs } from "./inbox.ts";
 import { LIMITS_RESTARTS, LiveDoc, settleSchedulerOutcome } from "./live.ts";
 import { ProviderDoc } from "./provider.ts";
 import { BUILTIN_TASKS } from "./registry.ts";
 import { type InvocationBinding, TaskScheduler } from "./scheduler.ts";
+import {
+	applyCheckpointedSeed,
+	buildCheckpointedSeedPlan,
+	readParentCheckpointDocs,
+} from "./sliding-window/fork-export.ts";
 import { Submissions } from "./submissions.ts";
 import { type TaskGraph, TaskGraphView, type TaskGraphWatch } from "./task-graph.ts";
 import { DURABLE_TELEMETRY_SCHEMA } from "./telemetry.ts";
@@ -71,6 +76,7 @@ import type {
 	HarnessSettings,
 	Harness as HarnessType,
 	RegistrySnapshot,
+	SeedCheckpointedConversationOptions,
 	SettledTask,
 	Submission,
 	SubmissionDraft,
@@ -426,6 +432,92 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation> {
 		return this.#create({ kind: "independent", ownership: options.ownership }, options, context);
+	}
+
+	async seedCheckpointedConversation(
+		parentId: ConversationId,
+		at: EntryId,
+		options: SeedCheckpointedConversationOptions,
+		context: Context,
+	): Promise<Conversation> {
+		this.assertUsable();
+		// Parent reads run before the creating commit: that commit opens with table writes, so reads there would throw.
+		const { bounds, docs, atSeq } = await this.readOnLine(async (storage) => {
+			if ((await storage.conversation(parentId, context)) === undefined) {
+				throw new Error(`Conversation ${parentId} does not exist`);
+			}
+			const entryRec = await storage.entry(parentId, at, context);
+			if (entryRec === undefined) {
+				throw new Error(`Entry ${at} is not visible from conversation ${parentId}`);
+			}
+			return {
+				bounds: await captureContextBounds(this, storage, parentId, context, at, true),
+				docs: await readParentCheckpointDocs(storage, parentId, entryRec, context),
+				atSeq: entryRec.commitSeq,
+			};
+		});
+		// Entries at or below the checkpoint are immutable, so the view derives off the Session line.
+		const view = await deriveContext(this.storage, parentId, bounds, context);
+		const parentAgent = await this.resolveAgent(parentId, undefined, context);
+		let parentSessionId = docs.providerSessionId;
+		if (parentSessionId === undefined && options.copyProviderSession !== false) {
+			parentSessionId = (await this.snapshot(ProviderDoc, parentId, context))?.sessionId;
+		}
+		const plan = buildCheckpointedSeedPlan({
+			view,
+			parentAgent,
+			parentAgentState: docs.agentState,
+			parentBaton: docs.baton,
+			parentLedger: docs.ledger,
+			parentVmState: docs.vmState,
+			parentTarget: docs.target,
+			parentSessionId,
+			models: options.models ?? currentModels(this.#options.models, this.#options.identity)(),
+			registry: options.registry ?? this.#options.registry,
+			settings: options.settings ?? this.#hostSettings(),
+			systemPrompt: options.systemPrompt,
+			tools: options.tools,
+			taskPrompt: options.taskPrompt,
+			dispatchSummary: options.dispatchSummary,
+			studyNotes: options.studyNotes,
+			targetModel: options.targetModel,
+			thinkingLevel: options.thinkingLevel,
+			cwd: options.cwd,
+			maxTurns: options.maxTurns,
+			compaction: options.compaction,
+			modelTools: options.modelTools,
+			extensions: options.extensions,
+			allowedTools: options.allowedTools,
+			blockedToolReason: options.blockedToolReason,
+			allowedPaths: options.allowedPaths,
+			maxHydrateBytes: options.maxHydrateBytes,
+			slidingWindow: options.slidingWindow,
+			slidingWindowModel: options.slidingWindowModel,
+			copyProviderSession: options.copyProviderSession,
+			preserveToolDeclarations: options.preserveToolDeclarations,
+			disableContinuation: options.disableContinuation,
+			preserveThinkingLevel: options.preserveThinkingLevel,
+			parentThinkingLevel: options.parentThinkingLevel,
+			preservedThinkingLevel: options.preservedThinkingLevel,
+			allowThinkingEpochFlip: options.allowThinkingEpochFlip,
+			lineage: {
+				parentConversationId: parentId,
+				atEntryId: at,
+				atSeq,
+				...(options.sliceId === undefined ? {} : { sliceId: options.sliceId }),
+				...(options.allowedPaths === undefined ? {} : { allowedPaths: [...options.allowedPaths] }),
+			},
+		});
+		return this.#create(
+			{ kind: "independent", ownership: options.ownership },
+			{
+				init: async (tx, childId) => {
+					await applyCheckpointedSeed(tx, childId, plan);
+					await options.init?.(tx, childId);
+				},
+			},
+			context,
+		);
 	}
 
 	override report(error: unknown, info: ReportInfo = { kind: "listener_error" }, context?: Context): void {

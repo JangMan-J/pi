@@ -1,6 +1,26 @@
 import { utf8ByteLength } from "@earendil-works/chord/output";
 import type { StagedSlice } from "./types.ts";
 
+type NodeFs = {
+	realpathSync?: { native?: (path: string) => string };
+};
+
+type NodePath = {
+	resolve?: (...paths: string[]) => string;
+};
+
+type ProcessWithBuiltinModule = typeof process & {
+	getBuiltinModule?: {
+		(id: "node:fs"): NodeFs;
+		(id: "node:path"): NodePath;
+	};
+};
+
+const nodeFs =
+	typeof process !== "undefined" ? (process as ProcessWithBuiltinModule).getBuiltinModule?.("node:fs") : undefined;
+const nodePath =
+	typeof process !== "undefined" ? (process as ProcessWithBuiltinModule).getBuiltinModule?.("node:path") : undefined;
+
 function normalizePosix(raw: string): string {
 	const slash = raw.replaceAll("\\", "/");
 	const absolute = slash.startsWith("/");
@@ -25,9 +45,16 @@ function isAbsolutePortable(p: string): boolean {
 }
 
 export function normalizeSliceKey(p: string, cwd?: string): string {
-	if (isAbsolutePortable(p)) return normalizePosix(p);
-	if (cwd) return normalizePosix(`${cwd.replaceAll("\\", "/")}/${p}`);
-	return normalizePosix(p);
+	let lexical: string;
+	if (isAbsolutePortable(p)) lexical = normalizePosix(p);
+	else if (cwd && nodePath?.resolve) lexical = normalizePosix(nodePath.resolve(cwd, p));
+	else if (cwd) lexical = normalizePosix(`${cwd.replaceAll("\\", "/")}/${p}`);
+	else lexical = normalizePosix(p);
+	try {
+		return nodeFs?.realpathSync?.native ? normalizePosix(nodeFs.realpathSync.native(lexical)) : lexical;
+	} catch {
+		return lexical;
+	}
 }
 
 /**

@@ -1,4 +1,5 @@
 import { defineDoc } from "../../documents.ts";
+import type { ConversationId, EntryId, Seq } from "../../types.ts";
 import { createEmptyLedger } from "./ledger.ts";
 import type { MechanicalLedger, SlidingWindowHydratePolicy, SlidingWindowTargetValue } from "./types.ts";
 
@@ -6,6 +7,25 @@ export type SlidingWindowStateValue = {
 	enabled?: boolean;
 	hydrate?: SlidingWindowHydratePolicy;
 };
+
+export type CheckpointLineageValue = {
+	parentConversationId?: ConversationId;
+	atEntryId?: EntryId;
+	atSeq?: Seq;
+	sliceId?: string;
+	allowedPaths?: string[];
+};
+
+/** Per-conversation checkpoint ancestry and access scope, initialized independently on forks. */
+export const CheckpointLineageDoc = defineDoc<CheckpointLineageValue>({
+	kind: "pi.checkpoint-lineage",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	initial: () => ({}),
+	checkpointWhen: () => true,
+});
 
 /** Per-conversation sliding-window enable and hydration state; forkable via `fork: "initial"`. */
 export const SlidingWindowStateDoc = defineDoc<SlidingWindowStateValue>({
