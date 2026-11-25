@@ -98,6 +98,14 @@ export const CODEMODE_TOOL_NAME = "codemode";
 type DeclaredTool = { name: string; jsName: string; description: string; structured?: true; hidden?: true };
 
 /** What a call starts with; a rerun starts the VM from exactly this. */
+type CodemodeNamespace = {
+	name: string;
+	description?: string;
+	instructions?: string;
+	aliases?: string[];
+	tools: string[];
+};
+
 type Start = {
 	version: number;
 	startedAt: number;
@@ -111,7 +119,7 @@ type Start = {
 	 * The namespaces the selected extensions declare (`Extension.namespace`), with their tools, as `describeNamespace()`
 	 * and `searchTools()` see them; a namespace without tools yet is listed too.
 	 */
-	namespaces: { name: string; description?: string; instructions?: string; tools: string[] }[];
+	namespaces: CodemodeNamespace[];
 	globals: { name: string; spread: boolean }[];
 	/** `max_output_tokens` of the script's options line, or the default. */
 	maxOutputTokens: number;
@@ -389,10 +397,11 @@ class CodemodeCall {
 			...(this.options.globals ?? []).map((global) => ({ name: global.name, spread: global.spread === true })),
 		];
 		const toolNamespaces = namespacesOf(agent.extensions);
-		const namespaces: Start["namespaces"] = declaredNamespaces(agent.extensions).map((namespace) => ({
+		const namespaces: CodemodeNamespace[] = declaredNamespaces(agent.extensions).map((namespace) => ({
 			name: namespace.name,
 			description: namespace.description,
 			...(namespace.instructions === undefined ? {} : { instructions: namespace.instructions }),
+			...(namespace.aliases === undefined ? {} : { aliases: [...namespace.aliases] }),
 			tools: callable
 				.filter((tool) => toolNamespaces.get(tool.name)?.name === namespace.name)
 				.map((tool) => tool.name),
@@ -912,7 +921,11 @@ class CodemodeCall {
 		const tools = this.start.tools.filter((tool) => tool.hidden !== true);
 		const namespaceOfTool = (name: string) => namespaces.find((namespace) => namespace.tools.includes(name));
 		const matchesNamespace = (namespace: Start["namespaces"][number], query: string) =>
-			namespace.name === query || toCodemodeIdentifier(namespace.name) === toCodemodeIdentifier(query);
+			namespace.name === query ||
+			toCodemodeIdentifier(namespace.name) === toCodemodeIdentifier(query) ||
+			(namespace.aliases ?? []).some(
+				(alias) => alias === query || toCodemodeIdentifier(alias) === toCodemodeIdentifier(query),
+			);
 		if (call.name === "describeTool") {
 			const [name] = args;
 			if (typeof name !== "string") throw new Error("describeTool() expects a tool name");

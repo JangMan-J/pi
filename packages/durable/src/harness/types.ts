@@ -24,6 +24,7 @@ import type { ExecutionEnv, ShellOutputSkip, ShellOutputWindow } from "../env/in
 import type { SignalKey, SignalResult, SignalState, SignalToken } from "../signals.ts";
 import type {
 	CommitOptions,
+	ContextEdit,
 	ConversationId,
 	ConversationOwnership,
 	ConversationRecord,
@@ -507,7 +508,13 @@ export type Wrap<Tool extends ToolRegistration = ToolRegistration> =
  * shown in the `codemode` prompt section; `instructions` is the longer how-to, returned only by `describeNamespace()`;
  * `searchTools()` searches both.
  */
-export type ToolNamespace = { readonly name: string; readonly description: string; readonly instructions?: string };
+export type ToolNamespace = {
+	readonly name: string;
+	readonly description: string;
+	readonly instructions?: string;
+	/** Other names scripts may look the namespace up by (e.g. `docs` for `mcp__docs`). */
+	readonly aliases?: readonly string[];
+};
 
 export interface Extension<Tool extends ToolRegistration = ToolRegistration> {
 	readonly name: string;
@@ -647,6 +654,50 @@ export type ConversationCreateOptions = {
 	readonly init?: ConversationInit;
 };
 
+/**
+ * Options of `Harness.seedCheckpointedConversation()`: a fresh conversation seeded from a parent's checkpoint at one
+ * entry. Fields the seed does not name follow the parent's `asOf` state; `modelTools`, `extensions`, and `maxTurns`
+ * are never inherited, and a task-owned conversation's copied `pi.agent` is replaced whole.
+ */
+export type SeedCheckpointedConversationOptions = {
+	readonly ownership: ConversationOwnership;
+	readonly sliceId?: string;
+	/** System prompt; omitted: the parent's `asOf` `pi.agent.instructions`, and no instructions section when unset. */
+	readonly systemPrompt?: string;
+	/** Child tools (declaration or registration); falls back to the parent's `asOf` declared tools. */
+	readonly tools?: readonly (Tool | ToolRegistration)[];
+	readonly modelTools?: AgentState["modelTools"];
+	readonly extensions?: AgentState["extensions"];
+	readonly taskPrompt: string;
+	readonly dispatchSummary?: string;
+	readonly studyNotes?: string;
+	readonly targetModel?: ModelRef;
+	readonly thinkingLevel?: ModelThinkingLevel;
+	readonly cwd?: string;
+	readonly maxTurns?: number;
+	readonly compaction?: CompactionSettings;
+	readonly allowedTools?: readonly string[];
+	readonly blockedToolReason?: string;
+	readonly allowedPaths?: readonly string[];
+	readonly maxHydrateBytes?: number;
+	readonly slidingWindow?: boolean;
+	/** Optional virtual sliding-window catalog ref (`AgentDoc.model`); defaults to `sliding-window/active` when registered and `slidingWindow !== false`. */
+	readonly slidingWindowModel?: ModelRef;
+	readonly copyProviderSession?: boolean;
+	readonly preserveToolDeclarations?: boolean;
+	readonly disableContinuation?: boolean;
+	readonly preserveThinkingLevel?: boolean;
+	readonly parentThinkingLevel?: ModelThinkingLevel;
+	readonly preservedThinkingLevel?: Exclude<ModelThinkingLevel, "off">;
+	readonly allowThinkingEpochFlip?: boolean;
+	/** Model catalog and registry of the seed, defaulting to the Harness's own. */
+	readonly models?: Models;
+	readonly registry?: RegistryReader;
+	readonly settings?: HarnessSettings;
+	/** Runs in the creating commit after the seed; table reads throw there. */
+	readonly init?: ConversationInit;
+};
+
 /** Curated pi-ai request options; absent fields use pi-ai defaults. */
 export type ConversationStreamOptions = {
 	transport?: Transport;
@@ -662,6 +713,8 @@ export type ConversationStreamOptions = {
 	metadata?: JsonObject;
 	cacheRetention?: CacheRetention;
 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
+	/** Disable WebSocket/response continuation state (`previous_response_id`) when session/history changed. */
+	disableContinuation?: boolean;
 };
 
 /** Durable generation attempt retries; the JSON shape of pi-ai `RetryPolicy`. */
@@ -1011,6 +1064,18 @@ export interface Harness extends Session {
 	): Promise<Conversation>;
 	conversation(id: ConversationId, context: Context): Promise<Conversation | undefined>;
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation>;
+	/**
+	 * Create a conversation seeded from `parentId`'s checkpoint at `at`, as `exportCheckpointedForkToStorage()` writes
+	 * it: frozen system, user, and assistant entries; `pi.agent` built from `options`; the parent's provider session
+	 * when `copyProviderSession`; the cache guard; and reset sliding-window documents. The parent's `asOf` documents are
+	 * read before the creating commit, which writes them without reading any table. `init` runs after the seed there.
+	 */
+	seedCheckpointedConversation(
+		parentId: ConversationId,
+		at: EntryId,
+		options: SeedCheckpointedConversationOptions,
+		context: Context,
+	): Promise<Conversation>;
 
 	getTask<R>(id: TaskId<R>, context: Context): Promise<TaskRecord<JsonValue, JsonValue, R> | undefined>;
 	/** Live tasks and unsettled submissions. Writes nothing and runs no task code. */
@@ -1073,6 +1138,8 @@ export interface HookApi extends DocumentReader {
 	readonly conversationId: ConversationId;
 	/** The current `HarnessOptions.models`, read at each access. */
 	readonly models: Models;
+	/** Calls `HarnessOptions.env` for the task's conversation, when provided by the runtime. */
+	env?(context: Context): Promise<ExecutionEnv | undefined>;
 	memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
 	memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
 	/** A signal key's committed state in the asking task, as `TaskRuntime.readSignal()`. */
@@ -1094,8 +1161,55 @@ export interface HookApi extends DocumentReader {
 
 export type HookResult<T> = T | undefined | Promise<T | undefined>;
 
+/** Input delivered to `GenerationHooks.beforeAgentStart` once when a run starts. */
+export type BeforeAgentStartEvent = {
+	/** Active model context view (including the newly placed user input that triggered the run). */
+	readonly view: ContextView;
+	/** Active `AgentDoc` snapshot for the conversation. */
+	readonly agent: Agent;
+	/** Host execution environment, when configured. */
+	readonly env?: ExecutionEnv;
+};
+
+/** Context reset requested by `GenerationHooks.beforeAgentStart` (`ResetEntry`). */
+export type BeforeAgentStartReset = {
+	/** First kept entry after the reset; defaults to the run's opening input (`firstPlacedInput`), or `"self"`. */
+	readonly head?: EntryId | "self";
+	/** Synthetic messages placed at the reset boundary (e.g. `[anchorUser0, handoffSummary]` to keep `firstUser` / Anthropic `cch` invariant). */
+	readonly model?: readonly Message[];
+	/** Optional opaque metadata persisted on the `ResetEntry`. */
+	readonly data?: JsonValue;
+};
+
+/** Out-of-band spend incurred by a `beforeAgentStart` helper, recorded in `UsageDoc.sidecars` and `UsageDoc.sidecarContext`. */
+export type BeforeAgentStartSidecarUsage = {
+	/** Bucket prefix in `<kind>:<provider>/<modelId>` (e.g. `"baton_helper"` or `"helper_b"`). */
+	readonly kind: string;
+	readonly provider: string;
+	readonly modelId: string;
+	readonly usage: Usage;
+};
+
+/** Durable mutations committed atomically by `GenerationHooks.beforeAgentStart` before `prepare` plans system entries. */
+export type BeforeAgentStartResult = {
+	/** Targeted in-place entry edits (`ContextEdit`) applied to prior transcript entries. */
+	readonly edits?: readonly ContextEdit[];
+	/** Full context reset (`ResetEntry`) for baton swaps or sliding-window rollovers. */
+	readonly reset?: BeforeAgentStartReset;
+	/** Additional transcript entries appended in the same commit. */
+	readonly entries?: readonly EntryDraft[];
+	/** `AgentDoc` configuration updates (model, thinkingLevel, tools, sections) applied before `prepare`. */
+	readonly agent?: AgentChange;
+	/** Child `HookTask`s (e.g. writing `BatonStateDoc`) awaited before `prepare` proceeds. */
+	readonly tasks?: readonly HookTask[];
+	/** Helper/sidecar model calls to record in `UsageDoc.sidecars` (cumulative) and `UsageDoc.sidecarContext` (latest context fill). */
+	readonly sidecarUsage?: readonly BeforeAgentStartSidecarUsage[];
+};
+
 /** Hooks of the built-in generation task. */
 export interface GenerationHooks {
+	/** Once when a run starts, before preparing system entries and compaction checks. */
+	beforeAgentStart(event: BeforeAgentStartEvent, api: HookApi, context: Context): HookResult<BeforeAgentStartResult>;
 	/** Before every request attempt, including recovery; the result is used for that request only. */
 	beforeRequest(
 		request: { readonly messages: readonly Message[] },

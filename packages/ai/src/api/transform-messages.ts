@@ -199,6 +199,7 @@ export function transformMessages<TApi extends Api>(
 	// This preserves thinking signatures and satisfies API requirements
 	const result: Message[] = [];
 	let pendingToolCalls: ToolCall[] = [];
+	let pendingAssistantTimestamp: number | undefined;
 	let existingToolResultIds = new Set<string>();
 	// System messages are transparent to tool-call accounting: one that lands between a tool
 	// call and its results is held back and emitted after the results (synthetic ones
@@ -214,11 +215,12 @@ export function transformMessages<TApi extends Api>(
 						toolName: tc.name,
 						content: [{ type: "text", text: "No result provided" }],
 						isError: true,
-						timestamp: Date.now(),
+						timestamp: pendingAssistantTimestamp ?? Date.now(),
 					} as ToolResultMessage);
 				}
 			}
 			pendingToolCalls = [];
+			pendingAssistantTimestamp = undefined;
 			existingToolResultIds = new Set();
 		}
 		result.push(...heldSystemMessages);
@@ -246,6 +248,10 @@ export function transformMessages<TApi extends Api>(
 			const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];
 			if (toolCalls.length > 0) {
 				pendingToolCalls = toolCalls;
+				pendingAssistantTimestamp =
+					typeof assistantMsg.timestamp === "number" && Number.isFinite(assistantMsg.timestamp)
+						? assistantMsg.timestamp
+						: undefined;
 				existingToolResultIds = new Set();
 			}
 

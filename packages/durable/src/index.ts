@@ -56,6 +56,7 @@ export { ProviderDoc, type ProviderState } from "./harness/provider.ts";
 export { createRegistry } from "./harness/registry.ts";
 export { registryReader } from "./harness/registry-reader.ts";
 export type { BlockedReason } from "./harness/scheduler.ts";
+export { CheckpointLineageDoc, type CheckpointLineageValue } from "./harness/sliding-window/docs.ts";
 export type { TaskGraph, TaskGraphNode, TaskGraphState, TaskGraphWatch } from "./harness/task-graph.ts";
 export { DURABLE_TELEMETRY_SCHEMA } from "./harness/telemetry.ts";
 export {
@@ -80,6 +81,10 @@ export type {
 	AgentChange,
 	AgentState,
 	AnyTask,
+	BeforeAgentStartEvent,
+	BeforeAgentStartReset,
+	BeforeAgentStartResult,
+	BeforeAgentStartSidecarUsage,
 	CompactionHooks,
 	CompactionPolicy,
 	CompactionReason,
@@ -118,6 +123,7 @@ export type {
 	RegistryReader,
 	RegistrySnapshot,
 	RunSummary,
+	SeedCheckpointedConversationOptions,
 	Settings,
 	SettledSubmissionRecord,
 	SettledTask,
@@ -139,7 +145,14 @@ export type {
 	Wrap,
 	YieldDecision,
 } from "./harness/types.ts";
-export { UsageDoc, type UsageState } from "./harness/usage.ts";
+export {
+	addUsage,
+	addUsageState,
+	recordSidecarUsage,
+	recordUsage,
+	UsageDoc,
+	type UsageState,
+} from "./harness/usage.ts";
 export type { ConversationView, ConversationWindow } from "./harness/view.ts";
 export { createSession } from "./session/session.ts";
 export {

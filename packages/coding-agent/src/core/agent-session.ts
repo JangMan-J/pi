@@ -116,6 +116,7 @@ import {
 } from "./extensions/index.ts";
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
+import { isTextSuppressed, presentSessionEvent } from "./message-presentation.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -131,6 +132,7 @@ import {
 	type SessionEntry,
 	SessionManager,
 	type SessionProjection,
+	type UsageEntry,
 } from "./session-manager.ts";
 import {
 	applyToolModifiers,
@@ -152,13 +154,13 @@ import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, combineUsage, createUsageTotals } from "./usage-totals.ts";
 import {
+	computeBranchCacheSnapshot,
 	findLatestResponse,
 	getBranchSelection,
-	getVirtualModelState,
 	isVirtualModel,
-	VIRTUAL_MODEL_STATE_ENTRY,
-	type VirtualModelStateData,
+	type ModelRouteCacheSnapshot,
 } from "./virtual-models.ts";
+import { VirtualRouteController } from "./virtual-route-controller.ts";
 
 /**
  * Stream functions that resolve auth through a given ModelRuntime themselves, such as the one
@@ -311,6 +313,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Role of this session (`"subagent"` enables `purpose: "subagent"` routing). */
+	sessionRole?: "primary" | "subagent";
 }
 
 export interface ExtensionBindings {
@@ -504,6 +508,8 @@ export class AgentSession {
 
 	private _modelRuntime: ModelRuntime;
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
+	private readonly _virtualRoutes: VirtualRouteController;
+	private readonly _isSubagent: boolean;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -528,6 +534,16 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		this._isSubagent = config.sessionRole === "subagent" || process.env.PI_SUBAGENT === "1";
+		this._virtualRoutes = new VirtualRouteController({
+			modelRuntime: this._modelRuntime,
+			sessionManager: this.sessionManager,
+			isSubagent: this._isSubagent,
+			getSelectedModel: () => this.model,
+			getStreamFunction: () => this.agent.streamFunction,
+			setWorkingMessage: (message) => this._extensionRunner?.getUIContext().setWorkingMessage(message),
+			emitEntryAppended: (entry) => this._emit({ type: "entry_appended", entry }),
+		});
 		this._cacheWarmer = config.cacheWarmer;
 		if (this._cacheWarmer) {
 			this._cacheWarmer.onWarmed = (entry) => this._emit({ type: "entry_appended", entry });
@@ -609,31 +625,35 @@ export class AgentSession {
 	private async _getSummarizationRequestAuth(
 		selectedModel: Model<any>,
 		signal?: AbortSignal,
+		purpose: "compaction" | "branch_summary" | "direct" = "direct",
 	): Promise<{
 		model: Model<any>;
 		apiKey?: string;
 		headers?: Record<string, string>;
 		env?: Record<string, string>;
 		thinkingLevel: ThinkingLevel;
+		streamFn: StreamFn;
 	}> {
 		// Route a virtual model first: summaries size their input and output from the model they get.
-		const { model, thinkingLevel } = isVirtualModel(selectedModel)
-			? await this._modelRuntime.resolveModel(selectedModel, convertToLlm(this.messages), {
-					reason: "direct",
-					thinkingLevel: this.thinkingLevel,
+		const { model, thinkingLevel, streamFn } = isVirtualModel(selectedModel)
+			? await this._virtualRoutes.resolveOutOfBandCall(
+					selectedModel,
+					convertToLlm(this.messages),
+					this.thinkingLevel,
+					purpose,
 					signal,
-				})
-			: { model: selectedModel, thinkingLevel: this.thinkingLevel };
+				)
+			: { model: selectedModel, thinkingLevel: this.thinkingLevel, streamFn: this.agent.streamFunction };
 		if (this.agent.streamFunction === streamSimple) {
-			return { ...(await this._getRequiredRequestAuth(model, signal)), thinkingLevel };
+			return { ...(await this._getRequiredRequestAuth(model, signal)), thinkingLevel, streamFn };
 		}
 		if (runtimeStreamFunctions.get(this.agent.streamFunction) === this._modelRuntime) {
-			return { model, thinkingLevel };
+			return { model, thinkingLevel, streamFn };
 		}
 
 		try {
 			const result = await this._modelRuntime.getAuth(model, { signal });
-			if (!result) return { model, thinkingLevel };
+			if (!result) return { model, thinkingLevel, streamFn };
 			const requestModel = result.auth.baseUrl ? { ...model, baseUrl: result.auth.baseUrl } : model;
 			return {
 				model: requestModel,
@@ -641,10 +661,11 @@ export class AgentSession {
 				headers: withoutDeletedHeaders(result.auth.headers),
 				env: result.env,
 				thinkingLevel,
+				streamFn,
 			};
 		} catch (error) {
 			if (signal?.aborted) throw error;
-			return { model, thinkingLevel };
+			return { model, thinkingLevel, streamFn };
 		}
 	}
 
@@ -721,9 +742,14 @@ export class AgentSession {
 
 	/** `tool_call` handlers. `parentToolCallId` is set for calls another tool made. */
 	private async _beforeToolCall(
-		{ toolCall, args }: BeforeToolCallContext,
+		context: BeforeToolCallContext,
 		parentToolCallId?: string,
 	): Promise<BeforeToolCallResult | undefined> {
+		if (!parentToolCallId) {
+			const routeBlock = this._virtualRoutes.checkToolCall(context);
+			if (routeBlock) return routeBlock;
+		}
+		const { toolCall, args } = context;
 		const runner = this._extensionRunner;
 		if (!runner.hasHandlers("tool_call")) {
 			return undefined;
@@ -876,35 +902,27 @@ export class AgentSession {
 			let { previous, context, projection } = await prepare();
 			const model = previous?.model ?? this.agent.state.model;
 			const thinkingLevel = previous?.thinkingLevel ?? this.agent.state.thinkingLevel;
-			if (!isVirtualModel(model)) return { ...previous, context, model, thinkingLevel };
+			if (!isVirtualModel(model)) {
+				this._virtualRoutes.resetRunState();
+				return { ...previous, context, model, thinkingLevel };
+			}
 
-			// The selection stays in agent state; only this request uses the routed model. A routing
-			// failure rejects, which ends the run with an error response. Only messages the user wrote
-			// start a turn; extension messages can follow them, e.g. from before_agent_start.
-			const lastResponse = context.messages.findLastIndex((message) => message.role === "assistant");
-			const userTurn = context.messages.slice(lastResponse + 1).some((message) => message.role === "user");
-			const state = getVirtualModelState(this.sessionManager.getBranch(), model.provider, model.id);
-			const route = await this._modelRuntime.resolveModel(model, convertToLlm(context.messages), {
-				reason: failed ? "retry" : userTurn ? "user" : "continuation",
-				thinkingLevel,
-				signal,
-				failed,
-				state,
-			});
-			if (route.state !== undefined && route.state !== state) {
-				const data: VirtualModelStateData = { provider: model.provider, modelId: model.id, state: route.state };
-				const entry = this.sessionManager.getEntry(
-					this.sessionManager.appendCustomEntry(VIRTUAL_MODEL_STATE_ENTRY, data),
-				);
-				if (entry) this._emit({ type: "entry_appended", entry });
-			}
-			// The route stands: the router already decided this request. The state entry does not change
-			// the projection.
-			if (this._exceedsCompactionThreshold(route.model, projection)) {
-				await this._runAutoCompaction("threshold", false);
-				({ previous, context } = await prepare());
-			}
-			return { ...previous, context, model: route.model, thinkingLevel: route.thinkingLevel };
+			const routed = await this._virtualRoutes.prepareTurnRequest(
+				model,
+				{ context, model, thinkingLevel },
+				{
+					failed,
+					signal,
+					compactIfNeeded: async (routedModel) => {
+						if (!this._exceedsCompactionThreshold(routedModel, projection)) return undefined;
+						await this._runAutoCompaction("threshold", false);
+						const refreshed = await prepare();
+						previous = refreshed.previous;
+						return { context: refreshed.context, model, thinkingLevel };
+					},
+				},
+			);
+			return { ...previous, ...routed };
 		};
 	}
 
@@ -945,12 +963,14 @@ export class AgentSession {
 			this._reportInvalidBoundaryContinuation("turn_end");
 			return false;
 		}
+		if (boundary.continue) this._virtualRoutes.markBoundaryContinuation();
 		return boundary.continue;
 	}
 
 	private _installAgentBoundaryHooks(): void {
 		const previousFinishTurn = this.agent.finishTurn;
 		this.agent.finishTurn = async (turn, signal) => {
+			await this._virtualRoutes.finishTurn(turn.message, turn.toolResults);
 			this._boundaryDispatchedMessages.add(turn.message);
 			const extensionContinue = await this._dispatchTurnEndBoundary(turn.message, turn.toolResults);
 			const previousDecision = await previousFinishTurn?.(turn, signal);
@@ -1102,8 +1122,10 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
+		const presentation = presentSessionEvent(event);
+		if (!presentation) return;
 		for (const l of this._eventListeners) {
-			l(event);
+			l(presentation);
 		}
 	}
 
@@ -1208,8 +1230,18 @@ export class AgentSession {
 			}
 		}
 
-		// Emit to extensions first, then notify public listeners.
+		// Extensions and persistence retain canonical content; only public presentation is filtered.
 		await this._emitExtensionEvent(event);
+		if (
+			(event.type === "message_start" || event.type === "message_update" || event.type === "message_end") &&
+			event.message.role === "assistant"
+		) {
+			const partial =
+				event.type === "message_update" && "partial" in event.assistantMessageEvent
+					? event.assistantMessageEvent.partial
+					: undefined;
+			this._virtualRoutes.applyPresentationFlags(event.message, partial);
+		}
 		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
 
 		// Handle session persistence
@@ -1536,12 +1568,38 @@ export class AgentSession {
 		return this.agent.state.thinkingLevel;
 	}
 
-	/** Under a virtual selection, the physical model and thinking level of the latest successful response. */
+	/** Under a virtual selection, the active or latest physical model and thinking level. */
 	get routedModel(): { model: Model<any>; thinkingLevel?: ThinkingLevel } | undefined {
 		if (!this.model || !isVirtualModel(this.model)) return undefined;
+		const controlled = this._virtualRoutes.routedModel;
+		if (controlled) return controlled;
 		const latest = findLatestResponse(this.agent.state.messages);
 		const model = latest && this._modelRuntime.getPhysicalModel(latest.provider, latest.model);
 		return model && { model, thinkingLevel: latest?.thinkingLevel };
+	}
+
+	/** Whether `CacheWarmer` may keep the active virtual route warm. */
+	get keepVirtualCacheWarm(): boolean {
+		return this._virtualRoutes.keepCacheWarm;
+	}
+
+	/** Persist updated router state on the current session branch for a virtual model. */
+	setVirtualModelState<TState = unknown>(provider: string, id: string, state: TState): SessionEntry | undefined {
+		return this._virtualRoutes.setVirtualModelState(provider, id, state);
+	}
+
+	/** Record sidecar or background helper model usage in the session without adding a conversation message. */
+	appendUsage(kind: string, provider: string, model: string, usage: Usage, note?: string): UsageEntry {
+		const entry = this.sessionManager.appendUsage(kind, provider, model, usage, note);
+		this._emit({ type: "entry_appended", entry });
+		return entry;
+	}
+
+	/** Snapshot unexpired prompt-cache state across physical models on the current session branch. */
+	getRouteCacheSnapshot(): ModelRouteCacheSnapshot {
+		return computeBranchCacheSnapshot(this.sessionManager.getBranch(), (provider, modelId) =>
+			this._modelRuntime.getPhysicalModel(provider, modelId),
+		);
 	}
 
 	/** Whether the session is currently processing an agent run or post-run continuation. */
@@ -1976,6 +2034,7 @@ export class AgentSession {
 
 		// Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
 		this._failedResponse = undefined;
+		this._virtualRoutes.resetRunState();
 		this._recordSelection();
 		// The run records the loadout in the transcript; restored tools that did not register by now
 		// are dropped, so a tool that never registers does not stay pending.
@@ -2117,6 +2176,7 @@ export class AgentSession {
 				if (result.continue) this._reportInvalidBoundaryContinuation("agent_before_settle");
 				return false;
 			}
+			if (result.continue && shouldContinue) this._virtualRoutes.markBoundaryContinuation();
 			return shouldContinue;
 		} finally {
 			this._isBeforeSettle = false;
@@ -2664,6 +2724,7 @@ export class AgentSession {
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
 		this.agent.state.model = model;
+		this._virtualRoutes.resetRunState({ clearLastResolved: true });
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		if (options.persist) {
 			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
@@ -2898,7 +2959,7 @@ export class AgentSession {
 		reason: "manual" | "threshold" | "overflow",
 	): Promise<CompactionResult> {
 		// Resolve the request only when Pi summarizes itself: routing may call models or fail.
-		const request = await this._getSummarizationRequestAuth(model, signal);
+		const request = await this._getSummarizationRequestAuth(model, signal, "compaction");
 		return compact(
 			preparation,
 			request.model,
@@ -2907,7 +2968,7 @@ export class AgentSession {
 			customInstructions,
 			signal,
 			request.thinkingLevel,
-			this.agent.streamFunction,
+			request.streamFn,
 			request.env,
 			this.settingsManager.getRetrySettings(),
 			this._summarizationRetryCallbacks({ source: "compaction", reason }),
@@ -3606,6 +3667,7 @@ export class AgentSession {
 			},
 			{
 				getModel: () => this.model,
+				getRoutedModel: () => this.routedModel,
 				getScopedModels: () => this._scopedModels,
 				isIdle: () => this.isIdle,
 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
@@ -3622,6 +3684,7 @@ export class AgentSession {
 					this._extensionShutdownHandler?.();
 				},
 				getContextUsage: () => this.getContextUsage(),
+				getRouteCacheSnapshot: () => this.getRouteCacheSnapshot(),
 				compact: (options) => {
 					void (async () => {
 						try {
@@ -3659,6 +3722,10 @@ export class AgentSession {
 					this._modelRuntime.unregisterVirtualModel(provider, id);
 					this._refreshCurrentModelFromRegistry();
 				},
+				setVirtualModelState: (provider, id, state) => {
+					this.setVirtualModelState(provider, id, state);
+				},
+				appendUsage: (kind, provider, model, usage, note) => this.appendUsage(kind, provider, model, usage, note),
 			},
 		);
 	}
@@ -4150,6 +4217,7 @@ export class AgentSession {
 		}
 
 		const oldLeafId = this.sessionManager.getLeafId();
+		this._virtualRoutes.resetRunState({ clearLastResolved: true });
 
 		// No-op if already at target
 		if (targetId === oldLeafId) {
@@ -4234,12 +4302,11 @@ export class AgentSession {
 				const signal = abortController.signal;
 				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 				const result = await generateBranchSummary(entriesToSummarize, {
-					...(await this._getSummarizationRequestAuth(this.model!, signal)),
+					...(await this._getSummarizationRequestAuth(this.model!, signal, "branch_summary")),
 					signal,
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 				});
@@ -4505,11 +4572,10 @@ export class AgentSession {
 			throw new Error("No model selected");
 		}
 		return generateBugReportSummary({
-			...(await this._getSummarizationRequestAuth(model, options.signal)),
+			...(await this._getSummarizationRequestAuth(model, options.signal, "direct")),
 			messages: this.messages,
 			hint: options.hint,
 			signal: options.signal,
-			streamFn: this.agent.streamFunction,
 			retry: this.settingsManager.getRetrySettings(),
 			sessionId: this.sessionId,
 		});
@@ -4530,6 +4596,7 @@ export class AgentSession {
 			.reverse()
 			.find((m) => {
 				if (m.role !== "assistant") return false;
+				if (isTextSuppressed(m)) return false;
 				const msg = m as AssistantMessage;
 				// Skip messages without text from a turn that did not end normally: aborted, failed or only
 				// calling tools (#12119). A reply that ended normally stays the last reply even without text.

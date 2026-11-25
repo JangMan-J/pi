@@ -339,7 +339,8 @@ describe("AgentSession virtual models", () => {
 		await harness.session.compact();
 
 		expect(reasons()).toEqual(["user", "continuation", "user", "direct"]);
-		expect(states).toEqual([undefined, { turns: 1 }, { turns: 1 }, undefined]);
+		// Compaction receives the branch state read-only without persisting returned state.
+		expect(states).toEqual([undefined, { turns: 1 }, { turns: 1 }, { turns: 2 }]);
 		expect(stored()).toHaveLength(2);
 	});
 
