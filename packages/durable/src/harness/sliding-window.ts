@@ -92,6 +92,8 @@ export {
 	spillThresholdForTool,
 } from "./sliding-window/bounds.ts";
 export {
+	CheckpointLineageDoc,
+	type CheckpointLineageValue,
 	SlidingWindowLedgerDoc,
 	SlidingWindowStateDoc,
 	type SlidingWindowStateValue,
@@ -1287,8 +1289,10 @@ export function createSlidingWindow(options: SlidingWindowOptions = {}): Sliding
 		}),
 		replay: "safe",
 		callers: ["model", "tools"],
-		async execute(args) {
-			const r = await getStore().recall({ ...args, ...(options.cwd ? { cwd: options.cwd } : {}) });
+		async execute(args, api, ctx) {
+			const agentState = await api.snapshot(AgentDoc, api.conversationId, ctx);
+			const effectiveCwd = agentState?.cwd ?? options.cwd;
+			const r = await getStore().recall({ ...args, ...(effectiveCwd ? { cwd: effectiveCwd } : {}) });
 			return { output: [{ type: "text", text: r.text }] };
 		},
 	});
