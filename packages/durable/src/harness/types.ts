@@ -508,7 +508,13 @@ export type Wrap<Tool extends ToolRegistration = ToolRegistration> =
  * shown in the `codemode` prompt section; `instructions` is the longer how-to, returned only by `describeNamespace()`;
  * `searchTools()` searches both.
  */
-export type ToolNamespace = { readonly name: string; readonly description: string; readonly instructions?: string };
+export type ToolNamespace = {
+	readonly name: string;
+	readonly description: string;
+	readonly instructions?: string;
+	/** Other names scripts may look the namespace up by (e.g. `docs` for `mcp__docs`). */
+	readonly aliases?: readonly string[];
+};
 
 export interface Extension<Tool extends ToolRegistration = ToolRegistration> {
 	readonly name: string;

@@ -792,6 +792,16 @@ export interface Tool<TParameters extends object = object> {
 	description: string;
 	parameters: TParameters;
 	constrainedSampling?: false | ConstrainedSamplingConfig;
+	/**
+	 * Tool annotations with the meaning of MCP tool annotations (`readOnlyHint`, `destructiveHint`,
+	 * `idempotentHint`, `openWorldHint`). Hints only; not verified by the model or providers.
+	 */
+	annotations?: {
+		readonly readOnlyHint?: boolean;
+		readonly destructiveHint?: boolean;
+		readonly idempotentHint?: boolean;
+		readonly openWorldHint?: boolean;
+	};
 }
 
 export interface ToolReference {
