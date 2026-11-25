@@ -224,6 +224,34 @@ describe("deferred tools and tool_search", () => {
 		await harness.close(context);
 	});
 
+	it("ranks deferred tools by their extension namespace description, instructions, and aliases", async () => {
+		const chat = setup();
+		chat.registry.install(
+			defineExtension({
+				name: "mcp:sentry",
+				namespace: {
+					name: "mcp__obs_srv",
+					description: "Crash telemetry and stacktraces",
+					instructions: "Use for production incident triage.",
+					aliases: ["sentry-prod"],
+				},
+				tools: [
+					tool("mcp__obs_srv__fetch_event", "Read one record by id", {
+						deferred: true,
+						annotations: { readOnlyHint: true },
+					}),
+				],
+			}),
+		);
+		chat.faux.setResponses([call("tool_search", { query: "sentry crash triage", limit: 1 }), DONE]);
+		const { harness, root } = await openChat(new MemoryStorage(), chat);
+		await (await root.submit({ type: "input", content: "go" }, context)).wait(context);
+		expect(toolResultTexts(await allEntries(root))).toEqual([
+			"Loaded 1 tool. They are available from your next call:\n- mcp__obs_srv__fetch_event: Read one record by id",
+		]);
+		await harness.close(context);
+	});
+
 	it("finds nothing for an unrelated query and loads nothing", async () => {
 		const chat = setup();
 		chat.faux.setResponses([call("tool_search", { query: "weather forecast" }), DONE]);
