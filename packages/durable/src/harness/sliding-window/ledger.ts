@@ -119,17 +119,17 @@ export function recordToolResult(
 			...(opts.spilled ? { ref: opts.spilled.ref, lines: opts.spilled.lineCount } : {}),
 			...(effectiveSourceSha ? { sha256: effectiveSourceSha, sourceSha256: effectiveSourceSha } : {}),
 		});
-		if (filesRead.length > 24) filesRead.shift();
+		if (filesRead.length > 256) filesRead.shift();
 	}
 	if (!opts.isError && (lower === "edit" || lower === "write") && path) {
 		filesEdited = filesEdited.filter((e) => e.path !== path);
 		filesEdited.push({ path, op: lower === "write" ? "write" : "edit", lastTurn: ledger.turnCount });
-		if (filesEdited.length > 24) filesEdited.shift();
+		if (filesEdited.length > 256) filesEdited.shift();
 	}
 	if (opts.spilled) {
 		recentRefs = recentRefs.filter((r) => r.ref !== opts.spilled!.ref);
 		recentRefs.push(opts.spilled);
-		if (recentRefs.length > 16) recentRefs.shift();
+		if (recentRefs.length > 128) recentRefs.shift();
 	}
 	if (opts.isError && opts.errorText) {
 		const line = `${toolName}: ${clip(opts.errorText, 160)}`;

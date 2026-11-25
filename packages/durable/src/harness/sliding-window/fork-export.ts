@@ -1,31 +1,49 @@
 import type { Context } from "@earendil-works/chord/context";
 import { copyJson, type JsonRepresentation } from "@earendil-works/chord/json";
-import type { AssistantMessage, Models, ModelThinkingLevel, Tool, Usage, UserMessage } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	Models,
+	ModelThinkingLevel,
+	SystemMessage,
+	Tool,
+	Usage,
+	UserMessage,
+} from "@earendil-works/pi-ai";
+import { harvestPostReadStudyNotes } from "@earendil-works/pi-ai/utils/study-notes";
 import { toToolDeclaration } from "@earendil-works/pi-ai/utils/transcript";
-import { harvestPostReadStudyNotes } from "@earendil-works/pi-ai/virtual-models";
 import { type AnyDocToken, materializeDocument } from "../../documents.ts";
 import { AssistantEntry, SystemEntry, UserEntry } from "../../entries.ts";
-import type { Cursor, EntryId, Seq, Storage } from "../../types.ts";
+import type { ConversationId, Cursor, EntryId, EntryRecord, Seq, Storage, Tx } from "../../types.ts";
 import { AgentDoc, resolveAgent, resolveSettings } from "../agent.ts";
 import { Harness } from "../harness.ts";
 import { ProviderDoc } from "../provider.ts";
 import type {
+	Agent,
 	AgentState,
+	ContextView,
 	Conversation,
 	HarnessSettings,
 	ModelRef,
 	RegistryReader,
+	SeedCheckpointedConversationOptions,
 	ToolRegistration,
 } from "../types.ts";
 import {
+	CheckpointLineageDoc,
+	type CheckpointLineageValue,
+	SlidingWindowLedgerDoc,
+	SlidingWindowStateDoc,
+	SlidingWindowTargetDoc,
+} from "./docs.ts";
+import { reconstructLedgerFromView } from "./ledger.ts";
+import type { MechanicalLedger, SlidingWindowHydratePolicy, SlidingWindowTargetValue } from "./types.ts";
+import {
 	BatonStateDoc,
 	type BatonStateValue,
+	type ForkCacheGuard,
 	VirtualModelStateDoc,
 	type VirtualModelStateValue,
-} from "../virtual-models.ts";
-import { SlidingWindowLedgerDoc, SlidingWindowStateDoc, SlidingWindowTargetDoc } from "./docs.ts";
-import { reconstructLedgerFromView } from "./ledger.ts";
-import type { MechanicalLedger, SlidingWindowTargetValue } from "./types.ts";
+} from "./virtual-models-docs.ts";
 
 const ZERO_USAGE: Usage = {
 	input: 0,
@@ -34,6 +52,28 @@ const ZERO_USAGE: Usage = {
 	cacheWrite: 0,
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+/** One entry and the sequence of the commit that persisted it, as `Storage.entry()` returns it. */
+type VisibleEntry = { readonly entry: EntryRecord; readonly commitSeq: Seq };
+
+/** Parent documents a checkpointed seed starts from, as committed at the checkpoint entry. */
+export type ParentCheckpointDocs = {
+	readonly agentState: AgentState | undefined;
+	readonly baton: BatonStateValue | undefined;
+	readonly ledger: MechanicalLedger | undefined;
+	readonly vmState: VirtualModelStateValue | undefined;
+	readonly target: SlidingWindowTargetValue | undefined;
+	readonly providerSessionId: string | undefined;
+};
+
+const NO_PARENT_DOCS: ParentCheckpointDocs = {
+	agentState: undefined,
+	baton: undefined,
+	ledger: undefined,
+	vmState: undefined,
+	target: undefined,
+	providerSessionId: undefined,
 };
 
 export interface ExportCheckpointedForkStorageOptions {
@@ -80,6 +120,50 @@ export interface ExportCheckpointedForkResult {
 	readonly studyNotes?: string;
 }
 
+/**
+ * What a checkpointed seed reads from its parent plus what it writes: `Harness.seedCheckpointedConversation()` and
+ * `exportCheckpointedForkToStorage()` differ only in where the parent documents come from and where the seed goes.
+ */
+export type CheckpointedSeedParams = Omit<
+	SeedCheckpointedConversationOptions,
+	"ownership" | "init" | "models" | "registry" | "settings"
+> & {
+	readonly view: ContextView;
+	readonly parentAgent: Agent;
+	readonly parentAgentState: AgentState | undefined;
+	readonly parentBaton: BatonStateValue | undefined;
+	readonly parentLedger: MechanicalLedger | undefined;
+	readonly parentVmState: VirtualModelStateValue | undefined;
+	readonly parentTarget: SlidingWindowTargetValue | undefined;
+	readonly parentSessionId: string | undefined;
+	readonly lineage: CheckpointLineageValue | undefined;
+	readonly models: Models;
+	readonly registry: RegistryReader;
+	readonly settings: HarnessSettings | undefined;
+};
+
+/** Everything a checkpointed seed writes, decided before its creating commit starts. */
+export type CheckpointedSeedPlan = {
+	readonly anchorTimestamp: number;
+	readonly atTimestamp: number;
+	readonly ledger: MechanicalLedger;
+	readonly studyNotes?: string;
+	/** The frozen `pi.system` message: the instructions section and the child's tool declarations. */
+	readonly system: SystemMessage;
+	readonly user: UserMessage;
+	readonly assistant: AssistantMessage;
+	/** `pi.agent`, written whole: the owner's copied fields are wiped first, so nothing of them survives. */
+	readonly agentState: AgentState;
+	/** `pi.provider.sessionId` when the parent session is copied; undefined keeps the fresh one. */
+	readonly providerSessionId?: string;
+	readonly forkGuard: ForkCacheGuard;
+	readonly persistedTarget?: ModelRef;
+	readonly slidingWindowEnabled: boolean;
+	readonly hydrate?: SlidingWindowHydratePolicy;
+	readonly baton: { readonly anchorUser0: JsonRepresentation<UserMessage>; readonly studyNotes?: string };
+	readonly lineage?: CheckpointLineageValue;
+};
+
 function wrapNonClosingStorage(storage: Storage, closeUnderlying: boolean): Storage {
 	if (closeUnderlying) return storage;
 	return new Proxy(storage, {
@@ -118,6 +202,74 @@ async function readConversationDocAsOf<T>(
 	return undefined;
 }
 
+/**
+ * Read the parent documents a checkpointed seed starts from: the `asOf(entryRec.commitSeq)` documents of the entry's
+ * conversation, and the parent's current `pi.provider`. `entryRec` absent reads nothing, so a caller falls back to its
+ * Harness's snapshots.
+ */
+export async function readParentCheckpointDocs(
+	storage: Storage,
+	parentId: ConversationId,
+	entryRec: VisibleEntry | undefined,
+	context: Context,
+): Promise<ParentCheckpointDocs> {
+	if (entryRec === undefined) return NO_PARENT_DOCS;
+	const at = entryRec.commitSeq;
+	const sourceConvId = entryRec.entry.conversationId;
+	const agentState = await readConversationDocAsOf<AgentState>(storage, sourceConvId, AgentDoc, at, context);
+	const baton = await readConversationDocAsOf<BatonStateValue>(storage, sourceConvId, BatonStateDoc, at, context);
+	const ledger = await readConversationDocAsOf<MechanicalLedger>(
+		storage,
+		sourceConvId,
+		SlidingWindowLedgerDoc,
+		at,
+		context,
+	);
+	const vmState = await readConversationDocAsOf<VirtualModelStateValue>(
+		storage,
+		sourceConvId,
+		VirtualModelStateDoc,
+		at,
+		context,
+	);
+	let target = await readConversationDocAsOf<SlidingWindowTargetValue>(
+		storage,
+		sourceConvId,
+		SlidingWindowTargetDoc,
+		at,
+		context,
+	);
+	if (!target?.target && sourceConvId !== parentId) {
+		const ownTarget = await readConversationDocAsOf<SlidingWindowTargetValue>(
+			storage,
+			parentId,
+			SlidingWindowTargetDoc,
+			"current",
+			context,
+		);
+		if (ownTarget?.target) target = ownTarget;
+	}
+	const providerDoc = await readConversationDocAsOf<{ sessionId?: string }>(
+		storage,
+		parentId,
+		ProviderDoc,
+		"current",
+		context,
+	);
+	let providerSessionId = providerDoc?.sessionId;
+	if (providerSessionId === undefined && sourceConvId !== parentId) {
+		const sourceProviderDoc = await readConversationDocAsOf<{ sessionId?: string }>(
+			storage,
+			sourceConvId,
+			ProviderDoc,
+			"current",
+			context,
+		);
+		providerSessionId = sourceProviderDoc?.sessionId;
+	}
+	return { agentState, baton, ledger, vmState, target, providerSessionId };
+}
+
 function formatCompactLedgerOutlines(ledger: MechanicalLedger): string {
 	if (ledger.filesRead.length === 0 && ledger.filesEdited.length === 0) return "";
 	const lines: string[] = ["<checkpoint_files>"];
@@ -135,109 +287,12 @@ function formatCompactLedgerOutlines(ledger: MechanicalLedger): string {
 }
 
 /**
- * Export a checkpointed fork from `parent` at `at` into an isolated `targetStorage` (Chord `StoreStorage` or
- * `MemoryStorage`), writing frozen `SystemEntry` declarations, deterministic `UserEntry`/`AssistantEntry`
- * timestamps, `ProviderDoc.sessionId`, `VirtualModelStateDoc.forkGuard`, `SlidingWindowTargetDoc`,
- * `SlidingWindowStateDoc.hydrate`, and `SlidingWindowLedgerDoc`.
+ * Decide the frozen entries and documents a checkpointed seed writes: deterministic `pi.system`/`pi.user`/
+ * `pi.assistant` timestamps, the child's `pi.agent` built from the options and the parent's `asOf` state (never the
+ * owner's copied fields), the cache guard, the sliding-window documents, and the baton anchor.
  */
-export async function exportCheckpointedForkToStorage(
-	options: ExportCheckpointedForkStorageOptions,
-	context: Context,
-): Promise<ExportCheckpointedForkResult> {
-	const view = await options.parent.context(context, { at: options.at });
-	const parentAgent = await options.parent.agent(context);
-
-	let parentAgentState: AgentState | undefined;
-	let parentBaton: BatonStateValue | undefined;
-	let parentLedger: MechanicalLedger | undefined;
-	let parentSessionId: string | undefined;
-	let parentVmState: VirtualModelStateValue | undefined;
-	let parentTargetDoc: SlidingWindowTargetValue | undefined;
-	let readTargetAsOf = false;
-
-	if (options.parentStorage) {
-		const entryRec = await options.parentStorage.entry(options.parent.id, options.at, context);
-		if (entryRec) {
-			const atSeq = entryRec.commitSeq;
-			const sourceConvId = entryRec.entry.conversationId;
-			parentAgentState = await readConversationDocAsOf<AgentState>(
-				options.parentStorage,
-				sourceConvId,
-				AgentDoc,
-				atSeq,
-				context,
-			);
-			parentBaton = await readConversationDocAsOf<BatonStateValue>(
-				options.parentStorage,
-				sourceConvId,
-				BatonStateDoc,
-				atSeq,
-				context,
-			);
-			parentLedger = await readConversationDocAsOf<MechanicalLedger>(
-				options.parentStorage,
-				sourceConvId,
-				SlidingWindowLedgerDoc,
-				atSeq,
-				context,
-			);
-			parentVmState = await readConversationDocAsOf<VirtualModelStateValue>(
-				options.parentStorage,
-				sourceConvId,
-				VirtualModelStateDoc,
-				atSeq,
-				context,
-			);
-			parentTargetDoc = await readConversationDocAsOf<SlidingWindowTargetValue>(
-				options.parentStorage,
-				sourceConvId,
-				SlidingWindowTargetDoc,
-				atSeq,
-				context,
-			);
-			readTargetAsOf = true;
-			if (!parentTargetDoc?.target && sourceConvId !== options.parent.id) {
-				const ownTargetDoc = await readConversationDocAsOf<SlidingWindowTargetValue>(
-					options.parentStorage,
-					options.parent.id,
-					SlidingWindowTargetDoc,
-					"current",
-					context,
-				);
-				if (ownTargetDoc?.target) parentTargetDoc = ownTargetDoc;
-			}
-			const providerDoc = await readConversationDocAsOf<{ sessionId?: string }>(
-				options.parentStorage,
-				options.parent.id,
-				ProviderDoc,
-				"current",
-				context,
-			);
-			parentSessionId = providerDoc?.sessionId;
-			if (parentSessionId === undefined && sourceConvId !== options.parent.id) {
-				const sourceProviderDoc = await readConversationDocAsOf<{ sessionId?: string }>(
-					options.parentStorage,
-					sourceConvId,
-					ProviderDoc,
-					"current",
-					context,
-				);
-				parentSessionId = sourceProviderDoc?.sessionId;
-			}
-		}
-	}
-
-	if (options.parentHarness) {
-		parentBaton ??= await options.parentHarness.snapshot(BatonStateDoc, options.parent.id, context);
-		parentVmState ??= await options.parentHarness.snapshot(VirtualModelStateDoc, options.parent.id, context);
-		if (!readTargetAsOf) {
-			parentTargetDoc ??= await options.parentHarness.snapshot(SlidingWindowTargetDoc, options.parent.id, context);
-		}
-		if (parentSessionId === undefined) {
-			parentSessionId = (await options.parentHarness.snapshot(ProviderDoc, options.parent.id, context))?.sessionId;
-		}
-	}
-
+export function buildCheckpointedSeedPlan(params: CheckpointedSeedParams): CheckpointedSeedPlan {
+	const { view, parentAgent, parentAgentState, parentBaton, parentLedger, parentVmState, parentTarget } = params;
 	const viewLedger = reconstructLedgerFromView(view);
 	const effectiveLedger: MechanicalLedger =
 		parentLedger &&
@@ -289,10 +344,10 @@ export async function exportCheckpointedForkToStorage(
 	const atTimestamp = findLastFiniteTimestamp() ?? anchorTimestamp;
 
 	const harvested =
-		options.studyNotes !== undefined
-			? options.studyNotes
+		params.studyNotes !== undefined
+			? params.studyNotes
 			: harvestPostReadStudyNotes(view.messages, {
-					...(options.allowedPaths ? { relevantPaths: options.allowedPaths } : {}),
+					...(params.allowedPaths ? { relevantPaths: params.allowedPaths } : {}),
 				});
 	const mergedNotes = [parentBaton?.harvestedStudyNotes?.trim(), harvested?.trim()]
 		.filter((s): s is string => Boolean(s && s.length > 0))
@@ -300,22 +355,22 @@ export async function exportCheckpointedForkToStorage(
 	const finalStudyNotes = mergedNotes.length > 0 ? mergedNotes : undefined;
 
 	const resolvedParentAsOfAgent = parentAgentState
-		? resolveAgent(parentAgentState, options.registry.snapshot(), resolveSettings(options.settings), () => {})
+		? resolveAgent(parentAgentState, params.registry.snapshot(), resolveSettings(params.settings), () => {})
 		: undefined;
-	const toolDecls: Tool[] = options.tools
-		? options.tools.map(toToolDeclaration)
+	const toolDecls: Tool[] = params.tools
+		? params.tools.map(toToolDeclaration)
 		: (resolvedParentAsOfAgent ?? parentAgent).tools.map(toToolDeclaration);
-	const childToolNames = options.tools
-		? options.tools.map((t) => t.name)
+	const childToolNames: AgentState["tools"] = params.tools
+		? params.tools.map((t) => t.name)
 		: (parentAgentState?.tools ?? (resolvedParentAsOfAgent ?? parentAgent).tools.map((t) => t.name));
 
 	const compactOutlines = formatCompactLedgerOutlines(effectiveLedger);
-	const userContent = compactOutlines ? `${options.taskPrompt}\n\n${compactOutlines}` : options.taskPrompt;
+	const userContent = compactOutlines ? `${params.taskPrompt}\n\n${compactOutlines}` : params.taskPrompt;
 	const dispatchSummary =
-		options.dispatchSummary?.trim() || "Checkpoint exported. Executing scoped task directly on hydrated context.";
+		params.dispatchSummary?.trim() || "Checkpoint exported. Executing scoped task directly on hydrated context.";
 	const assistantText = finalStudyNotes ? `${finalStudyNotes}\n\n${dispatchSummary}` : dispatchSummary;
 
-	const defaultSwSelection = options.slidingWindowModel ?? { provider: "sliding-window", modelId: "active" };
+	const defaultSwSelection = params.slidingWindowModel ?? { provider: "sliding-window", modelId: "active" };
 	const isSlidingWindowSelectionRef = (ref: ModelRef | undefined): boolean =>
 		Boolean(
 			ref &&
@@ -326,13 +381,13 @@ export async function exportCheckpointedForkToStorage(
 	const fallbackParentModel =
 		candidateParentModel && !isSlidingWindowSelectionRef(candidateParentModel) ? candidateParentModel : undefined;
 	const inheritedTargetRef =
-		parentTargetDoc?.target && !isSlidingWindowSelectionRef(parentTargetDoc.target)
-			? parentTargetDoc.target
+		parentTarget?.target && !isSlidingWindowSelectionRef(parentTarget.target)
+			? parentTarget.target
 			: fallbackParentModel;
-	const targetRef = options.targetModel ?? inheritedTargetRef;
+	const targetRef = params.targetModel ?? inheritedTargetRef;
 	const physicalTarget =
-		targetRef && !isVirtualRef(targetRef, options.models)
-			? options.models.getModel(targetRef.provider, targetRef.modelId)
+		targetRef && !isVirtualRef(targetRef, params.models)
+			? params.models.getModel(targetRef.provider, targetRef.modelId)
 			: undefined;
 	const assistantMeta = {
 		api: physicalTarget?.api ?? lastAssistantMsg?.api ?? "anthropic-messages",
@@ -340,22 +395,233 @@ export async function exportCheckpointedForkToStorage(
 		model: physicalTarget?.id ?? targetRef?.modelId ?? lastAssistantMsg?.model ?? "checkpoint",
 	};
 
-	const copySession = options.copyProviderSession ?? true;
-	const disableContinuation = options.disableContinuation ?? true;
-	const preserveToolDeclarations = options.preserveToolDeclarations ?? true;
-	const preserveThinkingLevel = options.preserveThinkingLevel ?? true;
-	const slidingWindowEnabled = options.slidingWindow ?? true;
-	const epochLevel = options.parentThinkingLevel ?? parentAgentState?.thinkingLevel ?? parentAgent.thinkingLevel;
-	const effectiveAllowFlip = options.allowThinkingEpochFlip === true || preserveThinkingLevel === false;
+	const copySession = params.copyProviderSession ?? true;
+	const disableContinuation = params.disableContinuation ?? true;
+	const preserveToolDeclarations = params.preserveToolDeclarations ?? true;
+	const preserveThinkingLevel = params.preserveThinkingLevel ?? true;
+	const slidingWindowEnabled = params.slidingWindow ?? true;
+	const epochLevel = params.parentThinkingLevel ?? parentAgentState?.thinkingLevel ?? parentAgent.thinkingLevel;
+	const effectiveAllowFlip = params.allowThinkingEpochFlip === true || preserveThinkingLevel === false;
 	const guardedLevel =
 		!effectiveAllowFlip && epochLevel !== undefined && epochLevel !== "off"
-			? (options.preservedThinkingLevel ?? epochLevel)
+			? (params.preservedThinkingLevel ?? epochLevel)
 			: undefined;
 	const requestedThinking =
-		options.thinkingLevel ?? parentAgentState?.thinkingLevel ?? parentAgent.thinkingLevel ?? "off";
+		params.thinkingLevel ?? parentAgentState?.thinkingLevel ?? parentAgent.thinkingLevel ?? "off";
 	const finalThinkingLevel =
 		guardedLevel !== undefined && requestedThinking === "off" ? guardedLevel : requestedThinking;
-	const effectiveCwd = options.cwd ?? parentAgentState?.cwd ?? parentAgent.cwd;
+	const effectiveCwd = params.cwd ?? parentAgentState?.cwd ?? parentAgent.cwd;
+	const instructions = params.systemPrompt ?? parentAgentState?.instructions;
+
+	const hasSwModel = Boolean(params.models.getModel(defaultSwSelection.provider, defaultSwSelection.modelId));
+	const agentModel = slidingWindowEnabled && hasSwModel ? defaultSwSelection : targetRef;
+	const persistedTarget = targetRef && !isSlidingWindowSelectionRef(targetRef) ? targetRef : undefined;
+
+	const userMessage: UserMessage = {
+		role: "user",
+		content: userContent,
+		timestamp: anchorTimestamp,
+	};
+	const assistantMessage: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: assistantText }],
+		api: assistantMeta.api,
+		provider: assistantMeta.provider,
+		model: assistantMeta.model,
+		usage: ZERO_USAGE,
+		stopReason: "stop",
+		timestamp: atTimestamp,
+	};
+	const agentState: AgentState = {
+		...(instructions === undefined ? {} : { instructions }),
+		tools: Array.isArray(childToolNames) ? [...childToolNames] : childToolNames,
+		...(params.modelTools === undefined ? {} : { modelTools: params.modelTools }),
+		...(params.extensions === undefined ? {} : { extensions: params.extensions }),
+		...(agentModel === undefined ? {} : { model: agentModel }),
+		thinkingLevel: finalThinkingLevel,
+		...(effectiveCwd === undefined ? {} : { cwd: effectiveCwd }),
+		...(params.maxTurns === undefined ? {} : { maxTurns: params.maxTurns }),
+		compaction: params.compaction ?? { enabled: !slidingWindowEnabled },
+	};
+
+	return {
+		anchorTimestamp,
+		atTimestamp,
+		ledger: effectiveLedger,
+		...(finalStudyNotes !== undefined ? { studyNotes: finalStudyNotes } : {}),
+		system: {
+			role: "system",
+			content: "",
+			...(instructions === undefined
+				? {}
+				: { sections: { instructions: `<instructions>\n${instructions}\n</instructions>` } }),
+			...(toolDecls.length > 0 ? { toolsAdded: toolDecls } : {}),
+			timestamp: anchorTimestamp,
+		},
+		user: userMessage,
+		assistant: assistantMessage,
+		agentState,
+		...(copySession && params.parentSessionId !== undefined ? { providerSessionId: params.parentSessionId } : {}),
+		forkGuard: {
+			disableContinuation,
+			preserveToolDeclarations,
+			...(params.allowedTools !== undefined ? { allowedTools: [...params.allowedTools] } : {}),
+			...(params.blockedToolReason !== undefined ? { blockedToolReason: params.blockedToolReason } : {}),
+			...(epochLevel !== undefined ? { parentThinkingLevel: epochLevel } : {}),
+			...(guardedLevel !== undefined ? { preservedThinkingLevel: guardedLevel } : {}),
+			...(copySession && params.parentSessionId !== undefined ? { sessionId: params.parentSessionId } : {}),
+			...(parentVmState?.forkGuard?.sessionId && !params.parentSessionId
+				? { sessionId: parentVmState.forkGuard.sessionId }
+				: {}),
+		},
+		...(persistedTarget !== undefined ? { persistedTarget } : {}),
+		slidingWindowEnabled,
+		...(params.allowedPaths === undefined
+			? {}
+			: {
+					hydrate: {
+						allowedPaths: [...params.allowedPaths],
+						hydratedPaths: [],
+						...(params.maxHydrateBytes !== undefined ? { maxHydrateBytes: params.maxHydrateBytes } : {}),
+					},
+				}),
+		baton: {
+			anchorUser0: copyJson(userMessage, { omitUndefinedProperties: true }) as JsonRepresentation<UserMessage>,
+			...(finalStudyNotes !== undefined ? { studyNotes: finalStudyNotes } : {}),
+		},
+		...(params.lineage !== undefined ? { lineage: params.lineage } : {}),
+	};
+}
+
+/**
+ * Write a checkpointed seed into `conversationId`'s creating commit: only entry appends and document writes, no table
+ * reads, so it is safe inside a commit that already wrote. The owner-copied `pi.agent` and baton fields are wiped
+ * first, so nothing of the owner task's state survives.
+ */
+export async function applyCheckpointedSeed(
+	tx: Tx,
+	conversationId: ConversationId,
+	plan: CheckpointedSeedPlan,
+): Promise<void> {
+	await tx.appendEntry(SystemEntry, conversationId, { model: [plan.system] });
+	await tx.appendEntry(UserEntry, conversationId, { model: [plan.user] });
+	await tx.appendEntry(AssistantEntry, conversationId, { model: [plan.assistant] });
+
+	const agentDoc = await tx.doc(AgentDoc, conversationId);
+	delete agentDoc.instructions;
+	delete agentDoc.tools;
+	delete agentDoc.modelTools;
+	delete agentDoc.model;
+	delete agentDoc.thinkingLevel;
+	delete agentDoc.cwd;
+	delete agentDoc.compaction;
+	delete agentDoc.extensions;
+	delete agentDoc.maxTurns;
+	Object.assign(agentDoc, plan.agentState);
+
+	if (plan.providerSessionId !== undefined) {
+		(await tx.doc(ProviderDoc, conversationId)).sessionId = plan.providerSessionId;
+	}
+
+	(await tx.doc(VirtualModelStateDoc, conversationId)).forkGuard = plan.forkGuard;
+
+	if (plan.persistedTarget !== undefined) {
+		(await tx.doc(SlidingWindowTargetDoc, conversationId)).target = plan.persistedTarget;
+	}
+
+	const swDoc = await tx.doc(SlidingWindowStateDoc, conversationId);
+	swDoc.enabled = plan.slidingWindowEnabled;
+	if (plan.hydrate !== undefined) swDoc.hydrate = plan.hydrate;
+
+	const ledgerDoc = await tx.doc(SlidingWindowLedgerDoc, conversationId);
+	Object.assign(ledgerDoc, copyJson(plan.ledger, { omitUndefinedProperties: true }));
+
+	const batonDoc = await tx.doc(BatonStateDoc, conversationId);
+	batonDoc.epoch = 0;
+	delete batonDoc.handoffSummary;
+	delete batonDoc.swappedAtTokens;
+	delete batonDoc.data;
+	delete batonDoc.preparingTaskId;
+	delete batonDoc.staged;
+	delete batonDoc.harvestedStudyNotes;
+	batonDoc.anchorUser0 = plan.baton.anchorUser0;
+	if (plan.baton.studyNotes !== undefined) batonDoc.harvestedStudyNotes = plan.baton.studyNotes;
+
+	if (plan.lineage !== undefined) {
+		Object.assign(await tx.doc(CheckpointLineageDoc, conversationId), plan.lineage);
+	}
+}
+
+/**
+ * Export a checkpointed fork from `parent` at `at` into an isolated `targetStorage` (Chord `StoreStorage` or
+ * `MemoryStorage`), writing frozen `SystemEntry` declarations, deterministic `UserEntry`/`AssistantEntry`
+ * timestamps, `ProviderDoc.sessionId`, `VirtualModelStateDoc.forkGuard`, `SlidingWindowTargetDoc`,
+ * `SlidingWindowStateDoc.hydrate`, and `SlidingWindowLedgerDoc`.
+ */
+export async function exportCheckpointedForkToStorage(
+	options: ExportCheckpointedForkStorageOptions,
+	context: Context,
+): Promise<ExportCheckpointedForkResult> {
+	const view = await options.parent.context(context, { at: options.at });
+	const parentAgent = await options.parent.agent(context);
+
+	const entryRec = options.parentStorage
+		? await options.parentStorage.entry(options.parent.id, options.at, context)
+		: undefined;
+	const docs = options.parentStorage
+		? await readParentCheckpointDocs(options.parentStorage, options.parent.id, entryRec, context)
+		: NO_PARENT_DOCS;
+	let parentBaton = docs.baton;
+	let parentVmState = docs.vmState;
+	let parentTarget = docs.target;
+	let parentSessionId = docs.providerSessionId;
+
+	if (options.parentHarness) {
+		parentBaton ??= await options.parentHarness.snapshot(BatonStateDoc, options.parent.id, context);
+		parentVmState ??= await options.parentHarness.snapshot(VirtualModelStateDoc, options.parent.id, context);
+		if (entryRec === undefined) {
+			parentTarget ??= await options.parentHarness.snapshot(SlidingWindowTargetDoc, options.parent.id, context);
+		}
+		if (parentSessionId === undefined) {
+			parentSessionId = (await options.parentHarness.snapshot(ProviderDoc, options.parent.id, context))?.sessionId;
+		}
+	}
+
+	const plan = buildCheckpointedSeedPlan({
+		view,
+		parentAgent,
+		parentAgentState: docs.agentState,
+		parentBaton,
+		parentLedger: docs.ledger,
+		parentVmState,
+		parentTarget,
+		parentSessionId,
+		models: options.models,
+		registry: options.registry,
+		settings: options.settings,
+		systemPrompt: options.systemPrompt,
+		tools: options.tools,
+		taskPrompt: options.taskPrompt,
+		dispatchSummary: options.dispatchSummary,
+		studyNotes: options.studyNotes,
+		targetModel: options.targetModel,
+		thinkingLevel: options.thinkingLevel,
+		cwd: options.cwd,
+		allowedTools: options.allowedTools,
+		blockedToolReason: options.blockedToolReason,
+		allowedPaths: options.allowedPaths,
+		maxHydrateBytes: options.maxHydrateBytes,
+		slidingWindow: options.slidingWindow,
+		slidingWindowModel: options.slidingWindowModel,
+		copyProviderSession: options.copyProviderSession,
+		preserveToolDeclarations: options.preserveToolDeclarations,
+		disableContinuation: options.disableContinuation,
+		preserveThinkingLevel: options.preserveThinkingLevel,
+		parentThinkingLevel: options.parentThinkingLevel,
+		preservedThinkingLevel: options.preservedThinkingLevel,
+		allowThinkingEpochFlip: options.allowThinkingEpochFlip,
+		lineage: undefined,
+	});
 
 	const storage = wrapNonClosingStorage(options.targetStorage, options.closeTargetStorage ?? false);
 	const childHarness = await Harness.open(
@@ -370,101 +636,13 @@ export async function exportCheckpointedForkToStorage(
 
 	try {
 		const root = await childHarness.root(context);
-		const userMessage: UserMessage = {
-			role: "user",
-			content: userContent,
-			timestamp: anchorTimestamp,
-		};
-		const assistantMessage: AssistantMessage = {
-			role: "assistant",
-			content: [{ type: "text", text: assistantText }],
-			api: assistantMeta.api,
-			provider: assistantMeta.provider,
-			model: assistantMeta.model,
-			usage: ZERO_USAGE,
-			stopReason: "stop",
-			timestamp: atTimestamp,
-		};
-
-		await root.commit(async (tx) => {
-			await tx.appendEntry(SystemEntry, root.id, {
-				model: [
-					{
-						role: "system",
-						content: "",
-						sections: { instructions: `<instructions>\n${options.systemPrompt}\n</instructions>` },
-						...(toolDecls.length > 0 ? { toolsAdded: toolDecls } : {}),
-						timestamp: anchorTimestamp,
-					},
-				],
-			});
-			await tx.appendEntry(UserEntry, root.id, { model: [userMessage] });
-			await tx.appendEntry(AssistantEntry, root.id, { model: [assistantMessage] });
-
-			const agentDoc = await tx.doc(AgentDoc, root.id);
-			agentDoc.instructions = options.systemPrompt;
-			if (childToolNames !== undefined) {
-				agentDoc.tools = Array.isArray(childToolNames) ? [...childToolNames] : childToolNames;
-			}
-			const hasSwModel = Boolean(options.models.getModel(defaultSwSelection.provider, defaultSwSelection.modelId));
-			const agentModel = slidingWindowEnabled && hasSwModel ? defaultSwSelection : targetRef;
-			if (agentModel !== undefined) agentDoc.model = agentModel;
-			agentDoc.thinkingLevel = finalThinkingLevel;
-			if (effectiveCwd !== undefined) agentDoc.cwd = effectiveCwd;
-			agentDoc.compaction = { enabled: !slidingWindowEnabled };
-
-			if (copySession && parentSessionId !== undefined) {
-				(await tx.doc(ProviderDoc, root.id)).sessionId = parentSessionId;
-			}
-
-			const vmDoc = await tx.doc(VirtualModelStateDoc, root.id);
-			vmDoc.forkGuard = {
-				disableContinuation,
-				preserveToolDeclarations,
-				...(options.allowedTools !== undefined ? { allowedTools: [...options.allowedTools] } : {}),
-				...(options.blockedToolReason !== undefined ? { blockedToolReason: options.blockedToolReason } : {}),
-				...(epochLevel !== undefined ? { parentThinkingLevel: epochLevel } : {}),
-				...(guardedLevel !== undefined ? { preservedThinkingLevel: guardedLevel } : {}),
-				...(copySession && parentSessionId !== undefined ? { sessionId: parentSessionId } : {}),
-				...(parentVmState?.forkGuard?.sessionId && !parentSessionId
-					? { sessionId: parentVmState.forkGuard.sessionId }
-					: {}),
-			};
-
-			const persistedTarget = targetRef && !isSlidingWindowSelectionRef(targetRef) ? targetRef : undefined;
-			if (persistedTarget !== undefined) {
-				(await tx.doc(SlidingWindowTargetDoc, root.id)).target = persistedTarget;
-			}
-
-			const swDoc = await tx.doc(SlidingWindowStateDoc, root.id);
-			swDoc.enabled = slidingWindowEnabled;
-			if (options.allowedPaths !== undefined) {
-				swDoc.hydrate = {
-					allowedPaths: [...options.allowedPaths],
-					hydratedPaths: [],
-					...(options.maxHydrateBytes !== undefined ? { maxHydrateBytes: options.maxHydrateBytes } : {}),
-				};
-			}
-
-			const ledgerDoc = await tx.doc(SlidingWindowLedgerDoc, root.id);
-			Object.assign(ledgerDoc, copyJson(effectiveLedger, { omitUndefinedProperties: true }));
-
-			const batonDoc = await tx.doc(BatonStateDoc, root.id);
-			batonDoc.epoch = 0;
-			batonDoc.anchorUser0 = copyJson(userMessage, {
-				omitUndefinedProperties: true,
-			}) as JsonRepresentation<UserMessage>;
-			if (finalStudyNotes !== undefined) {
-				batonDoc.harvestedStudyNotes = finalStudyNotes;
-			}
-		}, context);
-
+		await root.commit((tx) => applyCheckpointedSeed(tx, root.id, plan), context);
 		return {
 			conversationId: root.id,
-			anchorTimestamp,
-			atTimestamp,
-			ledger: effectiveLedger,
-			...(finalStudyNotes !== undefined ? { studyNotes: finalStudyNotes } : {}),
+			anchorTimestamp: plan.anchorTimestamp,
+			atTimestamp: plan.atTimestamp,
+			ledger: plan.ledger,
+			...(plan.studyNotes !== undefined ? { studyNotes: plan.studyNotes } : {}),
 		};
 	} finally {
 		await childHarness.close(context).catch(() => {});

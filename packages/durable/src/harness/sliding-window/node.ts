@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { deflateSync, inflateSync } from "node:zlib";
 import { openStore, sqliteBackend } from "@earendil-works/chord";
@@ -48,8 +48,17 @@ export function sha256Hex(input: string | Uint8Array): string {
 
 export { createLayeredArtifactStore, normalizeRefId };
 
+function canonicalizePath(targetPath: string, cwd?: string): string {
+	const lexical = resolve(cwd ?? process.cwd(), targetPath);
+	try {
+		return realpathSync.native(lexical);
+	} catch {
+		return lexical;
+	}
+}
+
 export function hashLiveFile(sourcePath: string, cwd?: string): { resolvedPath: string; sha256: string | null } {
-	const resolvedPath = isAbsolute(sourcePath) ? sourcePath : resolve(cwd ?? process.cwd(), sourcePath);
+	const resolvedPath = canonicalizePath(sourcePath, cwd);
 	try {
 		if (!existsSync(resolvedPath)) return { resolvedPath, sha256: null };
 		const st = statSync(resolvedPath);
@@ -60,14 +69,17 @@ export function hashLiveFile(sourcePath: string, cwd?: string): { resolvedPath: 
 	}
 }
 
-export function readLiveFileText(sourcePath: string, cwd?: string): LiveFileSnapshot | undefined {
-	const resolvedPath = isAbsolute(sourcePath) ? sourcePath : resolve(cwd ?? process.cwd(), sourcePath);
+export function readLiveFileText(
+	sourcePath: string,
+	cwd?: string,
+): (LiveFileSnapshot & { resolvedPath: string }) | undefined {
+	const resolvedPath = canonicalizePath(sourcePath, cwd);
 	try {
 		if (!existsSync(resolvedPath)) return undefined;
 		const st = statSync(resolvedPath);
 		if (!st.isFile() || st.size > MAX_SOURCE_HASH_BYTES) return undefined;
 		const buf = readFileSync(resolvedPath);
-		return { text: buf.toString("utf8"), sha256: sha256Hex(buf) };
+		return { resolvedPath, text: buf.toString("utf8"), sha256: sha256Hex(buf) };
 	} catch {
 		return undefined;
 	}
@@ -193,7 +205,7 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 			.get(sha256) as Record<string, unknown> | undefined;
 
 		const liveHash = options.sourcePath !== undefined ? hashLiveFile(options.sourcePath, options.cwd) : undefined;
-		const cwdKey = options.cwd ? resolve(options.cwd) : "";
+		const cwdKey = options.cwd ? canonicalizePath(options.cwd) : "";
 		const normSourcePath =
 			options.sourcePath !== undefined ? normalizeSliceKey(options.sourcePath, options.cwd) : undefined;
 		const canBindSource =
@@ -327,7 +339,7 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 
 	getLatestBySourcePath(sourcePath: string, cwd?: string): StoredArtifactEntry | undefined {
 		const normPath = normalizeSliceKey(sourcePath, cwd);
-		const cwdKey = cwd ? resolve(cwd) : "";
+		const cwdKey = cwd ? canonicalizePath(cwd) : "";
 		let ref: string | undefined;
 		let resolvedSourcePath = sourcePath;
 		let sourceSha256: string | undefined;
@@ -438,7 +450,7 @@ export class NodeSlidingWindowArtifactStore implements SlidingWindowArtifactStor
 		const notices: string[] = [];
 		const checkedSources: Array<{ path: string; cwd?: string; sha256: string }> = [];
 		if (this.hasSourcesTable) {
-			const cwdKey = options.cwd ? resolve(options.cwd) : undefined;
+			const cwdKey = options.cwd ? canonicalizePath(options.cwd) : undefined;
 			const rows = (
 				cwdKey
 					? this.db
