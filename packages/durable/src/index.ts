@@ -130,6 +130,7 @@ export type {
 	Submission,
 	SubmissionDraft,
 	TaskInspection,
+	ToolAnnotations,
 	ToolControl,
 	ToolDiagnostic,
 	ToolExecutionApi,
