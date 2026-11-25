@@ -419,6 +419,17 @@ export type ToolArgs<TParameters> = IsAny<TParameters> extends true ? any : Stat
 type IsAny<T> = boolean extends (T extends never ? true : false) ? true : false;
 
 /**
+ * Hints about what a tool does, with the meaning of MCP tool annotations. Host-side metadata only (never serialized
+ * into wire `Tool` declarations); permission hooks can inspect them.
+ */
+export type ToolAnnotations = {
+	readonly readOnlyHint?: boolean;
+	readonly destructiveHint?: boolean;
+	readonly idempotentHint?: boolean;
+	readonly openWorldHint?: boolean;
+};
+
+/**
  * Executable tool registered in a registry. Only pi-ai `Tool` fields enter the transcript. `args` are typed by
  * `parameters` (any JSON Schema object; see {@link ToolArgs}), which the Harness validates them against before
  * `execute()`; `defineTool()` infers both generics.
@@ -428,6 +439,8 @@ export type ToolRegistration<
 	TDetails extends JsonValue = JsonValue,
 	C extends JsonValue = JsonValue,
 > = Tool<TParameters> & {
+	/** Optional MCP-style behavioral hints for permission/policy hooks (not sent to providers). */
+	readonly annotations?: ToolAnnotations;
 	/** Whether an interrupted execution may rerun on recovery. Default `unsafe`. */
 	readonly replay?: "safe" | "unsafe";
 	/** Default: the settings' `toolExecution`. One sequential call makes its whole round sequential. */

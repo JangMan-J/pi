@@ -86,7 +86,7 @@ import { DEFAULT_MAX_OUTPUT_TOKENS, formatResult, type OutputFile } from "./outp
  * Version of everything in this module that turns stored results into what a script sees: result mapping, globals,
  * start data. Bump it when that changes, so a call started before an upgrade is not replayed by different code.
  */
-export const CODEMODE_MODULE_VERSION = 2;
+export const CODEMODE_MODULE_VERSION = 3;
 
 export const CODEMODE_TOOL_NAME = "codemode";
 
@@ -994,7 +994,9 @@ class CodemodeCall {
 			const own = namespaceOfTool(tool.name);
 			if (typeof namespace === "string" && (own === undefined || !matchesNamespace(own, namespace))) return [];
 			const namespaceText =
-				own === undefined ? "" : [own.name, own.description ?? "", own.instructions ?? ""].join(" ");
+				own === undefined
+					? ""
+					: [own.name, ...(own.aliases ?? []), own.description ?? "", own.instructions ?? ""].join(" ");
 			// `description` is the tool's sample: its description and declaration, with the parameters' names and descriptions.
 			return [{ name: tool.name, text: tool.description, namespaceText }];
 		});
