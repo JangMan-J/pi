@@ -1,0 +1,22 @@
+#!/bin/sh
+# Git pre-commit hook: run lockfile guard and root checks, skipping dead apps/p2.
+# Installed into common hooks by .fork/install-hooks.sh so main's .husky/pre-commit stays untouched.
+set -eu
+
+[ "${HUSKY-}" = "0" ] && exit 0
+
+STAGED_FILE_LIST=$(mktemp)
+trap 'rm -f "$STAGED_FILE_LIST"' EXIT
+git diff --cached --name-only > "$STAGED_FILE_LIST"
+
+node scripts/check-lockfile-commit.mjs
+
+echo "Running formatting, linting, and type checking..."
+npm run check
+
+# Restage files that were previously staged and may have been modified by formatting.
+while IFS= read -r file; do
+	[ -n "$file" ] && [ -f "$file" ] && git add "$file"
+done < "$STAGED_FILE_LIST"
+
+echo "All pre-commit checks passed."
