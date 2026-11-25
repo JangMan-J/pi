@@ -57,8 +57,10 @@ operations, and recovery.
   `--force-with-lease` (`--push` is refused outside GitHub Actions). It refuses to rebuild over commits made
   on `next`.
 - `hydrate-models.mjs`: hydrates model data from live sources, backfilling only `tsc`-referenced retired entries from upstream's `nix/model-catalog.json` pin when live sources move ahead of upstream tests.
-- `install-hooks.sh`: installs the `pre-push` hook in every worktree; it refuses pushes of `next` and `main`
-  outside GitHub Actions.
+- `install-hooks.sh`: installs `.fork/pre-commit` (lockfile check + `npm run check`, skipping dead `apps/p2`) and
+  `.fork/pre-push` (refuses pushes of `next` and `main` outside GitHub Actions) into the common git hooks
+  directory and unsets `core.hooksPath`.
+- `pre-commit` / `pre-push`: fork git hooks installed by `install-hooks.sh`.
 - `check.sh`: `focused` runs the tests the fork owns; `all` runs `npm run check` and `./test.sh`.
 - `pack-release.sh`: packs a built checkout into `pi-next.tar.gz` for a release.
 - `install-next.sh`: installs releases; `install-tests.sh`: sets up a development checkout.
