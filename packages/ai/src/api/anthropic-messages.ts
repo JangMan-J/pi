@@ -249,6 +249,11 @@ function getAnthropicCompat(model: Model<"anthropic-messages">) {
 		// without the earlier conversation, so the default is limited to Anthropic's own endpoint.
 		// Widen or remove this restriction once proxies generally forward the `thread` field.
 		supportsMessageThreads: model.compat?.supportsMessageThreads ?? model.baseUrl.includes("api.anthropic.com"),
+		// Strict Anthropic-compatible shims (e.g. Fireworks qwen4: "image_url parts in system,
+		// developer and user messages") reject images inside tool_result for the whole request.
+		// Default to relocating them everywhere except Anthropic's own endpoint; the relocation
+		// is deterministic, so stored history and every earlier request prefix stay byte-identical.
+		supportsToolResultImages: model.compat?.supportsToolResultImages ?? model.baseUrl.includes("api.anthropic.com"),
 	};
 }
 
@@ -476,6 +481,9 @@ function recordThreadReply(
 		isOAuth,
 		undefined,
 		allowEmptySignature,
+		undefined,
+		undefined,
+		!getAnthropicCompat(model).supportsToolResultImages,
 	).messages.filter((message) => message.role === "assistant");
 	const prefix = [...params.messages, ...reply];
 	setThreadState(thread.sessionId, {
@@ -1438,6 +1446,7 @@ function buildParams(
 		compat.allowEmptySignature,
 		effortMessages ? model.provider : undefined,
 		nativeToolChanges ? convertToolDefinitions : undefined,
+		!compat.supportsToolResultImages,
 	);
 	const activeEffort = options?.effort ?? "high";
 	const betaFeatures = getBetaFeatures(model, context, options, {
@@ -1575,6 +1584,38 @@ function normalizeToolCallId(id: string): string {
 	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
+const STRICT_TOOL_IMAGE_PLACEHOLDER = "(image attached after the tool results)";
+
+/**
+ * Split the images out of a successful tool result for strict hosts that only accept images in
+ * system/developer/user messages (e.g. Fireworks qwen4 on the Anthropic-compatible endpoint).
+ * Mirrors splitErrorToolResultImages (#10794): the returned content replaces the tool result and
+ * the caption plus images follow all tool results of the turn in the same user message. The
+ * transform is deterministic, so repeated conversions of the same history are byte-identical.
+ */
+function splitStrictToolResultImages(
+	msg: ToolResultMessage,
+): { content: TextContent[]; caption: string; images: ImageContent[] } | undefined {
+	const images = msg.content.filter((block): block is ImageContent => block.type === "image");
+	if (images.length === 0) return undefined;
+	const content: TextContent[] = [];
+	let previousWasPlaceholder = false;
+	for (const block of msg.content) {
+		if (block.type === "image") {
+			if (!previousWasPlaceholder) content.push({ type: "text", text: STRICT_TOOL_IMAGE_PLACEHOLDER });
+			previousWasPlaceholder = true;
+			continue;
+		}
+		content.push(block);
+		previousWasPlaceholder = block.text === STRICT_TOOL_IMAGE_PLACEHOLDER;
+	}
+	return {
+		content,
+		caption: `Images from the result of tool call ${msg.toolCallId} (${msg.toolName}):`,
+		images,
+	};
+}
+
 function convertToolResult(msg: ToolResultMessage, content = msg.content): ContentBlockParam {
 	return {
 		type: "tool_result",
@@ -1597,6 +1638,8 @@ function convertMessages(
 	managedProvider?: string,
 	/** Converts tool definitions for native `tool_addition` blocks; undefined when tool changes are not native. */
 	convertToolDefinitions?: (tools: Tool[]) => BetaTool[],
+	/** Relocate images from successful tool results after the turn's tool results (strict hosts). */
+	relocateToolResultImages = false,
 ): ConvertedAnthropicMessages {
 	const params: MessageParam[] = [];
 	const assistantLevels = new Map<number, AnthropicEffort>();
@@ -1746,11 +1789,14 @@ function convertMessages(
 			const toolResults: ContentBlockParam[] = [];
 			// Anthropic rejects error tool results that contain anything but text, so their images follow
 			// all tool results of the turn, which must come first in the user message (#10794).
+			// Strict hosts additionally reject images in successful results; the same relocation applies.
 			const errorImages: ContentBlockParam[] = [];
 			let j = i;
 			while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
 				const toolMsg = transformedMessages[j] as ToolResultMessage;
-				const split = splitErrorToolResultImages(toolMsg);
+				const split =
+					splitErrorToolResultImages(toolMsg) ??
+					(relocateToolResultImages ? splitStrictToolResultImages(toolMsg) : undefined);
 				toolResults.push(convertToolResult(toolMsg, split?.content));
 				if (split) {
 					errorImages.push({ type: "text", text: split.caption }, ...split.images.map(convertImageBlock));
