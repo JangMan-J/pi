@@ -1,0 +1,89 @@
+{
+	"name": "@earendil-works/pi-virtual-models",
+	"version": "1.6.1",
+	"description": "Virtual model routing, cache-guarded forks, and sliding-window context management for Pi",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"source": "./src/index.ts",
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./study-notes": {
+			"source": "./src/study-notes.ts",
+			"types": "./dist/study-notes.d.ts",
+			"import": "./dist/study-notes.js",
+			"default": "./dist/study-notes.js"
+		},
+		"./durable": {
+			"source": "./src/durable/index.ts",
+			"types": "./dist/durable/index.d.ts",
+			"import": "./dist/durable/index.js",
+			"default": "./dist/durable/index.js"
+		},
+		"./sliding-window": {
+			"source": "./src/sliding-window/index.ts",
+			"types": "./dist/sliding-window/index.d.ts",
+			"import": "./dist/sliding-window/index.js",
+			"default": "./dist/sliding-window/index.js"
+		},
+		"./sliding-window/node": {
+			"source": "./src/sliding-window/node.ts",
+			"types": "./dist/sliding-window/node.d.ts",
+			"import": "./dist/sliding-window/node.js",
+			"default": "./dist/sliding-window/node.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"sideEffects": false,
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"clean": "node ../../scripts/package-files.mjs clean dist",
+		"build": "tsc -p tsconfig.build.json",
+		"test": "vitest --run",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"keywords": [
+		"pi",
+		"virtual-models",
+		"routing",
+		"sliding-window",
+		"durable"
+	],
+	"author": "Earendil Works",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/earendil-works/pi.git",
+		"directory": "packages/virtual-models"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"dependencies": {
+		"@earendil-works/pi-ai": "1.6.1",
+		"@earendil-works/pi-schema": "1.6.1"
+	},
+	"peerDependencies": {
+		"@earendil-works/chord": ">=1.6.1",
+		"@earendil-works/pi-durable": ">=1.6.1"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/chord": {
+			"optional": true
+		},
+		"@earendil-works/pi-durable": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@earendil-works/chord": "1.6.1",
+		"@earendil-works/pi-durable": "1.6.1",
+		"vitest": "4.1.12"
+	}
+}

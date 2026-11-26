@@ -6,7 +6,7 @@
 import { resolveSchemaRef } from "@earendil-works/pi-codemode/declarations";
 import { num, obj, opt, str } from "@earendil-works/pi-schema";
 import { defineExtension, defineTool } from "../harness/define.ts";
-import type { ToolRegistration } from "../harness/types.ts";
+import type { Extension, ToolNamespace, ToolRegistration } from "../harness/types.ts";
 import { rankDocuments } from "../search.ts";
 
 export const TOOL_SEARCH_TOOL_NAME = "tool_search";
@@ -58,6 +58,19 @@ function schemaText(schema: unknown, root: unknown, parts: string[], seen: Set<u
 	}
 }
 
+function namespacesOf(extensions: readonly Extension[]): ReadonlyMap<string, ToolNamespace> {
+	const namespaces = new Map<string, ToolNamespace>();
+	const seen = new Set<string>();
+	for (const extension of extensions) {
+		for (const tool of extension.tools ?? []) {
+			if (seen.has(tool.name)) continue;
+			seen.add(tool.name);
+			if (extension.namespace !== undefined) namespaces.set(tool.name, extension.namespace);
+		}
+	}
+	return namespaces;
+}
+
 /** Search text of a tool: its description and its parameters' names and descriptions; the ranker reads the name. */
 function searchText(tool: ToolRegistration): string {
 	const parts = [tool.description];
@@ -77,8 +90,17 @@ export function createToolSearchTool() {
 			if (query.trim() === "") throw new Error("query must not be empty");
 			const max = limit ?? DEFAULT_TOOL_SEARCH_LIMIT;
 			if (!Number.isInteger(max) || max <= 0) throw new Error("limit must be a positive integer");
-			const candidates = (await api.agent(context)).deferred;
-			const documents = candidates.map((tool) => ({ name: tool.name, text: searchText(tool) }));
+			const agent = await api.agent(context);
+			const candidates = agent.deferred;
+			const toolNamespaces = namespacesOf(agent.extensions);
+			const documents = candidates.map((tool) => {
+				const own = toolNamespaces.get(tool.name);
+				const namespaceText =
+					own === undefined
+						? undefined
+						: [own.name, ...(own.aliases ?? []), own.description, own.instructions ?? ""].join(" ");
+				return { name: tool.name, text: searchText(tool), ...(namespaceText ? { namespaceText } : {}) };
+			});
 			const loaded = rankDocuments(query, documents, max);
 			const text =
 				loaded.length === 0

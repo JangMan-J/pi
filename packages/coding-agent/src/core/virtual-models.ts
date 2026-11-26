@@ -1,32 +1,50 @@
 /**
  * Virtual models are catalog entries that route each request to a physical model.
  *
- * The selection (`model_change`, `agent.state.model`, `ctx.model`) may name a virtual model.
- * Everything below the routing step only sees physical models: providers stream them and
- * assistant messages record them. A virtual model never reaches a provider.
- *
- * Virtual models belong to a provider id but are not provider models. `ModelRuntime` keeps them
- * separately and adds them to the provider's catalog with `withVirtualModels()`, so any provider,
- * including one with physical models, can list several virtual models.
+ * Pure routing contracts, catalog composition, and message presentation live in
+ * `@earendil-works/pi-virtual-models`. This module re-exports them and provides the
+ * `coding-agent` session-branch selection, persisted state, and branch cache-snapshot adapters.
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
-	type AnyModel,
 	type Api,
 	type AssistantMessage,
-	type AssistantMessageEventStream,
-	isModelType,
-	lazyStream,
-	type Message,
+	getPromptCacheTtlMs,
 	type Model,
-	type ModelThinkingLevel,
-	type Provider,
-	type ThinkingLevelMap,
+	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import {
+	findLatestResponse as aiFindLatestResponse,
+	EMPTY_ROUTE_CACHE_SNAPSHOT,
+	isVirtualModel,
+	type ModelRouteCacheSnapshot,
+	type WarmCacheEntry,
+} from "@earendil-works/pi-virtual-models";
+import { CACHE_TTL_MS } from "./cache-stats.ts";
 import type { SessionEntry } from "./session-manager.ts";
 
-/** API id of virtual catalog entries. Requests for it fail unless routed first. */
-export const VIRTUAL_MODEL_API = "pi-virtual";
+export {
+	createVirtualModel,
+	EMPTY_ROUTE_CACHE_SNAPSHOT,
+	isStatefulRoutePurpose,
+	isStreamSuppressedRoute,
+	isVirtualModel,
+	type ModelRoute,
+	type ModelRouteCacheSnapshot,
+	type ModelRouteHedge,
+	type ModelRouteOutcome,
+	type ModelRoutePurpose,
+	type ModelRouteReason,
+	type ModelRouteRequest,
+	type ModelRouteToolChoice,
+	type ModelRouteValidationDecision,
+	purposeToReason,
+	VIRTUAL_MODEL_API,
+	type VirtualModelDefinition,
+	type VirtualStreamRequest,
+	type WarmCacheEntry,
+	withVirtualModels,
+} from "@earendil-works/pi-virtual-models";
 
 /** Custom entry type that stores router state on the session branch. */
 export const VIRTUAL_MODEL_STATE_ENTRY = "pi.virtual-model-state";
@@ -38,83 +56,9 @@ export interface VirtualModelStateData<TState = unknown> {
 	state: TState;
 }
 
-const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-/**
- * Why a request is being routed.
- * - `user`: first request after a message the user wrote (prompt, steering, or follow-up)
- * - `continuation`: any other request in the agent loop, e.g. after tool results or extension messages
- * - `retry`: automatic retry after a failed request, including after compaction for a context overflow
- * - `direct`: a request outside the agent loop, e.g. a compaction summary or an extension call
- */
-export type ModelRouteReason = "user" | "continuation" | "retry" | "direct";
-
-export interface ModelRouteRequest<TState = unknown> {
-	/** The selected virtual model. */
-	model: Model<Api>;
-	/** The selected thinking level. Its meaning is up to the router. */
-	thinkingLevel: ModelThinkingLevel;
-	reason: ModelRouteReason;
-	/** Physical model and thinking level of the latest successful response in `messages`. */
-	previous?: { model: Model<Api>; thinkingLevel?: ModelThinkingLevel };
-	/**
-	 * For `retry`: the failed request, which `messages` no longer contains. `message` carries its
-	 * `stopReason` and `errorMessage`. Absent when the router itself failed.
-	 */
-	failed?: { model: Model<Api>; thinkingLevel?: ModelThinkingLevel; message: AssistantMessage };
-	/** Router state last returned on this session branch. Undefined before the first state and for `direct` requests. */
-	state?: TState;
-	/** Conversation for this request, including system messages. */
-	messages: readonly Message[];
-	signal?: AbortSignal;
-}
-
-/** Physical model and thinking level for one request. */
-export interface ModelRoute<TState = unknown> {
-	model: Model<Api>;
-	thinkingLevel: ModelThinkingLevel;
-	/**
-	 * New router state, stored on the session branch unless it is `request.state` itself. Return
-	 * `request.state` or undefined to keep the current state. Must be JSON-serializable. Ignored for
-	 * `direct` requests.
-	 */
-	state?: TState;
-}
-
-export interface VirtualModelDefinition<TState = unknown> {
-	/** Provider the virtual model is listed under. May be a provider with physical models. */
-	provider: string;
-	/** Model id. Must not be the id of a physical model of `provider`. */
-	id: string;
-	name: string;
-	/** Thinking levels offered for selection. Defaults to `["off"]`. */
-	thinkingLevels?: readonly ModelThinkingLevel[];
-	/**
-	 * Limits shown before the first response. Afterwards, Pi uses the limits of the physical model
-	 * that answered. Unset limits are unknown (0).
-	 */
-	contextWindow?: number;
-	maxTokens?: number;
-	/** Input types accepted for selection. Defaults to text and images; routed models without image support get placeholders. */
-	input?: ("text" | "image")[];
-	/** Pick the physical model, which must have credentials, and thinking level for one request. */
-	route(request: ModelRouteRequest<TState>): ModelRoute<TState> | Promise<ModelRoute<TState>>;
-}
-
-/** Whether a model or message names a virtual model. Failed routing leaves the virtual model on its message. */
-export function isVirtualModel(model: { api: string }): boolean {
-	return model.api === VIRTUAL_MODEL_API;
-}
-
 /** Latest successful response. Its model is physical: failed or aborted requests, including failed routing, are skipped. */
 export function findLatestResponse(messages: readonly AgentMessage[]): AssistantMessage | undefined {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const message = messages[i];
-		if (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") {
-			return message;
-		}
-	}
-	return undefined;
+	return aiFindLatestResponse(messages as readonly { role: string }[]);
 }
 
 /**
@@ -166,73 +110,132 @@ export function getVirtualModelState(branch: readonly SessionEntry[], provider: 
 	return undefined;
 }
 
-/** Build the catalog entry of a virtual model. */
-export function createVirtualModel(definition: Omit<VirtualModelDefinition, "route">): Model<Api> {
-	const levels = definition.thinkingLevels ?? ["off"];
-	const thinkingLevelMap: ThinkingLevelMap = {};
-	for (const level of THINKING_LEVELS) thinkingLevelMap[level] = levels.includes(level) ? level : null;
-	return {
-		id: definition.id,
-		name: definition.name,
-		api: VIRTUAL_MODEL_API,
-		provider: definition.provider,
-		baseUrl: "",
-		reasoning: levels.some((level) => level !== "off"),
-		thinkingLevelMap,
-		input: definition.input ?? ["text", "image"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: definition.contextWindow ?? 0,
-		maxTokens: definition.maxTokens ?? 0,
-	};
+interface TrackedCacheEntry extends WarmCacheEntry {
+	ttlMs: number;
+	entryIndex: number;
 }
 
-/** Stream for a virtual model that was not routed, e.g. `stream()` with API-specific options. */
-function unroutedStream(model: Model<Api>): AssistantMessageEventStream {
-	return lazyStream(model, async () => {
-		throw new Error(`Virtual model ${model.provider}/${model.id} must be routed before streaming`);
-	});
-}
-
-/**
- * Add virtual models to a provider's catalog. Without a provider, the result is a keyless provider
- * that only lists the virtual models. A virtual model hides a physical chat model with the same id,
- * which a catalog refresh can add after registration. Availability follows the provider's auth.
- */
-export function withVirtualModels(
-	providerId: string,
-	provider: Provider | undefined,
-	virtualModels: readonly Model<Api>[],
-): Provider {
-	if (!provider) {
-		return {
-			id: providerId,
-			name: providerId,
-			auth: { apiKey: { name: "Virtual model", resolve: async () => ({ auth: {}, source: "virtual" }) } },
-			getModels: () => virtualModels,
-			stream: unroutedStream,
-			streamSimple: unroutedStream,
-		};
+/** Compute unexpired prompt-cache state across physical models on `branch`. */
+export function computeBranchCacheSnapshot(
+	branch: readonly SessionEntry[],
+	getPhysicalModel: (provider: string, modelId: string) => Model<Api> | undefined,
+	options: {
+		nowMs?: number;
+		cacheOptions?: Pick<SimpleStreamOptions, "cacheRetention" | "env">;
+	} = {},
+): ModelRouteCacheSnapshot {
+	if (branch.length === 0) return EMPTY_ROUTE_CACHE_SNAPSHOT;
+	const nowMs = options.nowMs ?? Date.now();
+	let segmentStart = -1;
+	let initialBoundary: "initial" | "compaction" | "branch_summary" = "initial";
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type === "compaction") {
+			segmentStart = i;
+			initialBoundary = "compaction";
+			break;
+		}
+		if (entry.type === "branch_summary") {
+			segmentStart = i;
+			initialBoundary = "branch_summary";
+			break;
+		}
 	}
-	const ids = new Set(virtualModels.map((model) => model.id));
-	const physical = <TModel extends AnyModel>(models: readonly TModel[]) =>
-		models.filter((model) => !isVirtualModel(model) && !(isModelType(model, "chat") && ids.has(model.id)));
-	const virtual = <TModel extends AnyModel>(models: readonly TModel[]) =>
-		models.filter((model) => isVirtualModel(model));
-	const { filterModels, filterAllModels } = provider;
+
+	const tracked = new Map<string, TrackedCacheEntry>();
+	const entryIndexById = new Map<string, number>();
+	const promptTokensBeforeIndex = new Map<number, number>();
+	let latestPromptTokens = 0;
+	let hasResponseInSegment = false;
+
+	for (let i = segmentStart + 1; i < branch.length; i++) {
+		const entry = branch[i];
+		entryIndexById.set(entry.id, i);
+		promptTokensBeforeIndex.set(i, latestPromptTokens);
+
+		if (
+			entry.type === "message" &&
+			entry.message.role === "assistant" &&
+			entry.message.stopReason !== "error" &&
+			entry.message.stopReason !== "aborted" &&
+			!isVirtualModel(entry.message)
+		) {
+			hasResponseInSegment = true;
+			const { usage } = entry.message;
+			const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+			const model = getPhysicalModel(entry.message.provider, entry.message.model);
+			const ttlMs =
+				(model ? getPromptCacheTtlMs(model, options.cacheOptions) : undefined) ??
+				(usage.cacheRead + usage.cacheWrite > 0 ? CACHE_TTL_MS : undefined);
+			if (promptTokens > 0) latestPromptTokens = promptTokens;
+			if (ttlMs !== undefined && promptTokens > 0) {
+				const key = `${entry.message.provider}/${entry.message.model}`;
+				tracked.set(key, {
+					provider: entry.message.provider,
+					modelId: entry.message.model,
+					warmTokens: promptTokens,
+					lastRefreshedAtMs: entry.message.timestamp,
+					expiresAtMs: entry.message.timestamp + ttlMs,
+					ttlMs,
+					entryIndex: i,
+				});
+			}
+			continue;
+		}
+
+		if (entry.type === "usage" && entry.kind === "cache_warm") {
+			const promptTokens = entry.usage.input + entry.usage.cacheRead + entry.usage.cacheWrite;
+			const refreshedAtMs = Date.parse(entry.timestamp);
+			if (!Number.isFinite(refreshedAtMs)) continue;
+			const key = `${entry.provider}/${entry.model}`;
+			const existing = tracked.get(key);
+			const model = getPhysicalModel(entry.provider, entry.model);
+			const ttlMs =
+				existing?.ttlMs ?? (model ? getPromptCacheTtlMs(model, options.cacheOptions) : undefined) ?? CACHE_TTL_MS;
+			const warmTokens = promptTokens > 0 ? promptTokens : (existing?.warmTokens ?? 0);
+			if (warmTokens <= 0) continue;
+			if (promptTokens > 0) latestPromptTokens = promptTokens;
+			tracked.set(key, {
+				provider: entry.provider,
+				modelId: entry.model,
+				warmTokens,
+				lastRefreshedAtMs: refreshedAtMs,
+				expiresAtMs: refreshedAtMs + ttlMs,
+				ttlMs,
+				entryIndex: existing?.entryIndex ?? i,
+			});
+			continue;
+		}
+
+		if (entry.type === "context_edit") {
+			const targetIndex = entryIndexById.get(entry.targetId);
+			if (targetIndex === undefined) continue;
+			const validPrefixTokens = promptTokensBeforeIndex.get(targetIndex) ?? 0;
+			for (const [key, item] of tracked) {
+				if (item.entryIndex >= targetIndex) {
+					if (validPrefixTokens <= 0) tracked.delete(key);
+					else item.warmTokens = Math.min(item.warmTokens, validPrefixTokens);
+				}
+			}
+		}
+	}
+
+	const entries: WarmCacheEntry[] = [...tracked.values()]
+		.filter((item) => item.expiresAtMs > nowMs && item.warmTokens > 0)
+		.sort((a, b) => b.lastRefreshedAtMs - a.lastRefreshedAtMs)
+		.map(({ ttlMs: _ttl, entryIndex: _idx, ...entry }) => entry);
+	const byKey = new Map(entries.map((entry) => [`${entry.provider}/${entry.modelId}`, entry]));
+	const cacheFreeBoundary = entries.length === 0;
+	const boundaryReason = !hasResponseInSegment
+		? initialBoundary
+		: cacheFreeBoundary && tracked.size > 0
+			? "expired"
+			: undefined;
+
 	return {
-		...provider,
-		getModels: () => [...physical(provider.getModels()), ...virtualModels],
-		getAllModels: () => [...physical(provider.getAllModels?.() ?? provider.getModels()), ...virtualModels],
-		filterModels: (models, credential) => {
-			const real = physical(models);
-			return [...(filterModels?.(real, credential) ?? real), ...virtual(models)];
-		},
-		filterAllModels:
-			filterAllModels &&
-			((models, credential) => [...filterAllModels(physical(models), credential), ...virtual(models)]),
-		stream: (model, context, options) =>
-			isVirtualModel(model) ? unroutedStream(model) : provider.stream(model, context, options),
-		streamSimple: (model, context, options) =>
-			isVirtualModel(model) ? unroutedStream(model) : provider.streamSimple(model, context, options),
+		cacheFreeBoundary,
+		...(boundaryReason ? { boundaryReason } : {}),
+		entries,
+		get: (provider, modelId) => byKey.get(`${provider}/${modelId}`),
 	};
 }

@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord/context";
 import { withAbortSignal, withoutAbortSignal } from "@earendil-works/chord/context";
-import type { JsonValue } from "@earendil-works/chord/json";
+import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import type { Models } from "@earendil-works/pi-ai";
 import { cleanupSessionResources } from "@earendil-works/pi-ai/session-resources";
 import {
@@ -16,6 +16,7 @@ import {
 	type SpanAttributes,
 	type TelemetryContext,
 } from "@earendil-works/pi-telemetry";
+import { readConversationDocAsOf } from "../documents.ts";
 import { ResetEntry } from "../entries.ts";
 import type { ExecutionEnv } from "../env/index.ts";
 import { contained, SessionImpl } from "../session/session.ts";
@@ -24,6 +25,7 @@ import type { SignalResult, SignalToken } from "../signals.ts";
 import { hostTimers } from "../timers.ts";
 import type {
 	CommitOptions,
+	ConversationDocToken,
 	ConversationId,
 	ConversationOwnership,
 	ConversationRecord,
@@ -31,11 +33,13 @@ import type {
 	EntryId,
 	EntryQuery,
 	EntryRecord,
+	JsonObject,
 	Observation,
 	Observer,
 	Page,
 	Report,
 	ReportInfo,
+	Seq,
 	Storage,
 	SubmissionId,
 	TaskId,
@@ -45,7 +49,7 @@ import type {
 import { ROOT_CONVERSATION_ID } from "../types.ts";
 import { AgentDoc, configure, createAgent, resolveAgent, resolveSettings } from "./agent.ts";
 import { createCompaction } from "./compaction.ts";
-import { readContext } from "./context.ts";
+import { captureContextBounds, deriveContext, readContext } from "./context.ts";
 import { InboxDoc, withdrawAbortedInputs } from "./inbox.ts";
 import { LIMITS_RESTARTS, LiveDoc, settleSchedulerOutcome } from "./live.ts";
 import { ProviderDoc } from "./provider.ts";
@@ -62,6 +66,7 @@ import type {
 	ContextView,
 	Conversation,
 	ConversationAbortOptions,
+	ConversationCheckpoint,
 	ConversationCreateOptions,
 	ConversationHandle,
 	ConversationInit,
@@ -426,6 +431,66 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation> {
 		return this.#create({ kind: "independent", ownership: options.ownership }, options, context);
+	}
+
+	async readCheckpoint(
+		conversationId: ConversationId,
+		at: EntryId,
+		context: Context,
+	): Promise<ConversationCheckpoint> {
+		this.assertUsable();
+		const { bounds, entry, commitSeq, agentState, storedSessionId } = await this.readOnLine(async (storage) => {
+			if ((await storage.conversation(conversationId, context)) === undefined) {
+				throw new Error(`Conversation ${conversationId} does not exist`);
+			}
+			const entryRec = await storage.entry(conversationId, at, context);
+			if (entryRec === undefined) {
+				throw new Error(`Entry ${at} is not visible from conversation ${conversationId}`);
+			}
+			const sourceId = entryRec.entry.conversationId;
+			const bounds = await captureContextBounds(this, storage, conversationId, context, at, true);
+			const agentState = await readConversationDocAsOf(storage, sourceId, AgentDoc, entryRec.commitSeq, context);
+			const ownProvider = await readConversationDocAsOf(storage, conversationId, ProviderDoc, "current", context);
+			const sourceProvider =
+				ownProvider?.sessionId === undefined && sourceId !== conversationId
+					? await readConversationDocAsOf(storage, sourceId, ProviderDoc, "current", context)
+					: undefined;
+			return {
+				bounds,
+				entry: entryRec.entry,
+				commitSeq: entryRec.commitSeq,
+				agentState,
+				storedSessionId: ownProvider?.sessionId ?? sourceProvider?.sessionId,
+			};
+		});
+		const view = await deriveContext(this.storage, conversationId, bounds, context);
+		const agent = await this.resolveAgent(conversationId, undefined, context);
+		const providerSessionId =
+			storedSessionId ?? (await this.snapshot(ProviderDoc, conversationId, context))?.sessionId;
+		return {
+			conversationId,
+			entry,
+			commitSeq,
+			view,
+			agent,
+			agentState,
+			providerSessionId,
+			models: currentModels(this.#options.models, this.#options.identity)(),
+			registry: this.#options.registry,
+			settings: this.#hostSettings(),
+			doc: async <T extends JsonObject>(
+				token: ConversationDocToken<T>,
+				options?: { readonly conversationId?: ConversationId; readonly at?: Seq | "current" },
+			): Promise<T | undefined> => {
+				const point = options?.at ?? commitSeq;
+				const targetId = options?.conversationId ?? (point === "current" ? conversationId : entry.conversationId);
+				if (point === "current") {
+					const snap = await this.snapshot(token, targetId, context);
+					return snap === undefined ? undefined : (copyJson(snap) as T);
+				}
+				return this.readOnLine((storage) => readConversationDocAsOf(storage, targetId, token, point, context));
+			},
+		};
 	}
 
 	override report(error: unknown, info: ReportInfo = { kind: "listener_error" }, context?: Context): void {

@@ -1,5 +1,5 @@
 export type { NativeWatchCall, WatchCall, WatchEnd, WatchHandle } from "@earendil-works/chord/watch";
-export { defineDoc, defineDocFamily } from "./documents.ts";
+export { defineDoc, defineDocFamily, readConversationDocAsOf } from "./documents.ts";
 export {
 	AssistantEntry,
 	CompactionEntry,
@@ -24,6 +24,8 @@ export {
 	DEFAULT_PROGRESS_POLICY,
 	DEFAULT_RESTART_LIMIT,
 	DEFAULT_RETRY_POLICY,
+	resolveAgent,
+	resolveSettings,
 } from "./harness/agent.ts";
 export {
 	type CompactionCheckpoint,
@@ -80,6 +82,10 @@ export type {
 	AgentChange,
 	AgentState,
 	AnyTask,
+	BeforeAgentStartEvent,
+	BeforeAgentStartReset,
+	BeforeAgentStartResult,
+	BeforeAgentStartSidecarUsage,
 	CompactionHooks,
 	CompactionPolicy,
 	CompactionReason,
@@ -88,6 +94,7 @@ export type {
 	ContextView,
 	Conversation,
 	ConversationAbortOptions,
+	ConversationCheckpoint,
 	ConversationCreateOptions,
 	ConversationHandle,
 	ConversationInit,
@@ -124,6 +131,7 @@ export type {
 	Submission,
 	SubmissionDraft,
 	TaskInspection,
+	ToolAnnotations,
 	ToolControl,
 	ToolDiagnostic,
 	ToolExecutionApi,
@@ -139,7 +147,14 @@ export type {
 	Wrap,
 	YieldDecision,
 } from "./harness/types.ts";
-export { UsageDoc, type UsageState } from "./harness/usage.ts";
+export {
+	addUsage,
+	addUsageState,
+	recordSidecarUsage,
+	recordUsage,
+	UsageDoc,
+	type UsageState,
+} from "./harness/usage.ts";
 export type { ConversationView, ConversationWindow } from "./harness/view.ts";
 export { createSession } from "./session/session.ts";
 export {
