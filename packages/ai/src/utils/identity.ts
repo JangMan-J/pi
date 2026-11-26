@@ -147,10 +147,22 @@ function isMutableModels(models: Models): models is MutableModels {
 }
 
 /**
+ * Structural marker for virtual-model `Models` wrappers (`@earendil-works/pi-virtual-models`) so
+ * `withClientIdentity()` preserves their extra methods without coupling `@earendil-works/pi-ai` to virtual models.
+ */
+interface VirtualModelsShape extends Models {
+	registerVirtualModel(definition: never): void;
+}
+
+/**
  * `models` with `identity` as the default identity of its requests: a request's `identity` overrides it field by
  * field, and it overrides the identity `models` was created with. Everything else is delegated unchanged; a
  * `MutableModels` stays mutable.
  */
+export function withClientIdentity<TModels extends VirtualModelsShape>(
+	models: TModels,
+	identity: ClientIdentity,
+): TModels;
 export function withClientIdentity(models: MutableModels, identity: ClientIdentity): MutableModels;
 export function withClientIdentity(models: Models, identity: ClientIdentity): Models;
 export function withClientIdentity(models: Models, identity: ClientIdentity): Models {
@@ -182,12 +194,12 @@ export function withClientIdentity(models: Models, identity: ClientIdentity): Mo
 		generateImages: (model, context, options) => models.generateImages(model, context, withIdentity(options)),
 		classify: (model, context, options) => models.classify(model, context, withIdentity(options)),
 	};
-	if (!isMutableModels(models)) return wrapped;
+	if (!isMutableModels(models)) return "registerVirtualModel" in models ? { ...models, ...wrapped } : wrapped;
 	const mutable: MutableModels = {
 		...wrapped,
 		setProvider: (provider) => models.setProvider(provider),
 		deleteProvider: (id) => models.deleteProvider(id),
 		clearProviders: () => models.clearProviders(),
 	};
-	return mutable;
+	return "registerVirtualModel" in models ? { ...models, ...mutable } : mutable;
 }
