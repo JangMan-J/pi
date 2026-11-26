@@ -25,6 +25,7 @@ import type { SignalKey, SignalResult, SignalState, SignalToken } from "../signa
 import type {
 	CommitOptions,
 	ContextEdit,
+	ConversationDocToken,
 	ConversationId,
 	ConversationOwnership,
 	ConversationRecord,
@@ -42,6 +43,7 @@ import type {
 	Observer,
 	Page,
 	Report,
+	Seq,
 	Session,
 	SetTimer,
 	SubmissionId,
@@ -668,6 +670,40 @@ export type ConversationCreateOptions = {
 };
 
 /**
+ * Point-in-time checkpoint state of `conversationId` at visible entry `at`, read consistently from the Session line
+ * before a creating commit (`Harness.readCheckpoint()`).
+ */
+export type ConversationCheckpoint = {
+	readonly conversationId: ConversationId;
+	/** The visible entry at `at` (`entry.conversationId` is the ancestor conversation when inherited across a fork). */
+	readonly entry: EntryRecord;
+	/** Commit sequence at which `entry` was stored. */
+	readonly commitSeq: Seq;
+	/** Derived active transcript and model context at `at`. */
+	readonly view: ContextView;
+	/** Current resolved `Agent` of `conversationId`. */
+	readonly agent: Agent;
+	/** Stored `pi.agent` state as of `commitSeq`, when present. */
+	readonly agentState: AgentState | undefined;
+	/** Current `pi.provider.sessionId` of `conversationId` (falling back to `entry.conversationId`), when present. */
+	readonly providerSessionId: string | undefined;
+	/** Current `HarnessOptions.models` (with `HarnessOptions.identity` applied). */
+	readonly models: Models;
+	/** The Harness's `RegistryReader`. */
+	readonly registry: RegistryReader;
+	/** Current `HarnessOptions.settings`, when configured. */
+	readonly settings: HarnessSettings | undefined;
+	/**
+	 * Read any conversation singleton document at `options.at` (`commitSeq` by default, or `"current"`), defaulting to
+	 * `entry.conversationId` for historical reads and `conversationId` for `"current"`.
+	 */
+	doc<T extends JsonObject>(
+		token: ConversationDocToken<T>,
+		options?: { readonly conversationId?: ConversationId; readonly at?: Seq | "current" },
+	): Promise<T | undefined>;
+};
+
+/**
  * Options of `Harness.seedCheckpointedConversation()`: a fresh conversation seeded from a parent's checkpoint at one
  * entry. Fields the seed does not name follow the parent's `asOf` state; `modelTools`, `extensions`, and `maxTurns`
  * are never inherited, and a task-owned conversation's copied `pi.agent` is replaced whole.
@@ -1078,6 +1114,11 @@ export interface Harness extends Session {
 	conversation(id: ConversationId, context: Context): Promise<Conversation | undefined>;
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation>;
 	/**
+	 * Read `conversationId`'s checkpoint state at visible entry `at` consistently from the Session line before a creating
+	 * commit: derived `view`, resolved `agent`, `asOf` `agentState`, `providerSessionId`, Harness defaults, and `doc()`.
+	 */
+	readCheckpoint(conversationId: ConversationId, at: EntryId, context: Context): Promise<ConversationCheckpoint>;
+	/**
 	 * Create a conversation seeded from `parentId`'s checkpoint at `at`, as `exportCheckpointedForkToStorage()` writes
 	 * it: frozen system, user, and assistant entries; `pi.agent` built from `options`; the parent's provider session
 	 * when `copyProviderSession`; the cache guard; and reset sliding-window documents. The parent's `asOf` documents are
@@ -1225,10 +1266,10 @@ export interface GenerationHooks {
 	beforeAgentStart(event: BeforeAgentStartEvent, api: HookApi, context: Context): HookResult<BeforeAgentStartResult>;
 	/** Before every request attempt, including recovery; the result is used for that request only. */
 	beforeRequest(
-		request: { readonly messages: readonly Message[] },
+		request: { readonly messages: readonly Message[]; readonly streamOptions?: ConversationStreamOptions },
 		api: HookApi,
 		context: Context,
-	): HookResult<{ readonly messages: readonly Message[] }>;
+	): HookResult<{ readonly messages: readonly Message[]; readonly streamOptions?: ConversationStreamOptions }>;
 	/**
 	 * After pi-ai builds the provider request body, before it is sent; the result replaces the body for that request only.
 	 * Runs again whenever pi-ai rebuilds the body, such as a retry within one attempt. The body is in the provider API's
