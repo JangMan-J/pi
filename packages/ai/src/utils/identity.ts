@@ -1,5 +1,4 @@
 import type { Models, MutableModels } from "../models.ts";
-import type { VirtualModels } from "../virtual-models-runtime.ts";
 import { PI_AI_VERSION } from "./version.ts";
 
 /**
@@ -148,11 +147,22 @@ function isMutableModels(models: Models): models is MutableModels {
 }
 
 /**
+ * Structural marker for virtual-model `Models` wrappers (`@earendil-works/pi-virtual-models`) so
+ * `withClientIdentity()` preserves their extra methods without coupling `@earendil-works/pi-ai` to virtual models.
+ */
+interface VirtualModelsShape extends Models {
+	registerVirtualModel(definition: never): void;
+}
+
+/**
  * `models` with `identity` as the default identity of its requests: a request's `identity` overrides it field by
  * field, and it overrides the identity `models` was created with. Everything else is delegated unchanged; a
  * `MutableModels` stays mutable.
  */
-export function withClientIdentity(models: VirtualModels, identity: ClientIdentity): VirtualModels;
+export function withClientIdentity<TModels extends VirtualModelsShape>(
+	models: TModels,
+	identity: ClientIdentity,
+): TModels;
 export function withClientIdentity(models: MutableModels, identity: ClientIdentity): MutableModels;
 export function withClientIdentity(models: Models, identity: ClientIdentity): Models;
 export function withClientIdentity(models: Models, identity: ClientIdentity): Models {

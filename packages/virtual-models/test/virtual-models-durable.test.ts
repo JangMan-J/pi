@@ -1,6 +1,6 @@
+import { readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { copyJson, type JsonRepresentation, type JsonValue } from "@earendil-works/chord/json";
-import { readFile } from "node:fs/promises";
 import {
 	createModels,
 	fauxAssistantMessage,
@@ -15,11 +15,11 @@ import {
 import {
 	AgentDoc,
 	AssistantEntry,
+	type Conversation,
 	createRegistry,
 	defineExtension,
 	defineTask,
 	defineTool,
-	type Conversation,
 	GenerationTask,
 	Harness,
 	hook,
@@ -32,20 +32,13 @@ import {
 	type Registry,
 	ResetEntry,
 	section,
+	type ToolRegistration,
 	ToolResultEntry,
 	ToolTask,
-	type ToolRegistration,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import { describe, expect, it } from "vitest";
-import {
-	anchorAnthropicCacheBeforeEphemeralTail,
-	attachVirtualRequestScope,
-	type PreparedVirtualRoute,
-	type RoutedStreamCompletion,
-	withVirtualModelRouting,
-} from "../src/index.ts";
 import {
 	applyForkGuardToRoute,
 	BatonStateDoc,
@@ -54,6 +47,13 @@ import {
 	createCacheGuardedFork,
 	VirtualModelStateDoc,
 } from "../src/durable/index.ts";
+import {
+	anchorAnthropicCacheBeforeEphemeralTail,
+	attachVirtualRequestScope,
+	type PreparedVirtualRoute,
+	type RoutedStreamCompletion,
+	withVirtualModelRouting,
+} from "../src/index.ts";
 import { createSlidingWindowFork } from "../src/sliding-window/index.ts";
 import { SlidingWindowStateDoc, SlidingWindowTargetDoc } from "../src/sliding-window/state.ts";
 
@@ -150,7 +150,9 @@ describe("virtual-models durable substrate seams", () => {
 	it("keeps the extracted durable/sliding-window sources free of legacy re-export imports", async () => {
 		for (const rel of ["src/durable/cache-snapshot.ts", "src/durable/fork-guard.ts", "src/sliding-window/fork.ts"]) {
 			const text = await readFile(new URL(`../${rel}`, import.meta.url), "utf8");
-			expect(text, rel).not.toMatch(/@earendil-works\/pi-(ai\/virtual-models|durable\/(virtual-models|sliding-window))/);
+			expect(text, rel).not.toMatch(
+				/@earendil-works\/pi-(ai\/virtual-models|durable\/(virtual-models|sliding-window))/,
+			);
 			expect(text, rel).not.toMatch(/from "node:/);
 			if (rel === "src/durable/cache-snapshot.ts" || rel === "src/durable/fork-guard.ts") {
 				expect(text, rel).not.toMatch(/sliding-window/);

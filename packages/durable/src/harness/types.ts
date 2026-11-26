@@ -703,50 +703,6 @@ export type ConversationCheckpoint = {
 	): Promise<T | undefined>;
 };
 
-/**
- * Options of `Harness.seedCheckpointedConversation()`: a fresh conversation seeded from a parent's checkpoint at one
- * entry. Fields the seed does not name follow the parent's `asOf` state; `modelTools`, `extensions`, and `maxTurns`
- * are never inherited, and a task-owned conversation's copied `pi.agent` is replaced whole.
- */
-export type SeedCheckpointedConversationOptions = {
-	readonly ownership: ConversationOwnership;
-	readonly sliceId?: string;
-	/** System prompt; omitted: the parent's `asOf` `pi.agent.instructions`, and no instructions section when unset. */
-	readonly systemPrompt?: string;
-	/** Child tools (declaration or registration); falls back to the parent's `asOf` declared tools. */
-	readonly tools?: readonly (Tool | ToolRegistration)[];
-	readonly modelTools?: AgentState["modelTools"];
-	readonly extensions?: AgentState["extensions"];
-	readonly taskPrompt: string;
-	readonly dispatchSummary?: string;
-	readonly studyNotes?: string;
-	readonly targetModel?: ModelRef;
-	readonly thinkingLevel?: ModelThinkingLevel;
-	readonly cwd?: string;
-	readonly maxTurns?: number;
-	readonly compaction?: CompactionSettings;
-	readonly allowedTools?: readonly string[];
-	readonly blockedToolReason?: string;
-	readonly allowedPaths?: readonly string[];
-	readonly maxHydrateBytes?: number;
-	readonly slidingWindow?: boolean;
-	/** Optional virtual sliding-window catalog ref (`AgentDoc.model`); defaults to `sliding-window/active` when registered and `slidingWindow !== false`. */
-	readonly slidingWindowModel?: ModelRef;
-	readonly copyProviderSession?: boolean;
-	readonly preserveToolDeclarations?: boolean;
-	readonly disableContinuation?: boolean;
-	readonly preserveThinkingLevel?: boolean;
-	readonly parentThinkingLevel?: ModelThinkingLevel;
-	readonly preservedThinkingLevel?: Exclude<ModelThinkingLevel, "off">;
-	readonly allowThinkingEpochFlip?: boolean;
-	/** Model catalog and registry of the seed, defaulting to the Harness's own. */
-	readonly models?: Models;
-	readonly registry?: RegistryReader;
-	readonly settings?: HarnessSettings;
-	/** Runs in the creating commit after the seed; table reads throw there. */
-	readonly init?: ConversationInit;
-};
-
 /** Curated pi-ai request options; absent fields use pi-ai defaults. */
 export type ConversationStreamOptions = {
 	transport?: Transport;
@@ -1118,18 +1074,6 @@ export interface Harness extends Session {
 	 * commit: derived `view`, resolved `agent`, `asOf` `agentState`, `providerSessionId`, Harness defaults, and `doc()`.
 	 */
 	readCheckpoint(conversationId: ConversationId, at: EntryId, context: Context): Promise<ConversationCheckpoint>;
-	/**
-	 * Create a conversation seeded from `parentId`'s checkpoint at `at`, as `exportCheckpointedForkToStorage()` writes
-	 * it: frozen system, user, and assistant entries; `pi.agent` built from `options`; the parent's provider session
-	 * when `copyProviderSession`; the cache guard; and reset sliding-window documents. The parent's `asOf` documents are
-	 * read before the creating commit, which writes them without reading any table. `init` runs after the seed there.
-	 */
-	seedCheckpointedConversation(
-		parentId: ConversationId,
-		at: EntryId,
-		options: SeedCheckpointedConversationOptions,
-		context: Context,
-	): Promise<Conversation>;
 
 	getTask<R>(id: TaskId<R>, context: Context): Promise<TaskRecord<JsonValue, JsonValue, R> | undefined>;
 	/** Live tasks and unsettled submissions. Writes nothing and runs no task code. */

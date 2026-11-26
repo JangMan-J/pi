@@ -449,9 +449,7 @@ describe("createBatonLifecycle (S17)", () => {
 				context,
 			);
 			// Turn 3: beforeAgentStart sees lastUsageTokens >= 600 and launches BatonLaunchTask -> BatonPrepTask
-			await (await root.submit({ type: "input", content: "Trigger background baton prep" }, context)).wait(
-				context,
-			);
+			await (await root.submit({ type: "input", content: "Trigger background baton prep" }, context)).wait(context);
 			expect(test3Reports).toEqual([]);
 			await waitFor(() => state.inspect(root.id).note.startsWith("ready"));
 

@@ -1,18 +1,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type {
-	AssistantMessage,
-	Message,
-	TextContent,
-	ThinkingContent,
-	ToolCall,
-	Usage,
-} from "@earendil-works/pi-ai";
-import { describe, expect, test } from "vitest";
+import type { AssistantMessage, Message, TextContent, ThinkingContent, ToolCall, Usage } from "@earendil-works/pi-ai";
 import {
 	ENCRYPTED_REASONING_COMMENTARY_PROMPT,
 	harvestPostReadStudyNotes,
 } from "@earendil-works/pi-virtual-models/study-notes";
+import { describe, expect, test } from "vitest";
 
 const STUDY_NOTES_SOURCE = fileURLToPath(new URL("../src/study-notes.ts", import.meta.url));
 
@@ -162,7 +155,9 @@ describe("harvestPostReadStudyNotes", () => {
 			assistant([thinking(LONG_NOTE)]),
 		];
 		expect(harvestPostReadStudyNotes(messages)).toBeUndefined();
-		expect(harvestPostReadStudyNotes(messages, { readToolNames: ["glob"] })).toContain("[after reading src/thing.ts]");
+		expect(harvestPostReadStudyNotes(messages, { readToolNames: ["glob"] })).toContain(
+			"[after reading src/thing.ts]",
+		);
 	});
 
 	test("a new user turn clears reads from the previous turn", () => {
@@ -205,7 +200,11 @@ describe("harvestPostReadStudyNotes", () => {
 			user(),
 			readCall("c1", "src/thing.ts"),
 			readResult("c1"),
-			assistant([thinking("too short"), text("The invariant holds across forks."), toolCall("c2", "read", "src/other.ts")]),
+			assistant([
+				thinking("too short"),
+				text("The invariant holds across forks."),
+				toolCall("c2", "read", "src/other.ts"),
+			]),
 		]);
 		expect(notes).toContain("The invariant holds across forks.");
 	});
@@ -239,7 +238,10 @@ describe("harvestPostReadStudyNotes", () => {
 			{ maxCharsPerBlock: 200 },
 		);
 		expect(notes).toContain(tail);
-		const harvested = notes!.slice("[after reading src/thing.ts]\n".length + "<study_notes>\n".length, notes!.lastIndexOf("\n</study_notes>"));
+		const harvested = notes!.slice(
+			"[after reading src/thing.ts]\n".length + "<study_notes>\n".length,
+			notes!.lastIndexOf("\n</study_notes>"),
+		);
 		expect(harvested.length).toBeLessThanOrEqual(200);
 	});
 
@@ -275,12 +277,15 @@ describe("harvestPostReadStudyNotes", () => {
 			assistant([thinking(LONG_NOTE)]),
 		];
 
-		expect(harvestPostReadStudyNotes(build("src/daemon/runtime.ts"), { relevantPaths: ["src/daemon/runtime.ts"] }))
-			.toContain("src/daemon/runtime.ts");
-		expect(harvestPostReadStudyNotes(build("src/daemon/deep/file.ts"), { relevantPaths: ["src/daemon"] }))
-			.toContain("src/daemon/deep/file.ts");
-		expect(harvestPostReadStudyNotes(build("src/daemon/deep/file.ts"), { relevantPaths: ["src/**/*.ts"] }))
-			.toContain("src/daemon/deep/file.ts");
+		expect(
+			harvestPostReadStudyNotes(build("src/daemon/runtime.ts"), { relevantPaths: ["src/daemon/runtime.ts"] }),
+		).toContain("src/daemon/runtime.ts");
+		expect(harvestPostReadStudyNotes(build("src/daemon/deep/file.ts"), { relevantPaths: ["src/daemon"] })).toContain(
+			"src/daemon/deep/file.ts",
+		);
+		expect(harvestPostReadStudyNotes(build("src/daemon/deep/file.ts"), { relevantPaths: ["src/**/*.ts"] })).toContain(
+			"src/daemon/deep/file.ts",
+		);
 		expect(
 			harvestPostReadStudyNotes(build("src/other/file.ts"), { relevantPaths: ["src/daemon/**/*.ts"] }),
 		).toBeUndefined();

@@ -2,10 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	MemorySlidingWindowArtifactStore,
-	normalizeSliceKey,
-} from "@earendil-works/pi-virtual-models/sliding-window";
+import { MemorySlidingWindowArtifactStore, normalizeSliceKey } from "@earendil-works/pi-virtual-models/sliding-window";
 import {
 	hashLiveFile,
 	NodeSlidingWindowArtifactStore,

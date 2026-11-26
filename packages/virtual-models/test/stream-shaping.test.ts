@@ -34,11 +34,7 @@ const makePhysicalModel = (overrides: Partial<Model<Api>> = {}): Model<Api> => {
 
 describe("core stream shaping (S08)", () => {
 	it("is self-sufficient without pi-ai/virtual-models or pi-durable imports in projection, cache-anchor, or tool-choice", () => {
-		for (const rel of [
-			"../src/core/projection.ts",
-			"../src/core/cache-anchor.ts",
-			"../src/core/tool-choice.ts",
-		]) {
+		for (const rel of ["../src/core/projection.ts", "../src/core/cache-anchor.ts", "../src/core/tool-choice.ts"]) {
 			const src = readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 			expect(src).not.toMatch(/@earendil-works\/pi-(ai\/virtual-models|durable\/(virtual-models|sliding-window))/);
 			expect(src).not.toMatch(/@earendil-works\/pi-durable/);
@@ -213,18 +209,14 @@ describe("core stream shaping (S08)", () => {
 			toolConfig: { functionCallingConfig: { mode: "ANY" } },
 		});
 
-		expect(
-			applyRequiredToolChoicePayload({ toolConfig: { tools: [] } }, "bedrock-converse-stream"),
-		).toEqual({
+		expect(applyRequiredToolChoicePayload({ toolConfig: { tools: [] } }, "bedrock-converse-stream")).toEqual({
 			toolConfig: { tools: [], toolChoice: { any: {} } },
 		});
 		const bedrockNoTools = { messages: [] };
 		expect(applyRequiredToolChoicePayload(bedrockNoTools, "bedrock-converse-stream")).toBe(bedrockNoTools);
 
 		const metaPayload = { messages: [] };
-		expect(applyRequiredToolChoicePayload(metaPayload, "openai-completions", { provider: "meta" })).toBe(
-			metaPayload,
-		);
+		expect(applyRequiredToolChoicePayload(metaPayload, "openai-completions", { provider: "meta" })).toBe(metaPayload);
 		expect(
 			applyRequiredToolChoicePayload(metaPayload, "openai-completions", { baseUrl: "https://api.meta.ai/v1" }),
 		).toBe(metaPayload);
