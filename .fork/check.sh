@@ -10,31 +10,32 @@ repo="$(cd "$here/.." && git rev-parse --show-toplevel)"
 cd "$repo"
 
 # The standalone-process tests spawn plain node on source files, which resolve workspace packages
-# through their package.json exports (dist/). Build any such dependency of pi-ai that is not built yet.
-ensure_ai_deps_built() {
-	local pkg dir
-	for pkg in $(node -e 'const d=require("./packages/ai/package.json");console.log(Object.keys({...d.dependencies,...d.peerDependencies}).filter(k=>k.startsWith("@earendil-works/")).join(" "))'); do
-		dir="$(readlink -f "node_modules/$pkg")"
-		[[ -d "$dir" && ! -d "$dir/dist" ]] || continue
-		echo "building $pkg (dist missing)"
-		(cd "$dir" && npm run build >/dev/null)
+# through their package.json exports (dist/). Build any such dependency of pi-ai / pi-virtual-models
+# depth-first in topological order so transitive dependencies (e.g. pi-codemode -> pi-durable) exist first.
+ensure_pkg_built() {
+	local dir="$1"
+	[[ -d "$dir" && -f "$dir/package.json" ]] || return 0
+	[[ ! -d "$dir/dist" ]] || return 0
+	local dep dep_dir
+	for dep in $(node -e 'const p=require("node:path").resolve(process.argv[1]);const d=require(p);console.log(Object.keys({...d.dependencies,...d.peerDependencies}).filter(k=>k.startsWith("@earendil-works/")&&k!==d.name).join(" "))' "$dir/package.json"); do
+		dep_dir="$(readlink -f "node_modules/$dep" 2>/dev/null || true)"
+		[[ -n "$dep_dir" && -d "$dep_dir" ]] && ensure_pkg_built "$dep_dir"
 	done
-	if [[ ! -d "packages/ai/dist" ]]; then
-		echo "building @earendil-works/pi-ai (dist missing)"
-		npm --prefix packages/ai run check:model-data >/dev/null 2>&1 || node "$here/hydrate-models.mjs" >/dev/null
-		(cd packages/ai && npm run build:offline >/dev/null)
+	local name
+	name="$(node -p 'require(require("node:path").resolve(process.argv[1])).name' "$dir/package.json")"
+	echo "building $name (dist missing)"
+	if [[ "$name" == "@earendil-works/pi-ai" ]]; then
+		npm --prefix "$dir" run check:model-data >/dev/null 2>&1 || node "$here/hydrate-models.mjs" >/dev/null
+		(cd "$dir" && npm run build:offline >/dev/null)
+	else
+		(cd "$dir" && npm run build >/dev/null)
 	fi
+}
+
+ensure_ai_deps_built() {
+	ensure_pkg_built "packages/ai"
 	if [[ -d "packages/virtual-models" ]]; then
-		for pkg in $(node -e 'const d=require("./packages/virtual-models/package.json");console.log(Object.keys({...d.dependencies,...d.peerDependencies}).filter(k=>k.startsWith("@earendil-works/")).join(" "))'); do
-			dir="$(readlink -f "node_modules/$pkg")"
-			[[ -d "$dir" && ! -d "$dir/dist" ]] || continue
-			echo "building $pkg (dist missing)"
-			(cd "$dir" && npm run build >/dev/null)
-		done
-		if [[ ! -d "packages/virtual-models/dist" ]]; then
-			echo "building @earendil-works/pi-virtual-models (dist missing)"
-			(cd packages/virtual-models && npm run build >/dev/null)
-		fi
+		ensure_pkg_built "packages/virtual-models"
 	fi
 }
 
