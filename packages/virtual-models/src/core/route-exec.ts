@@ -2,18 +2,18 @@
  * Stream-tier execution for routed virtual models: TTFB-timed physical dispatch, hedged racing,
  * pre-commit validation with escalation, and custom `stream()` orchestration.
  */
-import {
-	type Api,
-	type AssistantMessage,
-	type AssistantMessageEvent,
-	type AssistantMessageEventStream,
-	clampThinkingLevel,
-	createAssistantMessageEventStream,
-	type Model,
-	type SimpleStreamOptions,
-	type TranscriptContext,
-	type Usage,
+import type {
+	Api,
+	AssistantMessage,
+	AssistantMessageEvent,
+	AssistantMessageEventStream,
+	Model,
+	SimpleStreamOptions,
+	TranscriptContext,
+	Usage,
 } from "@earendil-works/pi-ai";
+import { clampThinkingLevel } from "@earendil-works/pi-ai/models";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { projectRoutedTranscript } from "./projection.ts";
 import { buildRoutedStreamOptions } from "./tool-choice.ts";
 import type {
