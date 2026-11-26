@@ -24,6 +24,18 @@ ensure_ai_deps_built() {
 		npm --prefix packages/ai run check:model-data >/dev/null 2>&1 || node "$here/hydrate-models.mjs" >/dev/null
 		(cd packages/ai && npm run build:offline >/dev/null)
 	fi
+	if [[ -d "packages/virtual-models" ]]; then
+		for pkg in $(node -e 'const d=require("./packages/virtual-models/package.json");console.log(Object.keys({...d.dependencies,...d.peerDependencies}).filter(k=>k.startsWith("@earendil-works/")).join(" "))'); do
+			dir="$(readlink -f "node_modules/$pkg")"
+			[[ -d "$dir" && ! -d "$dir/dist" ]] || continue
+			echo "building $pkg (dist missing)"
+			(cd "$dir" && npm run build >/dev/null)
+		done
+		if [[ ! -d "packages/virtual-models/dist" ]]; then
+			echo "building @earendil-works/pi-virtual-models (dist missing)"
+			(cd packages/virtual-models && npm run build >/dev/null)
+		fi
+	fi
 }
 
 case "${1:-focused}" in
@@ -40,10 +52,15 @@ case "${1:-focused}" in
 			openai-responses-mid-convo-effort openai-codex-stream openai-responses-compat
 			openai-completions-tool-choice images-models
 			native-providers-catalog native-providers-kimi-wire
-			virtual-models-runtime
 		)
 		core_agent_tests=(agent-loop agent-request-update)
-		durable_tests=(virtual-models-durable sliding-window harness-compaction harness-generation-recovery)
+		durable_tests=(harness-compaction harness-generation-recovery)
+		virtual_models_tests=(
+			study-notes predicates stream-shaping route-exec virtual-models-runtime
+			virtual-models-durable seed-checkpointed-conversation sliding-window-realpath
+			node-fork-export storage-runtime-boundary sw-recall-tool sw-tool-hooks
+			sw-router sw-baton-lifecycle sliding-window sliding-window-recall-ledger
+		)
 		agent_tests=(
 			add-endpoint-provider remote-catalog-names anthropic-oauth-prompt-drift references
 			virtual-models interactive-mode-suppressed-messages
@@ -55,6 +72,7 @@ case "${1:-focused}" in
 		for t in "${ai_tests[@]}"; do [[ -f "packages/ai/test/$t.test.ts" ]] || missing+=("packages/ai/test/$t.test.ts"); done
 		for t in "${core_agent_tests[@]}"; do [[ -f "packages/agent/test/$t.test.ts" ]] || missing+=("packages/agent/test/$t.test.ts"); done
 		for t in "${durable_tests[@]}"; do [[ -f "packages/durable/test/$t.test.ts" ]] || missing+=("packages/durable/test/$t.test.ts"); done
+		for t in "${virtual_models_tests[@]}"; do [[ -f "packages/virtual-models/test/$t.test.ts" ]] || missing+=("packages/virtual-models/test/$t.test.ts"); done
 		for t in "${agent_tests[@]}"; do [[ -f "packages/coding-agent/test/$t.test.ts" ]] || missing+=("packages/coding-agent/test/$t.test.ts"); done
 		if [[ ${#missing[@]} -gt 0 ]]; then
 			printf 'focused test file missing (is its branch merged into this checkout?): %s\n' "${missing[@]}" >&2
@@ -64,6 +82,7 @@ case "${1:-focused}" in
 		(cd packages/ai && npx vitest run "${ai_tests[@]/#/test/}")
 		(cd packages/agent && npx vitest run "${core_agent_tests[@]/#/test/}")
 		(cd packages/durable && npx vitest run "${durable_tests[@]/#/test/}")
+		(cd packages/virtual-models && npx vitest run "${virtual_models_tests[@]/#/test/}")
 		(cd packages/coding-agent && npx vitest run "${agent_tests[@]/#/test/}")
 		;;
 	all)
