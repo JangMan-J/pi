@@ -11,6 +11,7 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
+import { executeRoutedStream, type RoutedStreamCompletion } from "@earendil-works/pi-virtual-models";
 import { suppressAssistantText } from "./message-presentation.ts";
 import { convertToLlm } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -30,7 +31,6 @@ import {
 	type VirtualModelDefinition,
 	type VirtualModelStateData,
 } from "./virtual-models.ts";
-import { executeRoutedStream, type RoutedStreamCompletion } from "./virtual-stream.ts";
 
 export interface VirtualRouteControllerHost {
 	readonly modelRuntime: ModelRuntime;
