@@ -3,8 +3,8 @@ import { copyJson, type JsonRepresentation } from "@earendil-works/chord/json";
 import type { AssistantMessage, Models, SystemMessage, Tool, Usage, UserMessage } from "@earendil-works/pi-ai";
 import { toToolDeclaration } from "@earendil-works/pi-ai/utils/transcript";
 import {
-	AgentDoc,
 	type Agent,
+	AgentDoc,
 	type AgentState,
 	AssistantEntry,
 	type ContextView,
@@ -16,8 +16,8 @@ import {
 	type HarnessSettings,
 	type ModelRef,
 	ProviderDoc,
-	readConversationDocAsOf,
 	type RegistryReader,
+	readConversationDocAsOf,
 	resolveAgent,
 	resolveSettings,
 	type Seq,
@@ -27,8 +27,8 @@ import {
 	UserEntry,
 } from "@earendil-works/pi-durable";
 import {
-	type BatonStateValue,
 	BatonStateDoc,
+	type BatonStateValue,
 	type ForkCacheGuard,
 	VirtualModelStateDoc,
 	type VirtualModelStateValue,

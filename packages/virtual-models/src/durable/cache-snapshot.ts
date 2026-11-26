@@ -4,12 +4,7 @@
  * beyond the durable substrate itself.
  */
 import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
-import {
-	AssistantEntry,
-	CompactionEntry,
-	type ContextView,
-	ResetEntry,
-} from "@earendil-works/pi-durable";
+import { AssistantEntry, CompactionEntry, type ContextView, ResetEntry } from "@earendil-works/pi-durable";
 import { DEFAULT_PROMPT_CACHE_TTL_MS, type ModelRouteCacheSnapshot, type WarmCacheEntry } from "../core/types.ts";
 
 const EXCLUDED_STOP_REASONS: ReadonlySet<AssistantMessage["stopReason"]> = new Set(["error", "aborted", "deferred"]);

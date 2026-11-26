@@ -21,10 +21,7 @@ import type { ForkCacheGuard } from "../src/durable/docs.ts";
 import { createSlidingWindowVirtualModel } from "../src/sliding-window/router.ts";
 import { createSlidingWindowState } from "../src/sliding-window/state.ts";
 
-const makeRequest = (
-	model: Model<string>,
-	overrides: Partial<ModelRouteRequest> = {},
-): ModelRouteRequest => ({
+const makeRequest = (model: Model<string>, overrides: Partial<ModelRouteRequest> = {}): ModelRouteRequest => ({
 	model,
 	thinkingLevel: "off",
 	reason: "user",
@@ -90,7 +87,9 @@ describe("sliding-window router (S16)", () => {
 
 		dynamicState.setBoundModels(models);
 		const reqState = { target: altModel };
-		const dynRoute = await dynamicVm.route(makeRequest(fastModel, { state: reqState, purpose: "retry", turnIndex: 3 }));
+		const dynRoute = await dynamicVm.route(
+			makeRequest(fastModel, { state: reqState, purpose: "retry", turnIndex: 3 }),
+		);
 		expect(dynRoute.model).toBe(altModel);
 		expect(dynamicState.routedRequestMeta.get(reqState)).toEqual({ purpose: "retry", turnIndex: 3 });
 

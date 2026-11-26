@@ -2,7 +2,6 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Models, ModelThinkingLevel, Tool } from "@earendil-works/pi-ai";
 import {
 	type Conversation,
-	type ConversationId,
 	type EntryId,
 	Harness,
 	type HarnessSettings,
@@ -13,13 +12,13 @@ import {
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { BatonStateDoc, VirtualModelStateDoc } from "../durable/docs.ts";
-import { SlidingWindowTargetDoc } from "./state.ts";
 import {
 	applyCheckpointedSeed,
 	buildCheckpointedSeedPlan,
 	type ParentCheckpointDocs,
 	readParentCheckpointDocs,
 } from "./seed-plan.ts";
+import { SlidingWindowTargetDoc } from "./state.ts";
 import type { MechanicalLedger } from "./types.ts";
 
 export interface ExportCheckpointedForkStorageOptions {

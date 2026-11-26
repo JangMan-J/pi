@@ -4,8 +4,8 @@
  * catalog constants, so every consumer can import this module without pulling a provider graph.
  */
 import type { Api, AssistantMessage, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import { THINKING_LEVELS, VIRTUAL_MODEL_API } from "./types.ts";
 import type { ModelRoute, ModelRoutePurpose, ModelRouteReason, VirtualModelDefinition } from "./types.ts";
+import { THINKING_LEVELS, VIRTUAL_MODEL_API } from "./types.ts";
 
 /** Map a specific route purpose to its coarse `ModelRouteReason`. */
 export function purposeToReason(purpose: ModelRoutePurpose): ModelRouteReason {

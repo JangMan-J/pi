@@ -4,11 +4,9 @@
  * durable substrate itself.
  */
 import type { Context } from "@earendil-works/chord/context";
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	AgentDoc,
 	type Conversation,
-	type ConversationCreateOptions,
 	type ConversationId,
 	type EntryId,
 	ProviderDoc,
