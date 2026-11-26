@@ -1,5 +1,5 @@
 export type { NativeWatchCall, WatchCall, WatchEnd, WatchHandle } from "@earendil-works/chord/watch";
-export { defineDoc, defineDocFamily } from "./documents.ts";
+export { defineDoc, defineDocFamily, readConversationDocAsOf } from "./documents.ts";
 export {
 	AssistantEntry,
 	CompactionEntry,
@@ -24,6 +24,8 @@ export {
 	DEFAULT_PROGRESS_POLICY,
 	DEFAULT_RESTART_LIMIT,
 	DEFAULT_RETRY_POLICY,
+	resolveAgent,
+	resolveSettings,
 } from "./harness/agent.ts";
 export {
 	type CompactionCheckpoint,
@@ -93,6 +95,7 @@ export type {
 	ContextView,
 	Conversation,
 	ConversationAbortOptions,
+	ConversationCheckpoint,
 	ConversationCreateOptions,
 	ConversationHandle,
 	ConversationInit,

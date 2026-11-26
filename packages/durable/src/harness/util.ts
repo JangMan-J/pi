@@ -10,7 +10,6 @@ import type {
 	SimpleStreamOptions,
 	Usage,
 } from "@earendil-works/pi-ai";
-import type { ModelRoutePurpose, VirtualModels, VirtualStreamRequestScope } from "@earendil-works/pi-ai/virtual-models";
 import { ResetEntry } from "../entries.ts";
 import type { ExecutionEnv } from "../env/index.ts";
 import { SessionFailed } from "../errors.ts";
@@ -115,7 +114,7 @@ export function conversationEntries(
 	};
 }
 
-// --- Virtual-models & beforeAgentStart fork seams (EOF-isolated) ---
+// --- Routed-models & beforeAgentStart fork seams (EOF-isolated) ---
 const VIRTUAL_REQUEST_SCOPE_SYMBOL = Symbol.for("pi-ai.virtualRequestScope");
 
 export type SidecarSpend = {
@@ -125,38 +124,67 @@ export type SidecarSpend = {
 	readonly usage: Usage;
 };
 
+export type RoutedRequestPurpose =
+	| "prompt"
+	| "continuation"
+	| "retry"
+	| "compaction"
+	| "branch_summary"
+	| "subagent"
+	| "direct";
+
+export interface RoutedRequestScope {
+	readonly purpose?: RoutedRequestPurpose;
+	readonly turnIndex?: number;
+	readonly disableContinuation?: boolean;
+	readonly onRouteCommitted?: (route: {
+		readonly model: Model<Api>;
+		readonly thinkingLevel: ModelThinkingLevel;
+	}) => void;
+	readonly onSidecarUsage?: (kind: string, provider: string, modelId: string, usage: Usage, note?: string) => void;
+}
+
+/** Structural capability for `Models` wrappers that resolve routed catalog entries before dispatch. */
+export interface RoutedModelsCapability extends Models {
+	resolveModel(
+		model: Model<Api>,
+		messages: readonly Message[],
+		options: {
+			readonly purpose?: RoutedRequestPurpose;
+			readonly turnIndex?: number;
+			readonly thinkingLevel: ModelThinkingLevel;
+			readonly signal?: AbortSignal;
+		},
+	): Promise<{ readonly model: Model<Api>; readonly thinkingLevel: ModelThinkingLevel }>;
+}
+
 type PreparedHookTask = {
 	readonly task: Task<JsonValue, { phase: string }, JsonValue, object>;
 	readonly input: JsonValue;
 };
 
-/** Lightweight check (type-only import) avoiding transitive graph bloat on built-in entry points. */
+/** Lightweight check avoiding transitive graph bloat on built-in entry points. */
 export function isVirtualModel(model: { readonly api: string }): boolean {
 	return model.api === "pi-virtual";
 }
 
-/** Structural type guard matching `@earendil-works/pi-ai/virtual-models`'s `VirtualModels` wrapper. */
-export function isVirtualModelsRuntime(models: Models): models is VirtualModels {
-	return (
-		"prepareVirtualRoute" in models &&
-		typeof (models as VirtualModels).prepareVirtualRoute === "function" &&
-		"registerVirtualModel" in models &&
-		typeof (models as VirtualModels).registerVirtualModel === "function"
-	);
+/** Structural type guard matching any `Models` wrapper implementing `RoutedModelsCapability`. */
+export function hasRoutedModelsCapability(models: Models): models is RoutedModelsCapability {
+	return "resolveModel" in models && typeof (models as RoutedModelsCapability).resolveModel === "function";
 }
 
-/** Attach virtual request metadata without adding runtime edges from `pi-ai/virtual-models` to core entries. */
+/** Attach routed request metadata without adding runtime edges to core entries. */
 export function attachVirtualRequestScope<TOptions extends object>(
 	options: TOptions,
-	scope: VirtualStreamRequestScope,
+	scope: RoutedRequestScope,
 ): TOptions {
 	return { ...options, [VIRTUAL_REQUEST_SCOPE_SYMBOL]: scope };
 }
 
-/** Read attached virtual request metadata placed by `attachVirtualRequestScope`. */
-export function getVirtualRequestScope(carrier: object | undefined): VirtualStreamRequestScope | undefined {
+/** Read attached routed request metadata placed by `attachVirtualRequestScope`. */
+export function getVirtualRequestScope(carrier: object | undefined): RoutedRequestScope | undefined {
 	if (!carrier || typeof carrier !== "object") return undefined;
-	return (carrier as { [VIRTUAL_REQUEST_SCOPE_SYMBOL]?: VirtualStreamRequestScope })[VIRTUAL_REQUEST_SCOPE_SYMBOL];
+	return (carrier as { [VIRTUAL_REQUEST_SCOPE_SYMBOL]?: RoutedRequestScope })[VIRTUAL_REQUEST_SCOPE_SYMBOL];
 }
 
 function asksBeforeAgentStart(agent: Agent, taskName: string): boolean {
@@ -178,7 +206,7 @@ function requestPurpose(
 	input: { readonly continuation?: true },
 	attempt: number,
 	turnIndex: number,
-): ModelRoutePurpose {
+): RoutedRequestPurpose {
 	if (attempt > 1) return "retry";
 	if (input.continuation === true || turnIndex > 0) return "continuation";
 	return "prompt";
@@ -288,7 +316,7 @@ export async function resolveContextWindow<I extends { readonly continuation?: t
 	thinkingLevel: ModelThinkingLevel | undefined,
 	context: Context,
 ): Promise<number> {
-	if (!isVirtualModel(resolved) || !isVirtualModelsRuntime(runtime.models) || resolved.contextWindow > 0) {
+	if (!isVirtualModel(resolved) || !hasRoutedModelsCapability(runtime.models) || resolved.contextWindow > 0) {
 		return resolved.contextWindow;
 	}
 	const turnIndex = (await runtime.snapshot(LiveDoc, runtime.conversationId, context))?.run?.turns ?? 0;
@@ -314,7 +342,7 @@ export async function resolveCompactionMaxTokens<I, S, R, H extends object>(
 	thinkingLevel: ModelThinkingLevel | undefined,
 ): Promise<number> {
 	let limit = model.maxTokens;
-	if (isVirtualModel(model) && isVirtualModelsRuntime(runtime.models) && limit <= 0) {
+	if (isVirtualModel(model) && hasRoutedModelsCapability(runtime.models) && limit <= 0) {
 		try {
 			const routed = await runtime.models.resolveModel(model, messages, {
 				purpose: "compaction",
@@ -344,7 +372,7 @@ export async function bindGenerationRequest<I extends { readonly continuation?: 
 	thinkingLevel: () => ModelThinkingLevel | undefined;
 	sidecars: () => { readonly sidecars?: readonly SidecarSpend[] };
 }> {
-	const hookScope = getVirtualRequestScope(carrier);
+	const hookScope = getVirtualRequestScope(carrier) ?? getVirtualRequestScope(base);
 	const baseOptions: SimpleStreamOptions =
 		hookScope?.disableContinuation !== undefined
 			? { ...base, disableContinuation: hookScope.disableContinuation }

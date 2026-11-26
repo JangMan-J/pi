@@ -68,6 +68,7 @@ import { recordUsage } from "./usage.ts";
 import {
 	appendRequestSidecars,
 	bindGenerationRequest,
+	getVirtualRequestScope,
 	optionalExtension,
 	resolveContextWindow,
 	runBeforeAgentStart,
@@ -342,10 +343,19 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			if (model === undefined) return failNoModel(runtime, ref, context);
 			const view = await runtime.context(conversationId, context, { at: cutoff });
 			let messages = view.messages;
+			let requestStreamOptions: ConversationStreamOptions = streamOptions;
 			let carrier: object | undefined;
 			await runtime.hooks.each("beforeRequest", async (hook) => {
-				const replaced = await hook({ messages }, runtime, context);
-				if (replaced !== undefined) ({ messages } = carrier = replaced);
+				const replaced = await hook({ messages, streamOptions: requestStreamOptions }, runtime, context);
+				if (replaced !== undefined) {
+					messages = replaced.messages;
+					if (replaced.streamOptions !== undefined) {
+						requestStreamOptions = { ...requestStreamOptions, ...replaced.streamOptions };
+					}
+					if (getVirtualRequestScope(replaced) !== undefined || carrier === undefined) {
+						carrier = replaced;
+					}
+				}
 			});
 			const bound = await bindGenerationRequest(
 				task.input,
@@ -356,7 +366,7 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 				carrier,
 				context,
 				{
-					...streamOptions,
+					...requestStreamOptions,
 					signal: runtime.signal,
 					telemetry: context.telemetry,
 					sessionId: await ensureProviderSessionId(runtime, context),
