@@ -67,7 +67,9 @@ async function valueImportGraph(entry: string): Promise<{ files: Set<string>; no
 describe("virtual-models storage runtime boundary", () => {
 	it("keeps src/sliding-window/node.ts self-sufficient without legacy virtual-models/sliding-window or StoreStorage imports", async () => {
 		const nodeSource = await readFile(resolve(sourceRoot, "sliding-window/node.ts"), "utf8");
-		expect(nodeSource).not.toMatch(/@earendil-works\/pi-(ai\/virtual-models|durable\/(virtual-models|sliding-window))/);
+		expect(nodeSource).not.toMatch(
+			/@earendil-works\/pi-(ai\/virtual-models|durable\/(virtual-models|sliding-window))/,
+		);
 		expect(nodeSource).not.toMatch(/\bStoreStorage\b/);
 		expect(nodeSource).not.toMatch(/from\s+["']@earendil-works\/chord["']/);
 		expect(nodeSource).toMatch(/@earendil-works\/pi-durable\/storage\/sqlite/);

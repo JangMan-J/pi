@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { AssistantMessage, Message, TextContent, ThinkingContent } from "@earendil-works/pi-ai";
-import { describe, expect, test } from "vitest";
+import type { ModelRoute, ModelRoutePurpose } from "@earendil-works/pi-virtual-models";
 import {
 	createVirtualModel,
 	findLatestResponse,
@@ -13,7 +13,7 @@ import {
 	purposeToReason,
 	suppressAssistantText,
 } from "@earendil-works/pi-virtual-models";
-import type { ModelRoute, ModelRoutePurpose } from "@earendil-works/pi-virtual-models";
+import { describe, expect, test } from "vitest";
 
 const PREDICATES_SOURCE = fileURLToPath(new URL("../src/core/predicates.ts", import.meta.url));
 
@@ -150,7 +150,11 @@ describe("text suppression round-trip", () => {
 	});
 
 	test("presentAssistantMessage strips prose and thinking from a suppressed message", () => {
-		const message = assistant([thinking("internal"), text("internal"), { type: "toolCall", id: "c1", name: "read", arguments: {} }]);
+		const message = assistant([
+			thinking("internal"),
+			text("internal"),
+			{ type: "toolCall", id: "c1", name: "read", arguments: {} },
+		]);
 		suppressAssistantText(message);
 		const presented = presentAssistantMessage(message);
 

@@ -3,9 +3,9 @@ import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { describe, expect, test } from "vitest";
+import { createRecallTool } from "../src/sliding-window/recall-tool.ts";
 import type { SlidingWindowState } from "../src/sliding-window/state.ts";
 import type { RecallOptions, SlidingWindowArtifactStore } from "../src/sliding-window/types.ts";
-import { createRecallTool } from "../src/sliding-window/recall-tool.ts";
 
 const RECALL_TOOL_SOURCE = fileURLToPath(new URL("../src/sliding-window/recall-tool.ts", import.meta.url));
 
@@ -47,9 +47,7 @@ function api(agentCwd: string | undefined): ToolExecutionApi {
 describe("recall tool module self-sufficiency", () => {
 	test("imports nothing from the legacy virtual-models subpaths", () => {
 		const source = readFileSync(RECALL_TOOL_SOURCE, "utf8");
-		expect(source).not.toMatch(
-			/@earendil-works\/pi-(ai\/virtual-models|durable\/(virtual-models|sliding-window))/,
-		);
+		expect(source).not.toMatch(/@earendil-works\/pi-(ai\/virtual-models|durable\/(virtual-models|sliding-window))/);
 	});
 });
 

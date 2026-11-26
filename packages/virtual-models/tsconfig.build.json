@@ -15,15 +15,11 @@
 			"@earendil-works/pi-schema": ["../schema/dist/index.d.ts"],
 			"@earendil-works/pi-ai": ["../ai/dist/index.d.ts"],
 			"@earendil-works/pi-ai/models": ["../ai/dist/models.d.ts"],
-			"@earendil-works/pi-ai/virtual-models": ["../ai/dist/virtual-models-entry.d.ts"],
 			"@earendil-works/pi-ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"],
 			"@earendil-works/pi-durable": ["../durable/dist/index.d.ts"],
 			"@earendil-works/pi-durable/storage/sqlite": ["../durable/dist/storage/sqlite/index.d.ts"],
 			"@earendil-works/pi-durable/storage/sqlite/node": ["../durable/dist/storage/sqlite/node.d.ts"],
 			"@earendil-works/pi-durable/storage/store": ["../durable/dist/storage/store/index.d.ts"],
-			"@earendil-works/pi-durable/virtual-models": ["../durable/dist/harness/virtual-models.d.ts"],
-			"@earendil-works/pi-durable/sliding-window": ["../durable/dist/harness/sliding-window.d.ts"],
-			"@earendil-works/pi-durable/sliding-window/node": ["../durable/dist/harness/sliding-window/node.d.ts"],
 			"@earendil-works/pi-durable/*": ["../durable/dist/*.d.ts", "../durable/dist/*/index.d.ts"]
 		},
 		"rootDir": "./src"

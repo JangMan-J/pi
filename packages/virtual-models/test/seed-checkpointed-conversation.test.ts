@@ -770,7 +770,10 @@ describe("exportCheckpointedForkToStorage", () => {
 				});
 				const assistant = (await allEntries(child)).find((entry) => AssistantEntry.is(entry))!.model?.[0];
 				expect(assistant?.content).toEqual([
-					{ type: "text", text: "snapshot notes\n\nCheckpoint exported. Executing scoped task directly on hydrated context." },
+					{
+						type: "text",
+						text: "snapshot notes\n\nCheckpoint exported. Executing scoped task directly on hydrated context.",
+					},
 				]);
 			} finally {
 				await childHarness.close(context);

@@ -127,7 +127,6 @@ const BUDGETS = {
 			maxFiles: 185,
 			forbid: [
 				"packages/virtual-models/src/sliding-window/",
-				"packages/durable/src/harness/sliding-window/node.ts",
 				"packages/durable/src/images/",
 				"packages/ai/src/index.ts",
 				"node:",
@@ -137,7 +136,6 @@ const BUDGETS = {
 			maxFiles: 215,
 			forbid: [
 				"packages/virtual-models/src/sliding-window/node.ts",
-				"packages/durable/src/harness/sliding-window/node.ts",
 				"packages/durable/src/images/",
 				"packages/ai/src/index.ts",
 				"node:",

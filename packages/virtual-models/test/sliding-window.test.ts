@@ -1,34 +1,52 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { openStore, sqliteBackend } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import {
+	type AssistantMessage,
 	createModels,
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxToolCall,
 	getCurrentTools,
+	type Message,
 	type Model,
+	type StopReason,
+	type ToolCall,
+	type ToolResultMessage,
 	type TranscriptContext,
+	type UserMessage,
 } from "@earendil-works/pi-ai";
-import { withVirtualModelRouting } from "@earendil-works/pi-ai/virtual-models";
 import {
 	AgentDoc,
 	AssistantEntry,
+	type Conversation,
 	createRegistry,
 	defineExtension,
 	defineTool,
+	type EntryRecord,
 	Harness,
 	MemoryStorage,
+	type PromptSection,
 	ProviderDoc,
+	type Registry,
 	ResetEntry,
 	SystemEntry,
+	section,
+	type ToolRegistration,
 	ToolResultEntry,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
+import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { StoreStorage } from "@earendil-works/pi-durable/storage/store";
+import { obj, opt, str } from "@earendil-works/pi-schema";
+import { withVirtualModelRouting } from "@earendil-works/pi-virtual-models";
+import { BatonStateDoc, VirtualModelStateDoc } from "@earendil-works/pi-virtual-models/durable";
 import {
 	buildBatonPrompts,
 	buildMechanicalPreview,
@@ -55,32 +73,108 @@ import {
 	SlidingWindowTargetDoc,
 	selectCut,
 	spillThresholdForTool,
+	spillToolOutput,
 	swapErrorPct,
 	turnFromMessages,
 	viewTurns,
-} from "@earendil-works/pi-durable/sliding-window";
+} from "@earendil-works/pi-virtual-models/sliding-window";
 import {
 	exportCheckpointedFork,
 	NodeSlidingWindowArtifactStore,
 	openNodeSlidingWindowArtifactStore,
-} from "@earendil-works/pi-durable/sliding-window/node";
-import { StoreStorage } from "@earendil-works/pi-durable/storage/store";
-import {
-	BatonStateDoc,
-	createSlidingWindowFork as createSlidingWindowForkFromVm,
-	createSlidingWindow as createSlidingWindowFromVm,
-	VirtualModelStateDoc,
-} from "@earendil-works/pi-durable/virtual-models";
-import { obj, opt, str } from "@earendil-works/pi-schema";
+} from "@earendil-works/pi-virtual-models/sliding-window/node";
 import { describe, expect, it, vi } from "vitest";
-import { allEntries, textOf, waitFor } from "./chat-support.ts";
-import { addSection, assistant, toolResult, user } from "./harness-support.ts";
-import { context } from "./session-support.ts";
+
+const context: Context = BACKGROUND_CONTEXT;
+
+async function allEntries(conversation: Conversation, callContext: Context = context): Promise<EntryRecord[]> {
+	const page = await conversation.entries({}, 1000, undefined, callContext);
+	return [...page.items].reverse();
+}
+
+function textOf(message: Message | undefined): string | undefined {
+	if (message === undefined || message.role === "system") return undefined;
+	if (typeof message.content === "string") return message.content;
+	const text = message.content.find((content) => content.type === "text");
+	return text?.type === "text" ? text.text : undefined;
+}
+
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!(await check())) {
+		if (Date.now() > deadline) throw new Error("Condition was not reached");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
+function addSection<Tool extends ToolRegistration = ToolRegistration>(
+	registry: Registry<Tool>,
+	key: string,
+	render: PromptSection<Tool>["render"],
+	options?: { readonly tag?: boolean },
+	name = `section:${key}`,
+) {
+	const ext = defineExtension<Tool>({ name, sections: [section(key, render, options)] });
+	registry.install(ext);
+	return { dispose: () => registry.uninstall(ext) };
+}
+
+function user(text: string): UserMessage {
+	return { role: "user", content: text, timestamp: 1 };
+}
+
+function assistant(
+	text: string,
+	options: { readonly calls?: readonly string[]; readonly stopReason?: StopReason } = {},
+): AssistantMessage {
+	const calls: ToolCall[] = (options.calls ?? []).map((id) => ({
+		type: "toolCall",
+		id,
+		name: `tool-${id}`,
+		arguments: {},
+	}));
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }, ...calls],
+		api: "faux",
+		provider: "faux",
+		model: "faux",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: options.stopReason ?? (calls.length > 0 ? "toolUse" : "stop"),
+		timestamp: 2,
+	};
+}
+
+function toolResult(id: string, text = `result ${id}`): ToolResultMessage {
+	return {
+		role: "toolResult",
+		toolCallId: id,
+		toolName: `tool-${id}`,
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp: 3,
+	};
+}
 
 describe("sliding-window pure engine", () => {
-	it("re-exports createSlidingWindow and createSlidingWindowFork from virtual-models", () => {
-		expect(createSlidingWindowFromVm).toBe(createSlidingWindow);
-		expect(createSlidingWindowForkFromVm).toBe(createSlidingWindowFork);
+	it("wires sliding-window/index.ts to ./assembler.ts and removes legacy pi-ai/pi-durable virtual-model files", () => {
+		const indexSource = readFileSync(
+			fileURLToPath(new URL("../src/sliding-window/index.ts", import.meta.url)),
+			"utf8",
+		);
+		expect(indexSource).not.toMatch(/@earendil-works\/pi-durable\/sliding-window/);
+		expect(indexSource).toMatch(/\.\/assembler\.ts/);
+		expect(existsSync(fileURLToPath(new URL("../../ai/src/virtual-models.ts", import.meta.url)))).toBe(false);
+		expect(existsSync(fileURLToPath(new URL("../../durable/src/harness/sliding-window.ts", import.meta.url)))).toBe(
+			false,
+		);
 	});
 
 	it("scales bounds across 128k, sawtooth ratios, and small test windows without hardcoded floors", () => {
@@ -1780,7 +1874,7 @@ describe("sliding-window Harness integration", () => {
 					parentHarness,
 					at: atEntry,
 					targetDbPath: exportDbPath,
-					owner: "cellar",
+					tablePrefix: "cellar_",
 					models: routed,
 					registry: reg,
 					systemPrompt: "Child system prompt",
@@ -1838,11 +1932,7 @@ describe("sliding-window Harness integration", () => {
 			childReg.install(childSw.extension);
 
 			const childDb = await openNodeSqliteDatabase(exportDbPath);
-			const childStore = await StoreStorage.open(
-				await openStore(sqliteBackend(childDb), context),
-				"cellar",
-				context,
-			);
+			const childStore = await SqliteStorage.open(childDb, { prefix: "cellar_" });
 			const childHarness = await Harness.open(
 				childStore,
 				{
@@ -2452,8 +2542,6 @@ describe("sliding-window Harness integration", () => {
 			// Also verify explicit partial: true with matching content hash does not bind artifact_sources
 			const partialWithFlag = openNodeSlidingWindowArtifactStore(join(dir, "partial-flag.artifacts.sqlite"));
 			const stageDummy = new EphemeralSliceStage({ maxTotalBytes: 100_000, ttlTurns: 2 });
-			const { spillToolOutput } = await import("../src/harness/sliding-window/spill.ts");
-			const { normalizeSlidingWindowConfig } = await import("../src/harness/sliding-window/bounds.ts");
 			const spillPartialFlag = await spillToolOutput({
 				toolName: "read",
 				input: { path: "big.ts" },
@@ -2477,7 +2565,7 @@ describe("sliding-window Harness integration", () => {
 					parentHarness,
 					at: atEntry,
 					targetDbPath: exportDbPath,
-					owner: "cellar",
+					tablePrefix: "cellar_",
 					models: routed,
 					registry: reg,
 					systemPrompt: "Child sys",
@@ -2512,11 +2600,7 @@ describe("sliding-window Harness integration", () => {
 			]);
 
 			const childDb = await openNodeSqliteDatabase(exportDbPath);
-			const childStorage = await StoreStorage.open(
-				await openStore(sqliteBackend(childDb), context),
-				"cellar",
-				context,
-			);
+			const childStorage = await SqliteStorage.open(childDb, { prefix: "cellar_" });
 			const childHarness = await Harness.open(
 				childStorage,
 				{
