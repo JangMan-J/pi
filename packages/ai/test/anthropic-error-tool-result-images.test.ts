@@ -107,12 +107,16 @@ describe("Anthropic error tool results with images", () => {
 				{
 					type: "tool_result",
 					tool_use_id: "call-2",
-					content: [{ type: "text", text: "(see attached image)" }, image("BBBB")],
+					// Fork: non-Anthropic hosts default to relocating successful tool-result images too
+					// (strict shims like Fireworks qwen4 reject them inside tool_result).
+					content: "(image attached after the tool results)",
 					is_error: false,
 				},
 				{ type: "text", text: "Images from the error result of tool call call-1 (codemode):" },
 				image("AAAA"),
 				image("CCCC"),
+				{ type: "text", text: "Images from the result of tool call call-2 (read):" },
+				image("BBBB"),
 			],
 		});
 	});
