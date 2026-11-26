@@ -1,6 +1,6 @@
 {
 	"name": "@earendil-works/pi-virtual-models",
-	"version": "1.6.1",
+	"version": "1.7.0",
 	"description": "Virtual model routing, cache-guarded forks, and sliding-window context management for Pi",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -66,12 +66,12 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
-		"@earendil-works/pi-ai": "1.6.1",
-		"@earendil-works/pi-schema": "1.6.1"
+		"@earendil-works/pi-ai": "1.7.0",
+		"@earendil-works/pi-schema": "1.7.0"
 	},
 	"peerDependencies": {
-		"@earendil-works/chord": ">=1.6.1",
-		"@earendil-works/pi-durable": ">=1.6.1"
+		"@earendil-works/chord": ">=1.7.0",
+		"@earendil-works/pi-durable": ">=1.7.0"
 	},
 	"peerDependenciesMeta": {
 		"@earendil-works/chord": {
@@ -82,8 +82,8 @@
 		}
 	},
 	"devDependencies": {
-		"@earendil-works/chord": "1.6.1",
-		"@earendil-works/pi-durable": "1.6.1",
+		"@earendil-works/chord": "1.7.0",
+		"@earendil-works/pi-durable": "1.7.0",
 		"vitest": "4.1.12"
 	}
 }

@@ -107,9 +107,9 @@ function getAliases(): Record<string, string> {
 		"ai/dist/providers/all.js",
 		"@earendil-works/pi-ai/providers/all",
 	);
-	const piAiVirtualModelsEntry = resolveWorkspaceOrImport(
-		"ai/dist/virtual-models-entry.js",
-		"@earendil-works/pi-ai/virtual-models",
+	const piVirtualModelsEntry = resolveWorkspaceOrImport(
+		"virtual-models/dist/index.js",
+		"@earendil-works/pi-virtual-models",
 	);
 
 	_aliases = {
@@ -120,8 +120,8 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-ai/compat": piAiCompatEntry,
 		"@earendil-works/pi-ai/models": piAiModelsEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
-		"@earendil-works/pi-ai/virtual-models": piAiVirtualModelsEntry,
 		"@earendil-works/pi-ai": piAiCompatEntry,
+		"@earendil-works/pi-virtual-models": piVirtualModelsEntry,
 		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
 		"@mariozechner/pi-tui": piTuiEntry,
@@ -129,8 +129,8 @@ function getAliases(): Record<string, string> {
 		"@mariozechner/pi-ai/compat": piAiCompatEntry,
 		"@mariozechner/pi-ai/models": piAiModelsEntry,
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
-		"@mariozechner/pi-ai/virtual-models": piAiVirtualModelsEntry,
 		"@mariozechner/pi-ai": piAiCompatEntry,
+		"@mariozechner/pi-virtual-models": piVirtualModelsEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,
 		"typebox/value": typeboxValueEntry,
