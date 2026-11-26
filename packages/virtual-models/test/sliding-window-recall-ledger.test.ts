@@ -1,18 +1,28 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, ToolExecutionApi } from "@earendil-works/pi-durable";
 import {
 	CheckpointLineageDoc,
 	createEmptyLedger,
 	createSlidingWindow,
 	recordToolResult,
-} from "@earendil-works/pi-durable/sliding-window";
-import { openNodeSlidingWindowArtifactStore } from "@earendil-works/pi-durable/sliding-window/node";
+} from "@earendil-works/pi-virtual-models/sliding-window";
+import { openNodeSlidingWindowArtifactStore } from "@earendil-works/pi-virtual-models/sliding-window/node";
 import { describe, expect, it } from "vitest";
-import { context } from "./session-support.ts";
 
 describe("sliding-window recall cwd", () => {
+	it("routes sliding-window through ./assembler.ts without pi-durable sliding-window bridge", () => {
+		const indexSource = readFileSync(
+			fileURLToPath(new URL("../src/sliding-window/index.ts", import.meta.url)),
+			"utf8",
+		);
+		expect(indexSource).not.toMatch(/@earendil-works\/pi-durable\/sliding-window/);
+		expect(indexSource).toMatch(/\.\/assembler\.ts/);
+	});
+
 	it("uses AgentDoc.cwd over options.cwd and without options.cwd for live stale-source detection", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "sw-recall-agent-"));
 		const launchDir = mkdtempSync(join(tmpdir(), "sw-recall-launch-"));

@@ -663,9 +663,7 @@ export function createBatonLifecycle(state: SlidingWindowState): BatonLifecycle 
 					const normKey = normalizeSliceKey(relPath, effectiveCwd);
 					if (hydratedSet.has(normKey)) continue;
 
-					const ledgerRec = c.ledger.filesRead.find(
-						(r) => normalizeSliceKey(r.path, effectiveCwd) === normKey,
-					);
+					const ledgerRec = c.ledger.filesRead.find((r) => normalizeSliceKey(r.path, effectiveCwd) === normKey);
 					const stored = await store.getLatestBySourcePath?.(relPath, effectiveCwd);
 					const storedRef = ledgerRec?.ref ?? stored?.meta.ref;
 					const storedSourceSha = ledgerRec?.sourceSha256 ?? ledgerRec?.sha256 ?? stored?.meta.sourceSha256;

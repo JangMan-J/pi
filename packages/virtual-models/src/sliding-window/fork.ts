@@ -6,7 +6,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, type Conversation, type EntryId } from "@earendil-works/pi-durable";
 import { BatonStateDoc, VirtualModelStateDoc } from "../durable/docs.ts";
 import { copyParentProviderSession } from "../durable/fork-guard.ts";
-import { SlidingWindowStateDoc, SlidingWindowTargetDoc, recordForkEnabledHint } from "./state.ts";
+import { recordForkEnabledHint, SlidingWindowStateDoc, SlidingWindowTargetDoc } from "./state.ts";
 import type { SlidingWindowForkOptions } from "./types.ts";
 
 /**

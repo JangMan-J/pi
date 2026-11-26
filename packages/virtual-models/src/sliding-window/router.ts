@@ -1,11 +1,6 @@
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import type {
-	ModelRoute,
-	ModelRouteRequest,
-	VirtualModelDefinition,
-	VirtualStreamRequest,
-} from "../core/types.ts";
+import type { ModelRoute, ModelRouteRequest, VirtualModelDefinition, VirtualStreamRequest } from "../core/types.ts";
 import type { ForkCacheGuard } from "../durable/docs.ts";
 import { applyForkGuardToRoute } from "../durable/fork-guard.ts";
 import { resolveDeterministicTimestamp, type SlidingWindowState } from "./state.ts";
@@ -205,9 +200,7 @@ export function createSlidingWindowVirtualModel(state: SlidingWindowState): Virt
 		async onOutcome(outcome) {
 			const active =
 				activeInnerByRoute.get(outcome.route) ??
-				(outcome.state && typeof outcome.state === "object"
-					? activeInnerByReqState.get(outcome.state)
-					: undefined);
+				(outcome.state && typeof outcome.state === "object" ? activeInnerByReqState.get(outcome.state) : undefined);
 			if (!active?.innerDef?.onOutcome || !active.innerModel) return undefined;
 			return await active.innerDef.onOutcome({
 				...outcome,

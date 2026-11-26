@@ -93,7 +93,11 @@ describe("node exportCheckpointedFork (SqliteStorage)", () => {
 			try {
 				const root = await childHarness.root(context);
 				const childView = await root.context(context);
-				expect(childView.messages.some((m) => m.role === "user" && String(m.content).includes("Execute scoped child task"))).toBe(true);
+				expect(
+					childView.messages.some(
+						(m) => m.role === "user" && String(m.content).includes("Execute scoped child task"),
+					),
+				).toBe(true);
 				expect((await root.agent(context)).instructions).toBe("Child system instructions");
 			} finally {
 				await childHarness.close(context);
