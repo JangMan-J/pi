@@ -67,6 +67,7 @@ import {
 	classifierErrorResult,
 	imageErrorResult,
 } from "@earendil-works/pi-ai/utils/model-operations";
+import { executeRoutedStream, type SidecarUsageRecorder } from "@earendil-works/pi-virtual-models";
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
@@ -99,7 +100,6 @@ import {
 	type VirtualModelDefinition,
 	withVirtualModels,
 } from "./virtual-models.ts";
-import { executeRoutedStream, type SidecarUsageRecorder } from "./virtual-stream.ts";
 
 interface RegisteredVirtualModel {
 	model: Model<Api>;

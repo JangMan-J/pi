@@ -6,7 +6,7 @@ import {
 	isTextSuppressed as isAiTextSuppressed,
 	presentAssistantMessage,
 	suppressAssistantText,
-} from "@earendil-works/pi-ai/virtual-models";
+} from "@earendil-works/pi-virtual-models";
 import type { AgentSessionEvent } from "./agent-session.ts";
 
 export { suppressAssistantText };
