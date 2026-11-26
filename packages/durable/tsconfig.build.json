@@ -13,7 +13,6 @@
 			"@earendil-works/chord/sqlite/node": ["../chord/dist/sqlite/node.d.ts"],
 			"@earendil-works/chord/sqlite/cloudflare": ["../chord/dist/sqlite/cloudflare.d.ts"],
 			"@earendil-works/pi-ai": ["../ai/dist/index.d.ts"],
-			"@earendil-works/pi-ai/virtual-models": ["../ai/dist/virtual-models-entry.d.ts"],
 			"@earendil-works/pi-ai/*": ["../ai/dist/*.d.ts"]
 		},
 		"rootDir": "./src"

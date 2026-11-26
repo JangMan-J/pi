@@ -1,9 +1,7 @@
-import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { readFile } from "node:fs/promises";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import {
-	AgentDoc,
-	AssistantEntry,
 	type Conversation,
 	createRegistry,
 	defineExtension,
@@ -15,15 +13,15 @@ import {
 	ToolResultEntry,
 	ToolTask,
 } from "@earendil-works/pi-durable";
-import { VirtualModelStateDoc } from "../src/durable/docs.ts";
 import { obj, str } from "@earendil-works/pi-schema";
 import { describe, expect, it } from "vitest";
-import { createSlidingWindowToolHooks } from "../src/sliding-window/tool-hooks.ts";
-import { EphemeralSliceStage } from "../src/sliding-window/staging.ts";
-import { MemorySlidingWindowArtifactStore } from "../src/sliding-window/memory-store.ts";
-import { createEmptyLedger } from "../src/sliding-window/ledger.ts";
+import { VirtualModelStateDoc } from "../src/durable/docs.ts";
 import { normalizeSlidingWindowConfig } from "../src/sliding-window/bounds.ts";
+import { createEmptyLedger } from "../src/sliding-window/ledger.ts";
+import { MemorySlidingWindowArtifactStore } from "../src/sliding-window/memory-store.ts";
+import { EphemeralSliceStage } from "../src/sliding-window/staging.ts";
 import type { ConvState, SlidingWindowState } from "../src/sliding-window/state.ts";
+import { createSlidingWindowToolHooks } from "../src/sliding-window/tool-hooks.ts";
 import type { MechanicalLedger } from "../src/sliding-window/types.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -96,7 +94,9 @@ function makeState(
 
 /** Install the extracted hooks on a registry, exactly as the sliding-window extension does. */
 function installHooks(registry: Registry, state: SlidingWindowState): void {
-	registry.install(defineExtension({ name: "test.sw-hooks", hooks: [hook(ToolTask, createSlidingWindowToolHooks(state))] }));
+	registry.install(
+		defineExtension({ name: "test.sw-hooks", hooks: [hook(ToolTask, createSlidingWindowToolHooks(state))] }),
+	);
 }
 
 function bigText(prefix: string, bytes = 4_000): string {
