@@ -2,7 +2,7 @@
  * Virtual models are catalog entries that route each request to a physical model.
  *
  * Pure routing contracts, catalog composition, and message presentation live in
- * `@earendil-works/pi-ai/virtual-models`. This module re-exports them and provides the
+ * `@earendil-works/pi-virtual-models`. This module re-exports them and provides the
  * `coding-agent` session-branch selection, persisted state, and branch cache-snapshot adapters.
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -19,7 +19,7 @@ import {
 	isVirtualModel,
 	type ModelRouteCacheSnapshot,
 	type WarmCacheEntry,
-} from "@earendil-works/pi-ai/virtual-models";
+} from "@earendil-works/pi-virtual-models";
 import { CACHE_TTL_MS } from "./cache-stats.ts";
 import type { SessionEntry } from "./session-manager.ts";
 
@@ -44,7 +44,7 @@ export {
 	type VirtualStreamRequest,
 	type WarmCacheEntry,
 	withVirtualModels,
-} from "@earendil-works/pi-ai/virtual-models";
+} from "@earendil-works/pi-virtual-models";
 
 /** Custom entry type that stores router state on the session branch. */
 export const VIRTUAL_MODEL_STATE_ENTRY = "pi.virtual-model-state";

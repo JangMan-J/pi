@@ -11,6 +11,11 @@ import {
 	type TranscriptContext,
 	type Usage,
 } from "@earendil-works/pi-ai";
+import {
+	anchorAnthropicCacheBeforeEphemeralTail,
+	applyRequiredToolChoicePayload,
+	buildRoutedStreamOptions,
+} from "@earendil-works/pi-virtual-models";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
@@ -25,11 +30,6 @@ import {
 	type ModelRouteRequest,
 	VIRTUAL_MODEL_STATE_ENTRY,
 } from "../../src/core/virtual-models.ts";
-import {
-	anchorAnthropicCacheBeforeEphemeralTail,
-	applyRequiredToolChoicePayload,
-	buildRoutedStreamOptions,
-} from "../../src/core/virtual-stream.ts";
 import { createTestResourceLoader } from "../utilities.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
