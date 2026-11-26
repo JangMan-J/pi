@@ -22,6 +22,7 @@ const WORKSPACE = {
 	"@earendil-works/chord": "packages/chord/src",
 	"@earendil-works/pi-ai": "packages/ai/src",
 	"@earendil-works/pi-durable": "packages/durable/src",
+	"@earendil-works/pi-virtual-models": "packages/virtual-models/src",
 	"@earendil-works/pi-agent-core": "packages/agent/src",
 	"@earendil-works/pi-codemode": "packages/codemode/src",
 	"@earendil-works/pi-telemetry": "packages/telemetry/src",
@@ -92,6 +93,7 @@ const BUDGETS = {
 				"packages/ai/src/utils/string-enum.ts",
 				// Photon (WebAssembly) loads only through `./images`.
 				"packages/durable/src/images/",
+				"packages/virtual-models/",
 			],
 		},
 		// The file tools reach their environment helpers and the Harness definitions they need, not the Harness itself,
@@ -102,6 +104,42 @@ const BUDGETS = {
 		"./images/fit": {
 			maxFiles: 100,
 			forbid: ["packages/durable/src/images/index.ts", "packages/durable/src/images/node.ts"],
+		},
+	},
+	"packages/virtual-models": {
+		".": {
+			maxFiles: 50,
+			forbid: [
+				"packages/durable/",
+				"packages/chord/",
+				"packages/ai/src/index.ts",
+				"packages/ai/src/providers/",
+				"packages/virtual-models/src/durable/",
+				"packages/virtual-models/src/sliding-window/",
+				"node:",
+			],
+		},
+		"./study-notes": {
+			maxFiles: 12,
+			forbid: ["packages/durable/", "packages/chord/", "packages/ai/src/index.ts", "packages/ai/src/providers/", "node:"],
+		},
+		"./durable": {
+			maxFiles: 185,
+			forbid: [
+				"packages/virtual-models/src/sliding-window/",
+				"packages/durable/src/images/",
+				"packages/ai/src/index.ts",
+				"node:",
+			],
+		},
+		"./sliding-window": {
+			maxFiles: 215,
+			forbid: [
+				"packages/virtual-models/src/sliding-window/node.ts",
+				"packages/durable/src/images/",
+				"packages/ai/src/index.ts",
+				"node:",
+			],
 		},
 	},
 };
@@ -131,17 +169,23 @@ function resolveSpec(spec, fromFile) {
 
 function walk(entryFile) {
 	const seen = new Set();
+	const builtins = new Set();
 	const queue = [entryFile];
 	while (queue.length > 0) {
 		const file = queue.pop();
 		if (seen.has(file) || file.endsWith(".json")) continue;
 		seen.add(file);
 		for (const match of readFileSync(file, "utf8").matchAll(SPEC)) {
-			const target = resolveSpec(match[2], file);
+			const spec = match[2];
+			if (spec.startsWith("node:")) {
+				builtins.add(spec);
+				continue;
+			}
+			const target = resolveSpec(spec, file);
 			if (target) queue.push(target);
 		}
 	}
-	return seen;
+	return { files: seen, builtins };
 }
 
 /** `./dist/harness/context.js` in the exports map is `src/harness/context.ts` on disk. */
@@ -180,7 +224,8 @@ for (const [pkgDir, budgets] of Object.entries(BUDGETS)) {
 				failures += 1;
 				continue;
 			}
-			const graph = [...walk(source)].map((file) => relative(ROOT, file).split(sep).join("/"));
+			const { files, builtins } = walk(source);
+			const graph = [...files].map((file) => relative(ROOT, file).split(sep).join("/"));
 			if (graph.length > limits.maxFiles) {
 				console.error(
 					`${pkgDir} export "${name}" reaches ${graph.length} files, budget ${limits.maxFiles}\n` +
@@ -188,8 +233,9 @@ for (const [pkgDir, budgets] of Object.entries(BUDGETS)) {
 				);
 				failures += 1;
 			}
+			const reachable = [...graph, ...builtins];
 			for (const pattern of limits.forbid ?? []) {
-				const hit = graph.filter((file) => file.includes(pattern) && !(limits.allow ?? []).some((allowed) => file.endsWith(allowed)));
+				const hit = reachable.filter((file) => file.includes(pattern) && !(limits.allow ?? []).some((allowed) => file.endsWith(allowed)));
 				if (hit.length > 0) {
 					console.error(`${pkgDir} export "${name}" must not reach ${pattern}:\n${hit.map((f) => `    ${f}`).join("\n")}`);
 					failures += 1;

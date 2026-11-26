@@ -1,3 +1,4 @@
+import type { Context } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import { idFromNumber } from "./ids.ts";
@@ -22,8 +23,10 @@ import type {
 	RewindableConversationDocFamilyToken,
 	RewindableConversationDocToken,
 	RewindableConversationSemantics,
+	Seq,
 	SessionDocFamilyToken,
 	SessionDocToken,
+	Storage,
 	StoredDocument,
 	TaskDocFamilyToken,
 	TaskDocToken,
@@ -205,4 +208,24 @@ export function materializeDocumentValue(
 	checkRecordVersion(definition, record, version);
 	if (version === definition.version) return value;
 	return copyJson(definition.migrate!(value, version)) as JsonObject;
+}
+
+/** Read a conversation singleton document from `storage` at `at` (`Seq` or `"current"`), migrating if needed. */
+export async function readConversationDocAsOf<T extends JsonObject>(
+	storage: Storage,
+	conversationId: ConversationId,
+	token: ConversationDocToken<T>,
+	at: Seq | "current",
+	context: Context,
+): Promise<T | undefined> {
+	const def = token.definition as AnyDocDefinition;
+	const match = await storage.findDocument(
+		{ kind: def.kind, scope: { kind: "conversation", conversationId } },
+		at,
+		context,
+	);
+	if (match === undefined) return undefined;
+	const stored = await storage.document(match.id, at, context);
+	if (stored === undefined) return undefined;
+	return materializeDocument(def, stored) as T;
 }

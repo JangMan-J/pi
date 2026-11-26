@@ -24,6 +24,8 @@ import type { ExecutionEnv, ShellOutputSkip, ShellOutputWindow } from "../env/in
 import type { SignalKey, SignalResult, SignalState, SignalToken } from "../signals.ts";
 import type {
 	CommitOptions,
+	ContextEdit,
+	ConversationDocToken,
 	ConversationId,
 	ConversationOwnership,
 	ConversationRecord,
@@ -41,6 +43,7 @@ import type {
 	Observer,
 	Page,
 	Report,
+	Seq,
 	Session,
 	SetTimer,
 	SubmissionId,
@@ -418,6 +421,17 @@ export type ToolArgs<TParameters> = IsAny<TParameters> extends true ? any : Stat
 type IsAny<T> = boolean extends (T extends never ? true : false) ? true : false;
 
 /**
+ * Hints about what a tool does, with the meaning of MCP tool annotations. Host-side metadata only (never serialized
+ * into wire `Tool` declarations); permission hooks can inspect them.
+ */
+export type ToolAnnotations = {
+	readonly readOnlyHint?: boolean;
+	readonly destructiveHint?: boolean;
+	readonly idempotentHint?: boolean;
+	readonly openWorldHint?: boolean;
+};
+
+/**
  * Executable tool registered in a registry. Only pi-ai `Tool` fields enter the transcript. `args` are typed by
  * `parameters` (any JSON Schema object; see {@link ToolArgs}), which the Harness validates them against before
  * `execute()`; `defineTool()` infers both generics.
@@ -427,6 +441,8 @@ export type ToolRegistration<
 	TDetails extends JsonValue = JsonValue,
 	C extends JsonValue = JsonValue,
 > = Tool<TParameters> & {
+	/** Optional MCP-style behavioral hints for permission/policy hooks (not sent to providers). */
+	readonly annotations?: ToolAnnotations;
 	/** Whether an interrupted execution may rerun on recovery. Default `unsafe`. */
 	readonly replay?: "safe" | "unsafe";
 	/** Default: the settings' `toolExecution`. One sequential call makes its whole round sequential. */
@@ -507,7 +523,13 @@ export type Wrap<Tool extends ToolRegistration = ToolRegistration> =
  * shown in the `codemode` prompt section; `instructions` is the longer how-to, returned only by `describeNamespace()`;
  * `searchTools()` searches both.
  */
-export type ToolNamespace = { readonly name: string; readonly description: string; readonly instructions?: string };
+export type ToolNamespace = {
+	readonly name: string;
+	readonly description: string;
+	readonly instructions?: string;
+	/** Other names scripts may look the namespace up by (e.g. `docs` for `mcp__docs`). */
+	readonly aliases?: readonly string[];
+};
 
 export interface Extension<Tool extends ToolRegistration = ToolRegistration> {
 	readonly name: string;
@@ -647,6 +669,40 @@ export type ConversationCreateOptions = {
 	readonly init?: ConversationInit;
 };
 
+/**
+ * Point-in-time checkpoint state of `conversationId` at visible entry `at`, read consistently from the Session line
+ * before a creating commit (`Harness.readCheckpoint()`).
+ */
+export type ConversationCheckpoint = {
+	readonly conversationId: ConversationId;
+	/** The visible entry at `at` (`entry.conversationId` is the ancestor conversation when inherited across a fork). */
+	readonly entry: EntryRecord;
+	/** Commit sequence at which `entry` was stored. */
+	readonly commitSeq: Seq;
+	/** Derived active transcript and model context at `at`. */
+	readonly view: ContextView;
+	/** Current resolved `Agent` of `conversationId`. */
+	readonly agent: Agent;
+	/** Stored `pi.agent` state as of `commitSeq`, when present. */
+	readonly agentState: AgentState | undefined;
+	/** Current `pi.provider.sessionId` of `conversationId` (falling back to `entry.conversationId`), when present. */
+	readonly providerSessionId: string | undefined;
+	/** Current `HarnessOptions.models` (with `HarnessOptions.identity` applied). */
+	readonly models: Models;
+	/** The Harness's `RegistryReader`. */
+	readonly registry: RegistryReader;
+	/** Current `HarnessOptions.settings`, when configured. */
+	readonly settings: HarnessSettings | undefined;
+	/**
+	 * Read any conversation singleton document at `options.at` (`commitSeq` by default, or `"current"`), defaulting to
+	 * `entry.conversationId` for historical reads and `conversationId` for `"current"`.
+	 */
+	doc<T extends JsonObject>(
+		token: ConversationDocToken<T>,
+		options?: { readonly conversationId?: ConversationId; readonly at?: Seq | "current" },
+	): Promise<T | undefined>;
+};
+
 /** Curated pi-ai request options; absent fields use pi-ai defaults. */
 export type ConversationStreamOptions = {
 	transport?: Transport;
@@ -662,6 +718,8 @@ export type ConversationStreamOptions = {
 	metadata?: JsonObject;
 	cacheRetention?: CacheRetention;
 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
+	/** Disable WebSocket/response continuation state (`previous_response_id`) when session/history changed. */
+	disableContinuation?: boolean;
 };
 
 /** Durable generation attempt retries; the JSON shape of pi-ai `RetryPolicy`. */
@@ -1011,6 +1069,11 @@ export interface Harness extends Session {
 	): Promise<Conversation>;
 	conversation(id: ConversationId, context: Context): Promise<Conversation | undefined>;
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation>;
+	/**
+	 * Read `conversationId`'s checkpoint state at visible entry `at` consistently from the Session line before a creating
+	 * commit: derived `view`, resolved `agent`, `asOf` `agentState`, `providerSessionId`, Harness defaults, and `doc()`.
+	 */
+	readCheckpoint(conversationId: ConversationId, at: EntryId, context: Context): Promise<ConversationCheckpoint>;
 
 	getTask<R>(id: TaskId<R>, context: Context): Promise<TaskRecord<JsonValue, JsonValue, R> | undefined>;
 	/** Live tasks and unsettled submissions. Writes nothing and runs no task code. */
@@ -1073,6 +1136,8 @@ export interface HookApi extends DocumentReader {
 	readonly conversationId: ConversationId;
 	/** The current `HarnessOptions.models`, read at each access. */
 	readonly models: Models;
+	/** Calls `HarnessOptions.env` for the task's conversation, when provided by the runtime. */
+	env?(context: Context): Promise<ExecutionEnv | undefined>;
 	memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
 	memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
 	/** A signal key's committed state in the asking task, as `TaskRuntime.readSignal()`. */
@@ -1094,14 +1159,61 @@ export interface HookApi extends DocumentReader {
 
 export type HookResult<T> = T | undefined | Promise<T | undefined>;
 
+/** Input delivered to `GenerationHooks.beforeAgentStart` once when a run starts. */
+export type BeforeAgentStartEvent = {
+	/** Active model context view (including the newly placed user input that triggered the run). */
+	readonly view: ContextView;
+	/** Active `AgentDoc` snapshot for the conversation. */
+	readonly agent: Agent;
+	/** Host execution environment, when configured. */
+	readonly env?: ExecutionEnv;
+};
+
+/** Context reset requested by `GenerationHooks.beforeAgentStart` (`ResetEntry`). */
+export type BeforeAgentStartReset = {
+	/** First kept entry after the reset; defaults to the run's opening input (`firstPlacedInput`), or `"self"`. */
+	readonly head?: EntryId | "self";
+	/** Synthetic messages placed at the reset boundary (e.g. `[anchorUser0, handoffSummary]` to keep `firstUser` / Anthropic `cch` invariant). */
+	readonly model?: readonly Message[];
+	/** Optional opaque metadata persisted on the `ResetEntry`. */
+	readonly data?: JsonValue;
+};
+
+/** Out-of-band spend incurred by a `beforeAgentStart` helper, recorded in `UsageDoc.sidecars` and `UsageDoc.sidecarContext`. */
+export type BeforeAgentStartSidecarUsage = {
+	/** Bucket prefix in `<kind>:<provider>/<modelId>` (e.g. `"baton_helper"` or `"helper_b"`). */
+	readonly kind: string;
+	readonly provider: string;
+	readonly modelId: string;
+	readonly usage: Usage;
+};
+
+/** Durable mutations committed atomically by `GenerationHooks.beforeAgentStart` before `prepare` plans system entries. */
+export type BeforeAgentStartResult = {
+	/** Targeted in-place entry edits (`ContextEdit`) applied to prior transcript entries. */
+	readonly edits?: readonly ContextEdit[];
+	/** Full context reset (`ResetEntry`) for baton swaps or sliding-window rollovers. */
+	readonly reset?: BeforeAgentStartReset;
+	/** Additional transcript entries appended in the same commit. */
+	readonly entries?: readonly EntryDraft[];
+	/** `AgentDoc` configuration updates (model, thinkingLevel, tools, sections) applied before `prepare`. */
+	readonly agent?: AgentChange;
+	/** Child `HookTask`s (e.g. writing `BatonStateDoc`) awaited before `prepare` proceeds. */
+	readonly tasks?: readonly HookTask[];
+	/** Helper/sidecar model calls to record in `UsageDoc.sidecars` (cumulative) and `UsageDoc.sidecarContext` (latest context fill). */
+	readonly sidecarUsage?: readonly BeforeAgentStartSidecarUsage[];
+};
+
 /** Hooks of the built-in generation task. */
 export interface GenerationHooks {
+	/** Once when a run starts, before preparing system entries and compaction checks. */
+	beforeAgentStart(event: BeforeAgentStartEvent, api: HookApi, context: Context): HookResult<BeforeAgentStartResult>;
 	/** Before every request attempt, including recovery; the result is used for that request only. */
 	beforeRequest(
-		request: { readonly messages: readonly Message[] },
+		request: { readonly messages: readonly Message[]; readonly streamOptions?: ConversationStreamOptions },
 		api: HookApi,
 		context: Context,
-	): HookResult<{ readonly messages: readonly Message[] }>;
+	): HookResult<{ readonly messages: readonly Message[]; readonly streamOptions?: ConversationStreamOptions }>;
 	/**
 	 * After pi-ai builds the provider request body, before it is sent; the result replaces the body for that request only.
 	 * Runs again whenever pi-ai rebuilds the body, such as a retry within one attempt. The body is in the provider API's

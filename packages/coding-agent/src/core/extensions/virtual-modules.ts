@@ -3,6 +3,7 @@ import * as bundledPiAiModels from "@earendil-works/pi-ai/models";
 import * as bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
 import * as bundledPiAiProviders from "@earendil-works/pi-ai/providers/all";
 import * as bundledPiTui from "@earendil-works/pi-tui";
+import * as bundledPiVirtualModels from "@earendil-works/pi-virtual-models";
 import * as bundledTypebox from "typebox";
 import * as bundledTypeboxCompile from "typebox/compile";
 import * as bundledTypeboxValue from "typebox/value";
@@ -30,6 +31,7 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@earendil-works/pi-ai/models": bundledPiAiModels,
 	"@earendil-works/pi-ai/oauth": bundledPiAiOauth,
 	"@earendil-works/pi-ai/providers/all": bundledPiAiProviders,
+	"@earendil-works/pi-virtual-models": bundledPiVirtualModels,
 	"@earendil-works/pi-coding-agent": bundledPiCodingAgent,
 	"@mariozechner/pi-agent-core": bundledPiAgentCore,
 	"@mariozechner/pi-tui": bundledPiTui,
@@ -38,5 +40,6 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@mariozechner/pi-ai/models": bundledPiAiModels,
 	"@mariozechner/pi-ai/oauth": bundledPiAiOauth,
 	"@mariozechner/pi-ai/providers/all": bundledPiAiProviders,
+	"@mariozechner/pi-virtual-models": bundledPiVirtualModels,
 	"@mariozechner/pi-coding-agent": bundledPiCodingAgent,
 };
