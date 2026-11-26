@@ -519,6 +519,10 @@ const AnthropicMessagesCompatProperties = {
 		description:
 			"Whether the endpoint supports Anthropic message threads, which let a request with a session id send only the new messages and continue from the previous reply. Default: true for a baseUrl on api.anthropic.com, false otherwise. Set true for gateways that forward the thread request field.",
 	}),
+	supportsToolResultImages: optionalCompatBoolean({
+		description:
+			"Whether tool_result blocks may contain image blocks. Default: true for a baseUrl on api.anthropic.com, false otherwise. Strict Anthropic-compatible shims (for example Fireworks qwen4, which only accepts images in system/developer/user messages) reject the whole request otherwise; when false, images from successful tool results are deterministically relocated after the tool results of the turn, mirroring the error-result handling, so the stored history and every earlier request prefix stay byte-identical. Set true for gateways that accept images inside tool_result.",
+	}),
 	allowedFallbackModels: opt(
 		arr(AnthropicAllowedFallbackModelSchema, {
 			maxItems: 3,
