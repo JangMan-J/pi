@@ -2,14 +2,15 @@
  * Shared utilities for Google Generative AI and Google Vertex providers.
  */
 
-import {
-	type Content,
+import type {
+	Content,
 	FinishReason,
 	FunctionCallingConfigMode,
-	type GenerateContentResponsePromptFeedback,
+	GenerateContentResponsePromptFeedback,
+	GenerateContentResponseUsageMetadata,
 	ThinkingLevel as GoogleSdkThinkingLevel,
-	type Part,
-	type ThinkingConfig,
+	Part,
+	ThinkingConfig,
 } from "@google/genai";
 import { clampThinkingLevel } from "../models.ts";
 import type {
@@ -39,17 +40,25 @@ type GoogleApiType = "google-generative-ai" | "google-vertex";
 export type GoogleApiThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" | "XHIGH";
 export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "max">;
 
-const GOOGLE_SDK_THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, GoogleSdkThinkingLevel> = {
-	THINKING_LEVEL_UNSPECIFIED: GoogleSdkThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
-	MINIMAL: GoogleSdkThinkingLevel.MINIMAL,
-	LOW: GoogleSdkThinkingLevel.LOW,
-	MEDIUM: GoogleSdkThinkingLevel.MEDIUM,
-	HIGH: GoogleSdkThinkingLevel.HIGH,
-	XHIGH: GoogleSdkThinkingLevel.XHIGH,
-};
+// Keep shared wire helpers independent of the SDK runtime. Type-check its enum values.
+const GOOGLE_SDK_THINKING_LEVEL_MAP = {
+	THINKING_LEVEL_UNSPECIFIED: "THINKING_LEVEL_UNSPECIFIED",
+	MINIMAL: "MINIMAL",
+	LOW: "LOW",
+	MEDIUM: "MEDIUM",
+	HIGH: "HIGH",
+	XHIGH: "XHIGH",
+} satisfies Record<GoogleApiThinkingLevel, `${GoogleSdkThinkingLevel}`>;
+
+const GOOGLE_FUNCTION_CALLING_MODES = {
+	AUTO: "AUTO",
+	NONE: "NONE",
+	ANY: "ANY",
+	VALIDATED: "VALIDATED",
+} satisfies Record<string, `${FunctionCallingConfigMode}`>;
 
 /** Resolve a supported pi level or model-specific Google mapping to a standard Google level. */
-export function resolveGoogleThinkingLevel<T extends GoogleApiType>(
+export function resolveGoogleThinkingLevel<T extends Api>(
 	model: Model<T>,
 	level: ThinkingLevel,
 ): ResolvedGoogleThinkingLevel {
@@ -74,7 +83,7 @@ export function resolveGoogleThinkingLevel<T extends GoogleApiType>(
  * the token-based `thinkingBudget` control. Supported levels come from the
  * model's `thinkingLevelMap`; this only selects the Google wire format.
  */
-export function usesGoogleThinkingLevel<T extends GoogleApiType>(model: Model<T>): boolean {
+export function usesGoogleThinkingLevel<T extends Api>(model: Model<T>): boolean {
 	const id = model.id.toLowerCase();
 	return (
 		// Match Gemini 3 Pro/Flash IDs with or without a minor version, such as
@@ -149,10 +158,10 @@ export function getGoogleBudget<T extends GoogleApiType>(
 }
 
 export function toGoogleSdkThinkingLevel(level: GoogleApiThinkingLevel): GoogleSdkThinkingLevel {
-	return GOOGLE_SDK_THINKING_LEVEL_MAP[level];
+	return GOOGLE_SDK_THINKING_LEVEL_MAP[level] as GoogleSdkThinkingLevel;
 }
 
-export function getDisabledGoogleThinkingConfig<T extends GoogleApiType>(model: Model<T>): ThinkingConfig {
+export function getDisabledGoogleThinkingConfig<T extends Api>(model: Model<T>): ThinkingConfig {
 	if (!usesGoogleThinkingLevel(model)) return { thinkingBudget: 0 };
 
 	const fallback = clampThinkingLevel(model, "off");
@@ -208,8 +217,29 @@ function isValidThoughtSignature(signature: string | undefined): boolean {
 /**
  * Only keep signatures from the same provider/model and with valid base64.
  */
-function resolveThoughtSignature(isSameProviderAndModel: boolean, signature: string | undefined): string | undefined {
+export function resolveThoughtSignature(
+	isSameProviderAndModel: boolean,
+	signature: string | undefined,
+): string | undefined {
 	return isSameProviderAndModel && isValidThoughtSignature(signature) ? signature : undefined;
+}
+
+/**
+ * Gemini 3+ requires a signature on the first function call of a step (400 "Function call is missing a
+ * thought_signature"), which may be unavailable when replaying history from another provider.
+ * Such a turn is replayed as text instead: its calls are left out and each result becomes a user
+ * observation that names the tool and its arguments. Google's skip_thought_signature_validator bypass is
+ * not used: gemini-4-hydrogen then writes its next call into its thinking and emits an empty one
+ * (MALFORMED_RESPONSE), or returns a call with a placeholder signature and no thought.
+ */
+const OMITTED_TOOL_CALL_TEXT = "[Earlier tool call omitted because its signature is unavailable.]";
+const OBSERVATION_HISTORY_NOTE =
+	'[History note: Earlier "[Observation from ...]" blocks are historical tool results, not a format to imitate. To use a tool now, emit a real functionCall.]';
+
+/** Whether Gemini enforces a thought signature on the first function call of each model turn (Gemini 3+). */
+export function requiresFunctionCallThoughtSignature(modelId: string): boolean {
+	const geminiMajorVersion = getGeminiMajorVersion(modelId);
+	return geminiMajorVersion !== undefined && geminiMajorVersion >= 3;
 }
 
 /**
@@ -224,14 +254,14 @@ export function requiresToolCallId(modelId: string): boolean {
 	);
 }
 
-function getGeminiMajorVersion(modelId: string): number | undefined {
+export function getGeminiMajorVersion(modelId: string): number | undefined {
 	// Unanchored like usesGoogleThinkingLevel: some hosts prefix the ID, e.g. randomprefix-gemini-4-argon (#12321).
 	const match = modelId.toLowerCase().match(/gemini(?:-live)?-(\d+)/);
 	if (!match) return undefined;
 	return Number.parseInt(match[1], 10);
 }
 
-function supportsMultimodalFunctionResponse(modelId: string): boolean {
+export function supportsMultimodalFunctionResponse(modelId: string): boolean {
 	const geminiMajorVersion = getGeminiMajorVersion(modelId);
 	if (geminiMajorVersion !== undefined) {
 		return geminiMajorVersion >= 3;
@@ -246,6 +276,9 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 	// Gemini has no mid-conversation system messages; the leading prompt is sent as systemInstruction.
 	const conversation = withoutInitialSystemMessage(collapseSystemMessages(context).messages);
 	const contents: Content[] = [];
+	// Tool calls left out of an unsigned turn, by id, with their arguments as JSON.
+	const observedToolCalls = new Map<string, string>();
+	let observationTurn: Content | undefined;
 	const normalizeToolCallId = (id: string): string => {
 		if (!requiresToolCallId(model.id)) return id;
 		return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
@@ -283,6 +316,14 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const parts: Part[] = [];
 			// Check if message is from same provider and model - only then keep thinking blocks
 			const isSameProviderAndModel = msg.provider === model.provider && msg.model === model.id;
+			// transformMessages already dropped tool call signatures that do not carry over to this model.
+			const isSameProvider = msg.provider === model.provider && msg.api === model.api;
+			// A signature on a later parallel call cannot satisfy Gemini's check on the first call.
+			const firstToolCall = msg.content.find((block) => block.type === "toolCall");
+			const replayAsObservations =
+				requiresFunctionCallThoughtSignature(model.id) &&
+				firstToolCall !== undefined &&
+				!resolveThoughtSignature(isSameProvider, firstToolCall.thoughtSignature);
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
@@ -317,7 +358,11 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						});
 					}
 				} else if (block.type === "toolCall") {
-					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thoughtSignature);
+					if (replayAsObservations) {
+						observedToolCalls.set(block.id, JSON.stringify(block.arguments ?? {}));
+						continue;
+					}
+					const thoughtSignature = resolveThoughtSignature(isSameProvider, block.thoughtSignature);
 					const part: Part = {
 						functionCall: {
 							name: block.name,
@@ -330,6 +375,8 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				}
 			}
 
+			// Keep a model turn between the user's message and the observations that follow.
+			if (parts.length === 0 && replayAsObservations) parts.push({ text: OMITTED_TOOL_CALL_TEXT });
 			if (parts.length === 0) continue;
 			contents.push({
 				role: "model",
@@ -360,6 +407,27 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					data: imageBlock.data,
 				},
 			}));
+
+			const observedArguments = observedToolCalls.get(msg.toolCallId);
+			if (observedArguments !== undefined) {
+				observedToolCalls.delete(msg.toolCallId);
+				const label =
+					observedArguments === "{}" ? `\`${msg.toolName}\`` : `\`${msg.toolName}\` (${observedArguments})`;
+				let observationText = responseValue;
+				if (msg.isError) observationText = responseValue ? `Tool failed: ${responseValue}` : "Tool failed.";
+				const observationParts: Part[] = [
+					{ text: sanitizeSurrogates(`[Observation from ${label}:\n${observationText}]`) },
+					...imageParts,
+				];
+				// Results of one turn's parallel calls share a user turn, as function responses do.
+				if (observationTurn && observationTurn === contents[contents.length - 1]) {
+					observationTurn.parts?.push(...observationParts);
+				} else {
+					observationTurn = { role: "user", parts: observationParts };
+					contents.push(observationTurn);
+				}
+				continue;
+			}
 
 			const includeId = requiresToolCallId(model.id);
 			const functionResponsePart: Part = {
@@ -392,6 +460,10 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			}
 		}
 	}
+
+	// The note closes the last observation turn, which holds no function responses. A text part after
+	// function responses in one turn is rejected (400 "Requests ending with a model turn are not supported").
+	observationTurn?.parts?.push({ text: OBSERVATION_HISTORY_NOTE });
 
 	return contents;
 }
@@ -457,7 +529,7 @@ const JSON_SCHEMA_SUBSCHEMAS = new Set([
  * Rewrite string and number `const` values to single-value `enum`s.
  * Gemini ignores `const` in `parametersJsonSchema` but honors `enum`.
  */
-function rewriteConstAsEnum(schema: unknown, isNameMap = false): unknown {
+export function rewriteConstAsEnum(schema: unknown, isNameMap = false): unknown {
 	if (Array.isArray(schema)) return schema.map((item) => rewriteConstAsEnum(item));
 	if (typeof schema !== "object" || schema === null) return schema;
 
@@ -524,13 +596,13 @@ export function supportsGoogleStrictToolSampling<T extends GoogleApiType>(model:
 export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 	switch (choice) {
 		case "auto":
-			return FunctionCallingConfigMode.AUTO;
+			return GOOGLE_FUNCTION_CALLING_MODES.AUTO as FunctionCallingConfigMode;
 		case "none":
-			return FunctionCallingConfigMode.NONE;
+			return GOOGLE_FUNCTION_CALLING_MODES.NONE as FunctionCallingConfigMode;
 		case "any":
-			return FunctionCallingConfigMode.ANY;
+			return GOOGLE_FUNCTION_CALLING_MODES.ANY as FunctionCallingConfigMode;
 		default:
-			return FunctionCallingConfigMode.AUTO;
+			return GOOGLE_FUNCTION_CALLING_MODES.AUTO as FunctionCallingConfigMode;
 	}
 }
 
@@ -539,12 +611,18 @@ export function resolveGoogleFunctionCallingMode(
 	toolChoice: string | undefined,
 	supportsStrictMode: boolean,
 ): FunctionCallingConfigMode | undefined {
-	const useStrictMode = tools.some((tool) => resolveJsonSchemaStrictSampling(tool, supportsStrictMode) === true);
+	// VALIDATED applies to the whole toolset. Do not force it when a grammar tool such as codemode
+	// shares the request: live Gemini 4 calls then end with MALFORMED_RESPONSE instead of the call.
+	const hasGrammarTools = tools.some(
+		(tool) => tool.constrainedSampling && tool.constrainedSampling.type === "grammar",
+	);
+	const useStrictMode =
+		!hasGrammarTools && tools.some((tool) => resolveJsonSchemaStrictSampling(tool, supportsStrictMode) === true);
 	if (toolChoice === "none" || toolChoice === "any") {
 		return mapToolChoice(toolChoice);
 	}
 	if (useStrictMode) {
-		return FunctionCallingConfigMode.VALIDATED;
+		return GOOGLE_FUNCTION_CALLING_MODES.VALIDATED as FunctionCallingConfigMode;
 	}
 	return toolChoice ? mapToolChoice(toolChoice) : undefined;
 }
@@ -568,41 +646,53 @@ export function formatGooglePromptBlockError(
 }
 
 /**
+ * Context tokens after a turn. Across continuation hops the SDK sums promptTokenCount, and each
+ * later hop's prompt repeats the first prompt plus the output so far, which output already counts.
+ */
+export function googleContextTokens(usage: GenerateContentResponseUsageMetadata): number {
+	const total = usage.totalTokenCount || 0;
+	const initialPrompt = usage.initialPromptTokenCount;
+	return initialPrompt === undefined ? total : total - ((usage.promptTokenCount || 0) - initialPrompt);
+}
+
+/**
  * Map Gemini FinishReason to our StopReason.
  */
-export function mapStopReason(reason: FinishReason): StopReason {
+export function mapStopReason(reason: `${FinishReason}`): StopReason {
 	switch (reason) {
-		case FinishReason.STOP:
+		case "STOP":
 			return "stop";
-		case FinishReason.MAX_TOKENS:
-		// Per-request token limit reached before generation completed; pi does not resume with the continuation token.
-		case FinishReason.CONTINUATION:
+		case "MAX_TOKENS":
+		// The SDK resumes CONTINUATION stops with their token; one reaches pi only when the hop ended
+		// without a new token, so the output is cut short like MAX_TOKENS.
+		case "CONTINUATION":
 			return "length";
-		case FinishReason.BLOCKLIST:
-		case FinishReason.PROHIBITED_CONTENT:
-		case FinishReason.SPII:
-		case FinishReason.SAFETY:
-		case FinishReason.IMAGE_SAFETY:
-		case FinishReason.IMAGE_PROHIBITED_CONTENT:
-		case FinishReason.IMAGE_RECITATION:
-		case FinishReason.IMAGE_OTHER:
-		case FinishReason.RECITATION:
-		case FinishReason.FINISH_REASON_UNSPECIFIED:
-		case FinishReason.OTHER:
-		case FinishReason.LANGUAGE:
-		case FinishReason.MALFORMED_FUNCTION_CALL:
-		case FinishReason.UNEXPECTED_TOOL_CALL:
-		case FinishReason.TOO_MANY_TOOL_CALLS:
-		case FinishReason.NO_IMAGE:
-		case FinishReason.MISSING_THOUGHT_SIGNATURE:
-		case FinishReason.MALFORMED_RESPONSE:
-		case FinishReason.ESCALATION:
-		case FinishReason.PUP_LIMITED_DISABLED:
-		case FinishReason.MODEL_ARMOR:
+		case "BLOCKLIST":
+		case "PROHIBITED_CONTENT":
+		case "SPII":
+		case "SAFETY":
+		case "IMAGE_SAFETY":
+		case "IMAGE_PROHIBITED_CONTENT":
+		case "IMAGE_RECITATION":
+		case "IMAGE_OTHER":
+		case "RECITATION":
+		case "FINISH_REASON_UNSPECIFIED":
+		case "OTHER":
+		case "LANGUAGE":
+		case "MALFORMED_FUNCTION_CALL":
+		case "UNEXPECTED_TOOL_CALL":
+		case "TOO_MANY_TOOL_CALLS":
+		case "NO_IMAGE":
+		case "MISSING_THOUGHT_SIGNATURE":
+		case "MALFORMED_RESPONSE":
+		case "ESCALATION":
+		case "PUP_LIMITED_DISABLED":
+		case "MODEL_ARMOR":
 			return "error";
 		default: {
 			const _exhaustive: never = reason;
-			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
+			void _exhaustive;
+			return "error";
 		}
 	}
 }
