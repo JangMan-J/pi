@@ -248,7 +248,7 @@ describe("Meta provider catalog & Responses wire behavior", () => {
 				openRouter: { chat: [], images: [], classifiers: [] },
 				aiGateway: { chat: [], classifiers: [] },
 				nvidiaModelIds: new Map(),
-				radius: [],
+				radius: { chat: [], images: [], classifiers: [] },
 			},
 			true,
 		);
