@@ -31,6 +31,15 @@ export const workspaceSourcePaths = {
 	aiCompat: fileURLToPath(new URL("./packages/ai/src/compat.ts", import.meta.url)),
 	aiModels: fileURLToPath(new URL("./packages/ai/src/models.ts", import.meta.url)),
 	aiOAuth: fileURLToPath(new URL("./packages/ai/src/oauth.ts", import.meta.url)),
+	virtualModelsIndex: fileURLToPath(new URL("./packages/virtual-models/src/index.ts", import.meta.url)),
+	virtualModelsStudyNotes: fileURLToPath(new URL("./packages/virtual-models/src/study-notes.ts", import.meta.url)),
+	virtualModelsDurable: fileURLToPath(new URL("./packages/virtual-models/src/durable/index.ts", import.meta.url)),
+	virtualModelsSlidingWindow: fileURLToPath(
+		new URL("./packages/virtual-models/src/sliding-window/index.ts", import.meta.url),
+	),
+	virtualModelsSlidingWindowNode: fileURLToPath(
+		new URL("./packages/virtual-models/src/sliding-window/node.ts", import.meta.url),
+	),
 	aiApi: fileURLToPath(new URL("./packages/ai/src/api", import.meta.url)),
 	aiProviders: fileURLToPath(new URL("./packages/ai/src/providers", import.meta.url)),
 	aiUtils: fileURLToPath(new URL("./packages/ai/src/utils", import.meta.url)),
@@ -74,6 +83,23 @@ export default defineConfig({
 			{ find: /^@earendil-works\/pi-ai\/compat$/, replacement: workspaceSourcePaths.aiCompat },
 		{ find: /^@earendil-works\/pi-ai\/models$/, replacement: workspaceSourcePaths.aiModels },
 			{ find: /^@earendil-works\/pi-ai\/oauth$/, replacement: workspaceSourcePaths.aiOAuth },
+			{ find: /^@earendil-works\/pi-virtual-models$/, replacement: workspaceSourcePaths.virtualModelsIndex },
+			{
+				find: /^@earendil-works\/pi-virtual-models\/study-notes$/,
+				replacement: workspaceSourcePaths.virtualModelsStudyNotes,
+			},
+			{
+				find: /^@earendil-works\/pi-virtual-models\/durable$/,
+				replacement: workspaceSourcePaths.virtualModelsDurable,
+			},
+			{
+				find: /^@earendil-works\/pi-virtual-models\/sliding-window$/,
+				replacement: workspaceSourcePaths.virtualModelsSlidingWindow,
+			},
+			{
+				find: /^@earendil-works\/pi-virtual-models\/sliding-window\/node$/,
+				replacement: workspaceSourcePaths.virtualModelsSlidingWindowNode,
+			},
 			{
 				find: /^@earendil-works\/pi-ai\/utils\/(.+)$/,
 				replacement: `${workspaceSourcePaths.aiUtils}/$1.ts`,

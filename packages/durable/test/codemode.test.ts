@@ -1146,6 +1146,54 @@ describe("durable code mode output and tool search", () => {
 		expect(text).toContain("Tool calls made before the failure (they are not undone): echo (ok)");
 	});
 
+	it("matches namespace aliases in describeNamespace() and searchTools()", async () => {
+		const chat = codemodeChat();
+		chat.setup.registry.install(
+			defineExtension({
+				name: "mcp:docs",
+				namespace: {
+					name: "mcp__docs",
+					description: "Docs MCP server",
+					aliases: ["docs", "mcp-docs"],
+				},
+				tools: [tool("search_docs", async () => ({ output: [] }))],
+			}),
+		);
+		chat.setup.registry.install(
+			defineExtension({
+				name: "mcp:kb",
+				namespace: {
+					name: "mcp__internal_kb",
+					description: "Internal runbooks",
+					aliases: ["pagerduty-handbook"],
+				},
+				tools: [
+					defineTool({
+						name: "lookup_entry",
+						description: "Fetch one entry",
+						parameters: obj({}),
+						annotations: { readOnlyHint: true, openWorldHint: false },
+						execute: async () => ({ output: [] }),
+					}),
+				],
+			}),
+		);
+		const { text } = await runScript(
+			`return {
+				byAlias: await describeNamespace("docs"),
+				byDash: await describeNamespace("mcp-docs"),
+				searched: (await searchTools("docs", { namespace: "docs" })).map((tool) => tool.name),
+				byAliasQuery: (await searchTools("pagerduty handbook")).map((tool) => tool.name),
+			};`,
+			chat,
+		);
+		const out = JSON.parse(text.replace(/^Script completed\nWall time [\d.]+ seconds\nOutput:\n/, ""));
+		expect(out.byAlias).toMatchObject({ name: "mcp__docs", description: "Docs MCP server" });
+		expect(out.byDash).toMatchObject({ name: "mcp__docs" });
+		expect(out.searched).toEqual(["search_docs"]);
+		expect(out.byAliasQuery).toContain("lookup_entry");
+	});
+
 	it("finds tools with searchTools(), describeTool(), and describeNamespace(), and lists them in ALL_TOOLS", async () => {
 		const chat = codemodeChat();
 		// The namespace is the extension's: its tools belong to it whatever their names.
